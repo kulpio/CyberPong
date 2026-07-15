@@ -32,6 +32,9 @@ cp "$ROOT/resources/pair-illustration.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-blue.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-orange.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-black.png" "$RES/" 2>/dev/null || true
+cp "$ROOT/resources/bolt-active.png" "$RES/" 2>/dev/null || true
+cp "$ROOT/resources/bolt-active-dim.png" "$RES/" 2>/dev/null || true
+cp "$ROOT/resources/bolt-active-bright.png" "$RES/" 2>/dev/null || true
 cp "$SRC_PY" "$RES/hermes_pairing.py"
 chmod 644 "$RES/hermes_pairing.py"
 echo "$ROOT" > "$RES/project_root"
@@ -86,7 +89,7 @@ cat > "$PANEL_CONTENTS/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
@@ -95,6 +98,9 @@ cat > "$PANEL_CONTENTS/Info.plist" <<'PLIST'
 </plist>
 PLIST
 echo -n "APPL????" > "$PANEL_CONTENTS/PkgInfo"
+
+# Panel is accessory-only — no second Dock icon
+# (launcher also sets process name)
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

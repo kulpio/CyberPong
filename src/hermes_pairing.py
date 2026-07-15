@@ -234,7 +234,11 @@ class AppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, notification):
         log("applicationDidFinishLaunching")
-        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        try:
+            from AppKit import NSApplicationActivationPolicyAccessory
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        except Exception:
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         if ICON.exists():
             img = NSImage.alloc().initWithContentsOfFile_(str(ICON))
             if img:
@@ -470,7 +474,12 @@ def main():
     app = NSApplication.sharedApplication()
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
-    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    # Accessory: no second Dock icon (main Hermes_Pairing app owns the Dock)
+    try:
+        from AppKit import NSApplicationActivationPolicyAccessory
+        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    except Exception:
+        app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
     app.run()
 
 

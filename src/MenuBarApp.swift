@@ -1,53 +1,42 @@
 import AppKit
 import Foundation
 
-/// Native menu bar for Hermes_Pairing.
-/// Custom bolt; blue↔orange glow when pairs active. Opens control panel on launch.
+/// Hermes_Pairing menu bar — single dock icon; panel is accessory (no second dock icon).
+/// Black bolt; when pairs active, top dot Claude orange + bottom dot Hermes blue pulse.
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var projectRoot: String = ""
     private var timer: Timer?
     private var glowPhase: CGFloat = 0
-    private var boltBlue: NSImage?
-    private var boltOrange: NSImage?
-    private var boltTemplate: NSImage?
+    private var boltIdle: NSImage?
+    private var boltActiveDim: NSImage?
+    private var boltActiveBright: NSImage?
     private var hasActivePair = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         resolveProjectRoot()
         loadIcons()
-
-        // Dock + menu bar so double-click always feels like the app "opened"
         NSApp.setActivationPolicy(.regular)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            // ONE icon only: dark custom bolt (no emoji title — that creates a second gold bolt)
-            if let boltTemplate {
-                button.image = boltTemplate
-                button.image?.isTemplate = true
-                button.title = ""
-            } else if let sf = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Hermes_Pairing") {
-                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-                button.image = sf.withSymbolConfiguration(config)
-                button.image?.isTemplate = true
-                button.title = ""
-            } else {
-                button.title = "HP"
-            }
+            // ONE dark bolt only — never emoji (that created a second gold icon)
+            button.image = boltIdle
+            button.image?.isTemplate = true
+            button.title = ""
             button.toolTip = "Hermes_Pairing"
             button.appearsDisabled = false
         }
         statusItem.isVisible = true
         rebuildMenu()
 
-        timer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.tick()
         }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.openPanel()
         }
     }
@@ -71,22 +60,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadIcons() {
         let res = Bundle.main.resourcePath ?? ""
-        func img(_ name: String, template: Bool, size: CGFloat = 18) -> NSImage? {
+        func load(_ name: String, template: Bool, size: CGFloat = 18) -> NSImage? {
             let path = (res as NSString).appendingPathComponent(name)
             guard FileManager.default.fileExists(atPath: path),
                   let i = NSImage(contentsOfFile: path) else { return nil }
-            let copy = i.copy() as! NSImage
-            copy.size = NSSize(width: size, height: size)
-            copy.isTemplate = template
-            return copy
+            let c = i.copy() as! NSImage
+            c.size = NSSize(width: size, height: size)
+            c.isTemplate = template
+            return c
         }
-        boltTemplate = img("menubar-template.png", template: true)
-        boltBlue = img("bolt-blue.png", template: false)
-        boltOrange = img("bolt-orange.png", template: false)
-        if boltTemplate == nil,
-           let sf = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Zap") {
+        boltIdle = load("menubar-template.png", template: true)
+            ?? load("bolt-black.png", template: true)
+        boltActiveDim = load("bolt-active-dim.png", template: false)
+        boltActiveBright = load("bolt-active.png", template: false)
+            ?? load("bolt-active-bright.png", template: false)
+
+        if boltIdle == nil,
+           let sf = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Hermes_Pairing") {
             sf.isTemplate = true
-            boltTemplate = sf
+            boltIdle = sf
         }
     }
 
@@ -114,32 +106,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rebuildMenu()
         }
         guard let button = statusItem?.button else { return }
-        if active, let blue = boltBlue, let orange = boltOrange {
-            glowPhase += 0.06
+
+        if active, let dim = boltActiveDim, let bright = boltActiveBright {
+            // Pulse: black bolt stays; dots breathe Hermes blue / Claude orange
+            glowPhase += 0.08
             if glowPhase > .pi * 2 { glowPhase -= .pi * 2 }
-            let t = (sin(glowPhase) + 1) / 2
-            button.image = blend(blue: blue, orange: orange, t: t)
+            let t = (sin(glowPhase) + 1) / 2  // 0...1
+            button.image = crossfade(dim, bright, t: t)
             button.image?.isTemplate = false
             button.title = ""
-        } else if let boltTemplate {
-            button.image = boltTemplate
-            button.image?.isTemplate = true
-            button.title = ""
-        } else if let sf = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Hermes_Pairing") {
-            button.image = sf
+        } else if let idle = boltIdle {
+            button.image = idle
             button.image?.isTemplate = true
             button.title = ""
         } else {
-            button.image = nil
             button.title = "HP"
         }
     }
 
-    private func blend(blue: NSImage, orange: NSImage, t: CGFloat) -> NSImage {
+    private func crossfade(_ a: NSImage, _ b: NSImage, t: CGFloat) -> NSImage {
         let size = NSSize(width: 18, height: 18)
         return NSImage(size: size, flipped: false) { rect in
-            blue.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1 - t)
-            orange.draw(in: rect, from: .zero, operation: .sourceOver, fraction: t)
+            a.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1 - t)
+            b.draw(in: rect, from: .zero, operation: .sourceOver, fraction: t)
             return true
         }
     }
@@ -188,41 +177,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func refreshMenu() { rebuildMenu() }
 
     @objc func openPanel() {
-        // Nested Panel.app is branded Hermes_Pairing (avoids "Python" menu name)
         let panelPaths = [
             Bundle.main.bundlePath + "/Contents/Resources/Panel.app",
             "/Applications/Hermes_Pairing.app/Contents/Resources/Panel.app",
         ]
         if let panel = panelPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            // Activate existing panel window if running; else open
             NSWorkspace.shared.open(URL(fileURLWithPath: panel))
-            NSApp.activate(ignoringOtherApps: true)
             return
         }
-
-        // Fallback: direct python
-        let candidates = [
-            "/Applications/Hermes_Pairing.app/Contents/Resources/hermes_pairing.py",
-            "\(projectRoot)/src/hermes_pairing.py",
-        ]
-        guard let script = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            notify("Hermes_Pairing", "Control panel missing — reinstall")
-            return
-        }
-        let pyCandidates = [
-            "\(projectRoot)/venv/bin/python",
-            "/usr/bin/python3",
-        ]
-        guard let py = pyCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            notify("Hermes_Pairing", "Python not found — run setup.sh")
-            return
-        }
+        // fallback
+        let script = "\(projectRoot)/src/hermes_pairing.py"
+        let py = "\(projectRoot)/venv/bin/python"
+        guard FileManager.default.fileExists(atPath: script) else { return }
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: py)
+        task.executableURL = URL(fileURLWithPath: FileManager.default.isExecutableFile(atPath: py) ? py : "/usr/bin/python3")
         task.arguments = [script, "--window-only"]
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         try? task.run()
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func newPair() {
@@ -260,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quit() {
+        // Kill panel helper too (no second dock icon after quit)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         p.arguments = ["-f", "hermes_pairing.py"]
