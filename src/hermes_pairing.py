@@ -245,14 +245,16 @@ class AppDelegate(NSObject):
                 img.setSize_(NSMakeSize(128, 128))
                 NSApp.setApplicationIconImage_(img)
 
-        self._build_status_item()
+        window_only = bool(getattr(self, "_window_only", False))
+        if not window_only:
+            self._build_status_item()
         self._build_window()
         self.refreshStatus_(None)
 
         NSApp.activateIgnoringOtherApps_(True)
         if self.window:
             self.window.makeKeyAndOrderFront_(None)
-        log("ready")
+        log(f"ready window_only={window_only}")
 
     def _build_status_item(self):
         bar = NSStatusBar.systemStatusBar()
@@ -500,9 +502,13 @@ class AppDelegate(NSObject):
 
 
 def main():
-    log("main enter")
+    import sys
+    window_only = "--window-only" in sys.argv
+    log(f"main enter window_only={window_only}")
     app = NSApplication.sharedApplication()
     delegate = AppDelegate.alloc().init()
+    # Stash flag for applicationDidFinishLaunching
+    delegate._window_only = window_only
     app.setDelegate_(delegate)
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
     app.run()

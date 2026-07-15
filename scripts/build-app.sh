@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Hermes_Pairing.app
+# Build Hermes_Pairing.app — native Swift menu bar + Python control window
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,7 +9,8 @@ CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
 VENV="$ROOT/venv"
-SRC="$ROOT/src/hermes_pairing.py"
+SRC_PY="$ROOT/src/hermes_pairing.py"
+SRC_SWIFT="$ROOT/src/MenuBarApp.swift"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Missing venv. Run: python3 -m venv venv && venv/bin/pip install 'pyobjc-core==10.3.2' 'pyobjc-framework-Cocoa==10.3.2'"
@@ -19,33 +20,17 @@ fi
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
 
+# Compile native menu bar binary (this is what actually shows in the menu bar)
+swiftc -O -o "$MACOS/$APP_NAME" "$SRC_SWIFT" \
+  -framework AppKit -framework Foundation \
+  -target arm64-apple-macosx13.0
+
 cp "$ROOT/resources/menubar-template.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/menubar-template@2x.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/AppIcon.icns" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/AppIcon-1024.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/pair-illustration.png" "$RES/" 2>/dev/null || true
-cp "$SRC" "$RES/hermes_pairing.py"
-
-cat > "$MACOS/$APP_NAME" <<'LAUNCH'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-CONTENTS="$(cd "$DIR/.." && pwd)"
-MARKER="$CONTENTS/Resources/project_root"
-VENV_PY=""
-if [[ -f "$MARKER" ]]; then
-  PROJECT_ROOT="$(cat "$MARKER")"
-  VENV_PY="$PROJECT_ROOT/venv/bin/python"
-fi
-if [[ -z "$VENV_PY" || ! -x "$VENV_PY" ]]; then
-  # fallback: sibling of dist when running from repo
-  APP_ROOT="$(cd "$CONTENTS/../.." && pwd)"
-  VENV_PY="$APP_ROOT/venv/bin/python"
-fi
-export PYTHONUNBUFFERED=1
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-exec -a Hermes_Pairing "$VENV_PY" "$CONTENTS/Resources/hermes_pairing.py"
-LAUNCH
-chmod +x "$MACOS/$APP_NAME"
+cp "$SRC_PY" "$RES/hermes_pairing.py"
 
 echo "$ROOT" > "$RES/project_root"
 
@@ -61,9 +46,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>com.kulpio.hermes-pairing</string>
   <key>CFBundleVersion</key>
-  <string>1.0.0</string>
+  <string>1.1.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>1.1.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>
@@ -71,9 +56,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
-  <string>12.0</string>
+  <string>13.0</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
@@ -84,7 +69,7 @@ PLIST
 
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
-# Ad-hoc sign (free). Replace with Developer ID when available.
 codesign -s - --force --deep "$APP" 2>/dev/null || true
 
 echo "Built: $APP"
+file "$MACOS/$APP_NAME"
