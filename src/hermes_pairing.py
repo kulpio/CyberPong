@@ -424,8 +424,7 @@ def wire_pair(name: str, w1: str, w2: str):
     if not hermes_tui:
         run_in_terminal_window(
             w1,
-            f"printf '\\n  HERMES · {name}:0\\n  replies: cat ~/.hermes-pong/last-claude.txt\\n\\n'; "
-            f"tmux attach -t {name}:0 || tmux attach -t {name}",
+            f"printf '\\n  HERMES · {name}:0\\n\\n'; tmux attach-session -t {name}:0",
         )
         time.sleep(0.3)
     else:
@@ -440,8 +439,7 @@ def wire_pair(name: str, w1: str, w2: str):
     # Claude shell → attach :1 and run claude so work is visible in that window
     run_in_terminal_window(
         w2,
-        f"printf '\\n  CLAUDE · {name}:1  (work appears here)\\n\\n'; "
-        f"tmux attach -t {name}:1 || tmux attach -t {name}",
+        f"printf '\\n  CLAUDE · {name}:1\\n\\n'; tmux attach-session -t {name}:1",
     )
     time.sleep(0.4)
     pane = sh(f"tmux capture-pane -p -t {name}:1 -S -40 2>/dev/null || true")
