@@ -192,11 +192,73 @@ def start_fresh(name: str | None = None):
     return name
 
 
+def load_pairs_db() -> dict:
+    import json
+    path = Path.home() / ".hermes-pong" / "pairs.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def flash_terminal_window(window_id: str, times: int = 3) -> None:
+    """macOS-style attention: raise + pulse visibility on the real paired window."""
+    if not window_id or not str(window_id).isdigit():
+        return
+    script = f'''
+tell application "Terminal"
+  try
+    set w to window id {window_id}
+    set index of w to 1
+    set selected of w to true
+    activate
+    repeat {times} times
+      set visible of w to false
+      delay 0.07
+      set visible of w to true
+      delay 0.09
+    end repeat
+    set index of w to 1
+  end try
+end tell
+'''
+    osascript(script)
+    log(f"flash window {window_id}")
+
+
 def bring_to_front(name: str):
-    """Focus existing attached Terminals if any; else attach in a new tab only as last resort."""
-    # Prefer selecting existing session clients — don't spawn windows
-    sh(f"tmux switch-client -t {name}:0 2>/dev/null || true")
-    sh('''osascript -e 'tell application "Terminal" to activate' ''')
+    """
+    Bring the *paired* Hermes + Claude Terminal windows to front and flash them.
+    Uses saved window ids from Link — not “most recent” Terminal.
+    """
+    db = load_pairs_db()
+    entry = db.get(name) or {}
+    if not entry:
+        import json
+        ap = Path.home() / ".hermes-pong" / "active-pair.json"
+        if ap.exists():
+            try:
+                cur = json.loads(ap.read_text())
+                if cur.get("session") == name:
+                    entry = cur
+            except Exception:
+                pass
+
+    hid = entry.get("hermes_window_id")
+    cid = entry.get("claude_window_id")
+    log(f"bring_to_front {name} hermes={hid} claude={cid}")
+
+    if cid and str(cid).isdigit():
+        flash_terminal_window(str(cid), times=2)
+        time.sleep(0.05)
+    if hid and str(hid).isdigit():
+        flash_terminal_window(str(hid), times=3)
+    elif not hid and not cid:
+        sh(f"tmux switch-client -t {name}:0 2>/dev/null || true")
+        sh('''osascript -e 'tell application "Terminal" to activate' ''')
+        log("bring_to_front: no saved window ids — Terminal activate only")
 
 
 def run_in_terminal_window(window_id: str, command: str) -> str:
@@ -246,74 +308,81 @@ def save_pair_state(
     claude_window_id: str | None = None,
     claude_mode: str = "tmux",
 ) -> None:
-    """Persist active pair so the bridge knows where Claude lives."""
+    """Persist active pair + per-session window map for Front."""
     import json
 
     state_dir = Path.home() / ".hermes-pong"
     state_dir.mkdir(parents=True, exist_ok=True)
-    path = state_dir / "active-pair.json"
     data = {
         "session": session,
         "hermes_window_id": hermes_window_id,
         "claude_window_id": claude_window_id,
-        "claude_mode": claude_mode,  # tmux | window
+        "claude_mode": claude_mode,
         "updated": time.time(),
     }
-    path.write_text(json.dumps(data, indent=2))
+    (state_dir / "active-pair.json").write_text(json.dumps(data, indent=2))
+    db = load_pairs_db()
+    db[session] = {
+        "hermes_window_id": hermes_window_id,
+        "claude_window_id": claude_window_id,
+        "claude_mode": claude_mode,
+        "updated": time.time(),
+    }
+    (state_dir / "pairs.json").write_text(json.dumps(db, indent=2))
+    reply = state_dir / "last-claude.txt"
+    if not reply.exists():
+        reply.write_text(
+            "(no Claude reply yet — run claude-delegate.py after Claude finishes a task)\n"
+        )
     log(f"saved pair state {data}")
 
 
-def terminal_tab_looks_like_claude(window_id: str) -> bool:
-    """Best-effort: Terminal window name often contains Claude Code markers."""
-    wins = list_terminal_windows()
-    for wid, title in wins:
+def terminal_tab_looks_like_tui(window_id: str) -> bool:
+    """True if the Terminal tab is already Hermes/Claude app UI (not a bare shell)."""
+    for wid, title in list_terminal_windows():
         if wid == str(window_id):
             t = title.lower()
-            return any(x in t for x in ("claude", "✳", "fable"))
+            return any(x in t for x in ("claude", "✳", "fable", "hermes", "⚕", "grok"))
     return False
 
 
 def wire_pair(name: str, w1: str, w2: str):
     """
-    Soft pair: mark windows in state. Do not dump scripts into Claude chat.
-    Hermes shell → can attach tmux :0 for bridge logs.
-    Claude if already Claude Code → leave UI alone (window mode bridge).
-    Claude if shell → attach :1 and run claude so work is visible in THAT window.
+    Soft pair: save real window ids. Never dump shell/tmux into Hermes or Claude TUIs.
+    Shells can attach to tmux; live apps are register-only.
     """
     sh(f"tmux has-session -t {name} 2>/dev/null || tmux new-session -d -s {name} -n Hermes")
     wins = sh(f"tmux list-windows -t {name} -F '#{{window_index}}'")
     if "1" not in wins.split():
         sh(f"tmux new-window -t {name} -n Claude")
 
-    hermes_is_claudeish = terminal_tab_looks_like_claude(w1)
-    claude_is_app = terminal_tab_looks_like_claude(w2)
+    hermes_tui = terminal_tab_looks_like_tui(w1)
+    claude_tui = terminal_tab_looks_like_tui(w2)
 
-    # Hermes window: only hop if it is NOT a Claude TUI
-    if not hermes_is_claudeish:
+    # Hermes: only inject attach if bare shell
+    if not hermes_tui:
         run_in_terminal_window(
             w1,
             f"printf '\\n  HERMES · {name}:0\\n  replies: cat ~/.hermes-pong/last-claude.txt\\n\\n'; "
             f"tmux attach -t {name}:0 || tmux attach -t {name}",
         )
-        time.sleep(0.35)
+        time.sleep(0.3)
     else:
-        log("Hermes pick looks like Claude — register only, no inject")
+        log(f"Hermes window {w1} is live TUI — register only (no printf/tmux inject)")
 
-    if claude_is_app:
-        # CRITICAL: never type into Claude chat
-        log(f"Claude window {w2} = live Claude Code — register only")
+    if claude_tui:
+        log(f"Claude window {w2} is live TUI — register only (no chat junk)")
         save_pair_state(name, hermes_window_id=w1, claude_window_id=w2, claude_mode="window")
-        focus_terminal_window(w1)
         log(f"wired {name} mode=window hermes={w1} claude={w2}")
         return
 
-    # Claude is a shell → put Claude TUI inside the selected window via tmux :1
+    # Claude shell → attach :1 and run claude so work is visible in that window
     run_in_terminal_window(
         w2,
         f"printf '\\n  CLAUDE · {name}:1  (work appears here)\\n\\n'; "
         f"tmux attach -t {name}:1 || tmux attach -t {name}",
     )
-    time.sleep(0.45)
+    time.sleep(0.4)
     pane = sh(f"tmux capture-pane -p -t {name}:1 -S -40 2>/dev/null || true")
     already = any(
         x in pane.lower()
@@ -323,12 +392,7 @@ def wire_pair(name: str, w1: str, w2: str):
         sh(f"tmux send-keys -t {name}:1 -l 'claude'")
         time.sleep(0.05)
         sh(f"tmux send-keys -t {name}:1 Enter")
-    sh(f'tmux display-message -t {name}:1 "⚡ Claude side — work shows here"')
-    sh(f'tmux display-message -t {name}:0 "⚡ Hermes side — cat ~/.hermes-pong/last-claude.txt"')
     save_pair_state(name, hermes_window_id=w1, claude_window_id=w2, claude_mode="tmux")
-    focus_terminal_window(w2)
-    time.sleep(0.15)
-    focus_terminal_window(w1)
     log(f"wired {name} mode=tmux hermes={w1} claude={w2}")
 
 
