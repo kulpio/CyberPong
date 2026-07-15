@@ -28,8 +28,8 @@
       /* Top: soft Claude orange glow fading to clear white */
       /* Bottom-left: soft Hermes blue glow */
       background-image:
-        radial-gradient(ellipse 90% 55% at 50% -5%, rgba(217, 119, 86, 0.22), rgba(217, 119, 86, 0.06) 40%, transparent 70%),
-        radial-gradient(ellipse 70% 50% at 0% 100%, rgba(38, 2, 241, 0.18), rgba(38, 2, 241, 0.05) 45%, transparent 72%),
+        radial-gradient(ellipse 90% 55% at 50% -5%, rgba(217, 119, 86, 0.27), rgba(217, 119, 86, 0.07) 40%, transparent 70%),
+        radial-gradient(ellipse 70% 50% at 0% 100%, rgba(38, 2, 241, 0.22), rgba(38, 2, 241, 0.06) 45%, transparent 72%),
         linear-gradient(180deg, #fffaf7 0%, #ffffff 38%, #fafbff 100%);
       background-attachment: fixed;
       color: var(--text);
@@ -210,31 +210,6 @@
     }
     footer a { color: var(--hermes); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
-    .pair {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      margin: 8px 0 28px;
-      font-weight: 650;
-      letter-spacing: -0.02em;
-    }
-    .tag {
-      padding: 8px 14px;
-      border-radius: 10px;
-      font-size: .9rem;
-    }
-    .tag.h {
-      background: rgba(38,2,241,.08);
-      color: var(--hermes);
-      border: 1px solid rgba(38,2,241,.18);
-    }
-    .tag.c {
-      background: rgba(217,119,86,.1);
-      color: #b85c38;
-      border: 1px solid rgba(217,119,86,.22);
-    }
-    .arrow { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -249,16 +224,10 @@
 
     <h1>Two terminals.<br /><span class="grad">One bridge.</span></h1>
     <p class="lead">
-      Pair <strong style="color:#fff">Hermes</strong> and <strong style="color:#fff">Claude Code</strong>
+      Pair <strong style="color:#2602f1">Hermes</strong> and <strong style="color:#d97756">Claude Code</strong>
       so Hermes can hand work into the Claude window you already use —
       model, resume, and context intact.
     </p>
-
-    <div class="pair">
-      <span class="tag h">Hermes</span>
-      <span class="arrow">↔</span>
-      <span class="tag c">Claude</span>
-    </div>
 
     <div class="pill-row">
       <span class="pill">Link existing terminals</span>
@@ -310,7 +279,7 @@
       <h2>Requirements</h2>
       <p style="margin:0">
         macOS · Terminal.app ·
-        <a href="https://github.com/NousResearch/hermes-agent" style="color:#c8c3ff">Hermes</a> ·
+        <a href="https://github.com/NousResearch/hermes-agent" style="color:#2602f1">Hermes</a> ·
         Claude Code CLI · tmux
       </p>
       <p class="note" style="margin-top:12px;margin-bottom:0">
