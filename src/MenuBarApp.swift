@@ -26,22 +26,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadIcons()
         NSApp.setActivationPolicy(.accessory)
 
-        statusItem = NSStatusBar.system.statusItem(withLength: 26)
-        if let button = statusItem.button {
-            button.image = boltTemplate
-            button.image?.isTemplate = true
-            button.toolTip = "Hermes_Pairing"
-            button.appearsDisabled = false
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        guard let button = statusItem.button else { return }
+        button.image = boltTemplate
+        button.image?.isTemplate = true
+        // Fallback text if image missing
+        if button.image == nil {
+            button.title = "⚡"
         }
+        button.toolTip = "Hermes_Pairing"
+        button.appearsDisabled = false
+        // Keep a strong reference so menu bar extra is not deallocated
+        statusItem.isVisible = true
         rebuildMenu()
 
-        // Poll sessions + animate glow
-        timer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+        // Poll sessions + animate glow (main runloop)
+        timer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
             self?.tick()
         }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
+        RunLoop.main.add(timer!, forMode: .common)
 
-        openPanel()
+        // Defer panel so status item paints first
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.openPanel()
+        }
     }
 
     private func loadIcons() {
@@ -102,13 +110,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func blend(blue: NSImage, orange: NSImage, t: CGFloat) -> NSImage {
         let size = NSSize(width: 18, height: 18)
-        let img = NSImage(size: size)
-        img.lockFocus()
-        blue.draw(in: NSRect(origin: .zero, size: size),
-                  from: .zero, operation: .sourceOver, fraction: 1 - t)
-        orange.draw(in: NSRect(origin: .zero, size: size),
-                    from: .zero, operation: .sourceOver, fraction: t)
-        img.unlockFocus()
+        let img = NSImage(size: size, flipped: false) { rect in
+            blue.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1 - t)
+            orange.draw(in: rect, from: .zero, operation: .sourceOver, fraction: t)
+            return true
+        }
+        img.isTemplate = false
         return img
     }
 
