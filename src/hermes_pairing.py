@@ -27,7 +27,9 @@ from AppKit import (
     NSWindowStyleMaskTitled,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskBorderless,
     NSFloatingWindowLevel,
+    NSStatusWindowLevel,
     NSFont,
     NSImage,
     NSColor,
@@ -36,8 +38,18 @@ from AppKit import (
     NSBezelStyleRounded,
     NSImageScaleProportionallyUpOrDown,
     NSImageAlignCenter,
+    NSScreen,
+    NSBezierPath,
+    NSGraphicsContext,
 )
-from Foundation import NSMakeSize
+from Foundation import NSMakeSize, NSMakePoint, NSMakeRect as NSRect
+
+# Brand colors
+HERMES_BLUE = (0x26 / 255.0, 0x02 / 255.0, 0xF1 / 255.0, 1.0)
+CLAUDE_ORANGE = (0xD9 / 255.0, 0x77 / 255.0, 0x56 / 255.0, 1.0)
+
+# Keep overlay windows alive while linking
+_OVERLAYS: list = []
 
 SESSION_PREFIXES = ("hermes-claude", "hermes-pair")
 LOG = Path.home() / "Library" / "Logs" / "Hermes_Pairing.log"
@@ -158,96 +170,194 @@ def _front_terminal_id() -> str | None:
     return r if r.isdigit() else None
 
 
-def _window_under_mouse() -> str | None:
-    """Best-effort: Terminal window under cursor (needs Accessibility)."""
+def _mouse_down() -> bool:
+    try:
+        from Quartz import (
+            CGEventSourceButtonState,
+            kCGEventSourceStateCombinedSessionState,
+            kCGMouseButtonLeft,
+        )
+        return bool(
+            CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)
+        )
+    except Exception:
+        return False
+
+
+def _front_terminal_frame_cocoa():
+    """
+    Frame of front Terminal window in Cocoa coords (origin bottom-left).
+    Returns (x, y, w, h) or None.
+    """
     script = '''
     tell application "System Events"
-        set mousePos to current position of mouse
-        set mouseX to item 1 of mousePos
-        set mouseY to item 2 of mousePos
         tell process "Terminal"
-            repeat with w in windows
-                try
-                    set pos to position of w
-                    set sz to size of w
-                    set x to item 1 of pos
-                    set y to item 2 of pos
-                    set wW to item 1 of sz
-                    set wH to item 2 of sz
-                    if mouseX ≥ x and mouseX ≤ (x + wW) and mouseY ≥ y and mouseY ≤ (y + wH) then
-                        -- map AX window to Terminal id via index is hard; use title match later
-                        set t to name of w
-                        return t
-                    end if
-                end try
-            end repeat
+            try
+                set w to front window
+                set pos to position of w
+                set sz to size of w
+                return (item 1 of pos as text) & "," & (item 2 of pos as text) & "," & (item 1 of sz as text) & "," & (item 2 of sz as text)
+            on error
+                return "NONE"
+            end try
         end tell
     end tell
-    return "NONE"
     '''
-    # Prefer Terminal's own id of front window after user clicks (most reliable)
-    return None
+    r = sh(f"osascript -e {repr(script)}").strip()
+    if not r or r == "NONE" or "," not in r:
+        return None
+    try:
+        x, y_top, w, h = [float(p) for p in r.split(",")]
+    except ValueError:
+        return None
+    # System Events uses top-left global coords (primary display top-left origin, Y down).
+    # Cocoa uses bottom-left of primary display, Y up.
+    try:
+        main_h = NSScreen.mainScreen().frame().size.height
+    except Exception:
+        main_h = 900.0
+    cocoa_y = main_h - y_top - h
+    return (x, cocoa_y, w, h)
+
+
+class _BorderView(NSView):
+    """Transparent fill + colored ring (overlay highlight)."""
+
+    color = None  # set before draw
+    thickness = 5.0
+
+    def drawRect_(self, rect):
+        NSColor.clearColor().set()
+        NSBezierPath.fillRect_(rect)
+        c = self.color or NSColor.systemBlueColor()
+        c.set()
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(
+                self.thickness / 2,
+                self.thickness / 2,
+                rect.size.width - self.thickness,
+                rect.size.height - self.thickness,
+            ),
+            10,
+            10,
+        )
+        path.setLineWidth_(self.thickness)
+        path.stroke()
+
+
+def clear_overlays():
+    global _OVERLAYS
+    for w in _OVERLAYS:
+        try:
+            w.orderOut_(None)
+            w.close()
+        except Exception:
+            pass
+    _OVERLAYS = []
+
+
+def show_window_overlay(label: str, color_rgba, duration: float = 1.4):
+    """Draw a border-only overlay on the front Terminal window (no full-window wash)."""
+    frame = _front_terminal_frame_cocoa()
+    if not frame:
+        log("overlay: no frame")
+        return
+    x, y, w, h = frame
+    r, g, b, a = color_rgba
+    color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
+
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(x, y, w, h),
+        NSWindowStyleMaskBorderless,
+        NSBackingStoreBuffered,
+        False,
+    )
+    win.setOpaque_(False)
+    win.setBackgroundColor_(NSColor.clearColor())
+    win.setIgnoresMouseEvents_(True)  # clicks pass through
+    win.setLevel_(NSStatusWindowLevel)
+    win.setHasShadow_(False)
+    win.setCollectionBehavior_(1 << 0)  # can join all spaces-ish; best-effort
+
+    view = _BorderView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+    view.color = color
+    win.setContentView_(view)
+    win.orderFrontRegardless()
+    _OVERLAYS.append(win)
+    log(f"overlay shown label={label} frame={frame}")
+
+    # auto-fade later (caller may also clear)
+    def _later():
+        time.sleep(duration)
+        try:
+            win.orderOut_(None)
+        except Exception:
+            pass
+
+    threading.Thread(target=_later, daemon=True).start()
 
 
 def pick_window(prompt: str, label: str, exclude_id: str | None = None) -> str | None:
     """
-    Click-to-select: click a Terminal window and hold it frontmost ~1s.
-    exclude_id avoids re-selecting the first window for the second pick.
+    True click-to-select: wait for a left-click, then take the front Terminal
+    (the one the user just clicked). Show a border overlay, not a blue fill.
     """
-    notify("Hermes_Pairing", prompt + " — click it and keep it front for 1s")
-    log(f"pick_window start label={label} exclude={exclude_id}")
+    color = HERMES_BLUE if "HERMES" in label.upper() else CLAUDE_ORANGE
+    notify("Hermes_Pairing", f"{prompt} — CLICK the Terminal window")
+    log(f"pick_window CLICK mode label={label} exclude={exclude_id}")
 
-    deadline = time.time() + 12.0
-    last = None
-    stable = 0
+    deadline = time.time() + 15.0
+    was_down = _mouse_down()
 
     while time.time() < deadline:
-        wid = _front_terminal_id()
-        if wid and wid != exclude_id:
-            if wid == last:
-                stable += 1
-                if stable >= 4:  # ~1s at 0.25s poll
-                    # tag window
-                    sh(
-                        f'''osascript -e 'tell application "Terminal" to try
-                        set custom title of window id {wid} to "● {label}"
-                    end try' '''
-                    )
-                    notify(f"{label} selected", f"Window {wid}")
-                    log(f"pick_window ok label={label} id={wid}")
-                    time.sleep(0.4)
-                    return wid
-            else:
-                last = wid
-                stable = 1
-        else:
-            # waiting for a different front window
-            if wid == exclude_id:
-                stable = 0
-                last = None
-        time.sleep(0.25)
+        down = _mouse_down()
+        # rising edge = click
+        if down and not was_down:
+            time.sleep(0.12)  # let Terminal become front after the click
+            wid = _front_terminal_id()
+            if wid and wid != exclude_id:
+                # Tag title lightly (not a theme change)
+                sh(
+                    f'''osascript -e 'tell application "Terminal" to try
+                    set custom title of window id {wid} to "● {label}"
+                end try' '''
+                )
+                show_window_overlay(label, color, duration=1.6)
+                notify(f"{label} selected", "Border highlight on that window")
+                log(f"pick_window ok label={label} id={wid}")
+                was_down = down
+                time.sleep(0.35)
+                return wid
+            if wid and wid == exclude_id:
+                notify("Same window", "Click the OTHER Terminal")
+                log("pick_window rejected: same as exclude")
+        was_down = down
+        time.sleep(0.03)
 
-    notify("Timed out", f"Click a Terminal for {label} and keep it front")
+    notify("Timed out", f"Click a Terminal for {label}")
     log(f"pick_window timeout label={label}")
     return None
 
 
 def connect_windows():
+    clear_overlays()
     name = next_pair_name()
-    notify("Link Terminals", "1/2 — click HERMES Terminal, keep it front")
+    notify("Link Terminals", "1/2 — CLICK the HERMES Terminal")
     w1 = pick_window("HERMES Terminal", "HERMES", exclude_id=None)
     if not w1:
+        clear_overlays()
         return
-    notify("Link Terminals", "2/2 — click CLAUDE Terminal (different window)")
+    notify("Link Terminals", "2/2 — CLICK the CLAUDE Terminal")
     w2 = pick_window("CLAUDE Terminal", "CLAUDE", exclude_id=w1)
     if not w2:
+        clear_overlays()
         return
     if w1 == w2:
         notify("Same window", "Need two different Terminal windows")
         log(f"connect_windows same id {w1}")
+        clear_overlays()
         return
 
-    # Create detached session then attach each window as a client view
     sh(f"tmux new-session -d -s {name} -n Hermes 2>/dev/null || true")
     sh(f"tmux new-window -t {name}:1 -n Claude 2>/dev/null || true")
     sh(
@@ -262,6 +372,8 @@ def connect_windows():
     sh('''osascript -e 'tell application "Terminal" to activate' ''')
     notify("Linked", name)
     log(f"connect_windows linked {name} w1={w1} w2={w2} sessions={list_pairs()}")
+    time.sleep(1.2)
+    clear_overlays()
 
 
 def lbl(text, frame, bold=False, size=13.0, secondary=False):
