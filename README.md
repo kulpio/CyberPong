@@ -1,24 +1,61 @@
-# Hermes Pong
+<p align="center">
+  <img src="resources/AppIcon-1024.png" width="128" alt="Hermes Pong" />
+</p>
 
-Two terminals. One bridge. Hermes hands work to Claude in the **Claude Code window you already have**.
+<h1 align="center">Hermes Pong</h1>
 
-**Landing (free + tips):** https://kulpio.github.io/Hermes_Pairing/
+<p align="center">
+  <strong>Two terminals. One bridge.</strong><br />
+  Hermes orchestrates. Claude Code builds — in the window you already use.
+</p>
 
-**Download:** https://github.com/kulpio/Hermes_Pairing/releases/latest
+<p align="center">
+  <a href="https://kulpio.github.io/Hermes_Pairing/">Website</a> ·
+  <a href="https://github.com/kulpio/Hermes_Pairing/releases/latest">Download</a> ·
+  <a href="#install-macos">Install</a>
+</p>
+
+<p align="center">
+  <img src="resources/pair-illustration.png" width="480" alt="Hermes terminal bridged to Claude Code" />
+</p>
 
 ---
 
-## What this is
+## What it does
 
-**Hermes Pong** links a Hermes Terminal to a Claude Code Terminal so Hermes can paste tasks into Claude (with Enter), while you keep Claude’s model, resume, and chat.
+**Hermes Pong** is a small macOS app that pairs:
 
-- One Dock icon + menu-bar bolt  
-- Control panel: New pair / Link / Front / Kill  
-- Pair stays until **Kill** — even if you quit the app  
+| | |
+|--|--|
+| <img src="resources/logo-accent-128.png" width="40" alt="Hermes" /> | **Hermes** — plans, orchestrates, decides next steps |
+| <img src="resources/brand/claude-logo.svg.png" width="40" alt="Claude" /> | **Claude Code** — writes and runs the code |
+
+Hermes sends a task into your **live Claude Code terminal** (paste + Enter). You keep Claude’s model, resume, and chat. You watch the work happen.
+
+> Chatting only inside Hermes does **not** reach Claude. Work crosses the bridge with one command (below).
 
 ---
 
-## Install (Mac)
+## Requirements
+
+- macOS
+- [Terminal.app](https://support.apple.com/guide/terminal/welcome/mac)
+- [tmux](https://github.com/tmux/tmux) (`brew install tmux`)
+- [Hermes](https://github.com/NousResearch/hermes-agent) (or your Hermes CLI)
+- [Claude Code](https://claude.ai/code) CLI
+
+---
+
+## Install (macOS)
+
+### Option A — release zip
+
+1. Open the [latest release](https://github.com/kulpio/Hermes_Pairing/releases/latest)
+2. Download **HermesPong-macOS.zip** (or from the [landing page](https://kulpio.github.io/Hermes_Pairing/))
+3. Unzip → drag **Hermes Pong** into **Applications**
+4. First open: right-click → **Open** if Gatekeeper warns (ad-hoc signed for now)
+
+### Option B — from source
 
 ```bash
 git clone https://github.com/kulpio/Hermes_Pairing.git
@@ -26,101 +63,114 @@ cd Hermes_Pairing
 bash scripts/setup.sh
 ```
 
-Optional login item: `bash scripts/setup.sh --login`  
-App: `/Applications/HermesPong.app`
+That builds and installs `/Applications/HermesPong.app`.
 
----
-
-## How it works
-
-```
-Hermes terminal                    Claude Code terminal (yours)
-      │                                      ▲
-      │   claude-delegate.py                 │
-      └──── paste + Enter ───────────────────┘
-```
-
-1. You **Link** (or create) two Terminals.  
-2. Pong saves the **window ids**.  
-3. When Hermes delegates, it must call **`claude-delegate.py`**, which pastes into the **Claude Code window** and presses Enter.  
-4. You watch Claude work in that window — model, resume, context stay.
-
-**Chatting in Hermes alone never appears in Claude.** Hermes has to use the bridge.
-
----
-
-## Link existing terminals (keep model + context)
-
-Use when Claude Code is already open.
-
-1. Hermes running in one Terminal.  
-2. Claude Code in another — pick model / resume as usual.  
-3. Hermes Pong → **Link existing terminals**.  
-4. Click **Hermes** Terminal (✓ in popup).  
-5. Click **Claude** Terminal (✓ in popup).  
-6. Done. Nothing is injected into Claude at link time.
-
----
-
-## New pair (two fresh Terminals)
-
-1. Hermes Pong → **New pair**.  
-2. Two Terminal windows: **one runs Hermes**, **one runs Claude** (not Claude twice).  
-3. Claude starts **clean** — for model/resume you already set up, use **Link existing** instead.
-
----
-
-## Panel
-
-| Control | Meaning |
-|--------|---------|
-| **New pair** | 2 new Terminals. Claude starts clean. |
-| **Link existing terminals** | Register open Hermes + Claude. **Keeps Claude model/resume/chat.** |
-| **Front** | Raise the paired windows (short blink). |
-| **Kill** | Drop the pair. |
-| **Refresh** | Reload list. |
-
----
-
-## Bridge (must land in Claude Code)
+Optional: start at login:
 
 ```bash
-python3 ~/bin/claude-delegate.py --no-wait 'Your task. When done print ##CLAUDE_DONE## and a short summary.'
+bash scripts/setup.sh --login
 ```
-
-- **Link existing** → window mode → paste into **your** Claude Code window.  
-- **New pair** → tmux mode → paste into the Claude Terminal of that pair.  
-
-**Do not** use raw `tmux send-keys -t hermes-claude:1 …` — that hits a hidden pane, not the Claude UI you’re watching.
-
-Hermes skill: `hermes-pong-bridge`.
 
 ---
 
-## Files
+## Quick start
 
-| Path | Role |
-|------|------|
-| `~/.hermes-pong/active-pair.json` | Current pair + window ids + mode |
-| `~/.hermes-pong/pairs.json` | All pairs |
-| `~/.hermes-pong/last-sent.txt` | Last bridge prompt |
-| `~/.hermes-pong/last-claude.txt` | Last captured reply (tmux mode) |
-| `~/Library/Logs/HermesPong.log` | Log |
+### 1. Link what you already use (recommended)
+
+Best when Claude Code is already open with the right model / session.
+
+1. Open **Hermes** in one Terminal window  
+2. Open **Claude Code** in another  
+3. Launch **Hermes Pong** (menu bar bolt or Dock)  
+4. Click **Link existing terminals**  
+5. Select the **Hermes** window, then the **Claude** window  
+6. You should see the pair under **Active pairs**
+
+Nothing is injected into Claude at link time. Your model, resume, and chat stay as they are.
+
+### 2. Or start a New pair
+
+1. Click **New pair**  
+2. Two Terminals open: one for Hermes, one for Claude  
+3. Claude starts **fresh** (no prior session)
+
+Use **Link** when you care about an existing Claude conversation.
+
+---
+
+## How the bridge works
+
+```text
+┌─────────────────┐         claude-delegate.py          ┌──────────────────┐
+│  Hermes window  │  ── paste + Enter ─────────────────► │  Claude Code UI  │
+│  (orchestrate)  │                                      │  (build & code)  │
+└─────────────────┘                                      └──────────────────┘
+```
+
+From Hermes (or any shell), send work like this:
+
+```bash
+python3 ~/bin/claude-delegate.py --no-wait \
+  'Your task here. When completely done, print exactly ##CLAUDE_DONE## then a short summary.'
+```
+
+| Mode | When | Where the task lands |
+|------|------|----------------------|
+| **Link existing** | You registered two open Terminals | Your real Claude Code window |
+| **New pair** | App opened two fresh Terminals | That pair’s Claude terminal (via tmux) |
+
+**Do not** hand-type raw `tmux send-keys` into a hidden pane if you want to *see* the work in Claude’s UI. Use `claude-delegate.py`.
+
+---
+
+## Control panel
+
+| Control | What it does |
+|--------|----------------|
+| **New pair** | Open two Terminals (Hermes + Claude) |
+| **Link existing terminals** | Pair open Hermes + Claude (keeps Claude context) |
+| **Front** | Bring that pair’s windows forward |
+| **Kill** | End the pair |
+| **Every / Done / Full** | How often Hermes should ask you before continuing (autonomy) |
+
+### Autonomy (simple)
+
+- **Every** — ask after each Claude reply  
+- **Done** — ask when Claude finishes the task (`##CLAUDE_DONE##`)  
+- **Full** — keep going with minimal interruptions  
+
+Autonomy is a preference for the orchestrator. It does not replace watching Claude’s window.
 
 ---
 
 ## Permissions
 
-If paste fails: **System Settings → Privacy & Security → Accessibility** (Terminal / osascript).
+If paste into Claude fails:
+
+**System Settings → Privacy & Security → Accessibility**  
+Allow **Terminal** (and related tools you use to run the bridge).
 
 ---
 
-## Dev
+## Tips & free download
+
+Pay what you want (including **$0**):
+
+**https://kulpio.github.io/Hermes_Pairing/**
+
+---
+
+## Rebuild (developers)
 
 ```bash
-bash scripts/build-app.sh && bash scripts/install.sh
-bash scripts/push-update.sh "msg"
+bash scripts/build-app.sh
+bash scripts/install.sh
 ```
 
-Repo: [kulpio/Hermes_Pairing](https://github.com/kulpio/Hermes_Pairing)  
-Local: `~/DigitalBrain/Boreal/tools/hermes-claude-app`
+---
+
+<p align="center">
+  <img src="resources/logo-accent.png" width="48" alt="" />
+  <br />
+  <sub>Built for people who want Hermes to drive and Claude Code to ship.</sub>
+</p>
