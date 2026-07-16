@@ -51,3 +51,15 @@ echo "  • Bridge: ~/bin/claude-delegate.py"
 echo ""
 echo "Repo: https://github.com/kulpio/Hermes-Pong"
 echo "Site: https://kulpio.github.io/Hermes-Pong/"
+
+# Optional Hermes Agent skill (bridge behavior + autonomy)
+if [[ "${1:-}" == "--with-hermes-skill" || "${2:-}" == "--with-hermes-skill" || "${INSTALL_HERMES_SKILL:-}" == "1" ]]; then
+  echo "→ Installing optional Hermes skill pack…"
+  bash "$ROOT/scripts/install-hermes-skill.sh"
+else
+  echo ""
+  echo "Optional: make Hermes always use the bridge + autonomy like a full setup:"
+  echo "  bash scripts/install-hermes-skill.sh"
+  echo "  # or: bash scripts/setup.sh --with-hermes-skill"
+fi
+

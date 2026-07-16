@@ -160,6 +160,34 @@ Pay what you want (including **$0**):
 
 ---
 
+
+---
+
+## Optional: Hermes Agent skill
+
+The Mac app pairs windows. **Hermes Agent** still needs a skill so it keeps sending work to Claude (and respects Every / Done / Full).
+
+Optional install (no personal config; safe to re-run):
+
+```bash
+bash scripts/install-hermes-skill.sh
+# or with full setup:
+bash scripts/setup.sh --with-hermes-skill
+```
+
+This installs:
+
+- Skill `hermes-pong-bridge` → `~/.hermes/skills/workflow/`
+- CLIs → `~/bin` (`claude-delegate.py`, `claude-window-relay.py`, `pong-gate.py`)
+- Short agent hint → `~/.hermes-pong/AGENT-HINT.md`
+
+Restart Hermes after installing. Then, when a pair is active:
+
+```bash
+python3 ~/bin/pong-gate.py   # BRIDGE_ON?
+python3 ~/bin/claude-delegate.py --no-wait '… ##CLAUDE_DONE##'
+```
+
 ## Rebuild (developers)
 
 ```bash
