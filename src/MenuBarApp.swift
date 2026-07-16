@@ -85,7 +85,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             projectRoot = root
             return
         }
-        projectRoot = NSString("~/DigitalBrain/Boreal/tools/hermes-claude-app").expandingTildeInPath
+        let home = NSHomeDirectory()
+        let candidates = [
+            home + "/.hermes-pong",
+            home + "/DigitalBrain/Boreal/tools/hermes-claude-app",
+            home + "/src/Hermes-Pong",
+            home + "/Hermes-Pong",
+        ]
+        for c in candidates where FileManager.default.fileExists(atPath: c) {
+            projectRoot = c
+            return
+        }
+        projectRoot = home + "/.hermes-pong"
     }
 
     private func loadIcons() {

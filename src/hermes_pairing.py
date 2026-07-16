@@ -524,14 +524,17 @@ def start_window_relay() -> None:
     stop_window_relay()
     script = Path.home() / "bin" / "claude-window-relay.py"
     if not script.exists():
-        alt = Path("/Users/dylandemnard/DigitalBrain/Boreal/tools/hermes-claude-app/scripts/claude-window-relay.py")
+        alt = Path.home() / "DigitalBrain/Boreal/tools/hermes-claude-app/scripts/claude-window-relay.py"
         script = alt if alt.exists() else script
     if not script.exists():
         log("relay script missing")
         return
-    py = Path("/Users/dylandemnard/DigitalBrain/Boreal/tools/hermes-claude-app/venv/bin/python")
-    if not py.exists():
-        py = Path("/usr/bin/python3")
+    py_candidates = [
+        Path.home() / ".hermes-pong" / "venv" / "bin" / "python",
+        Path.home() / "DigitalBrain/Boreal/tools/hermes-claude-app/venv/bin/python",
+        Path("/usr/bin/python3"),
+    ]
+    py = next((p for p in py_candidates if p.exists()), Path("/usr/bin/python3"))
     try:
         env = dict(os.environ)
         path = env.get("PATH", "")
@@ -1342,7 +1345,7 @@ class AppDelegate(NSObject):
 
         y -= 120
         illu = ILLU if ILLU.exists() else Path(
-            "/Users/dylandemnard/DigitalBrain/Boreal/tools/hermes-claude-app/resources/pair-illustration.png"
+            str(Path(__file__).parent / "pair-illustration.png") if (Path(__file__).parent / "pair-illustration.png").exists() else str(Path.home() / "DigitalBrain/Boreal/tools/hermes-claude-app/resources/pair-illustration.png")
         )
         if illu.exists():
             nsimg = NSImage.alloc().initWithContentsOfFile_(str(illu))

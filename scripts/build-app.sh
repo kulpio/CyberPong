@@ -71,10 +71,37 @@ cat > "$PANEL_MACOS/Panel" <<'LAUNCH'
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTENTS="$(cd "$DIR/.." && pwd)"
 RES="$CONTENTS/Resources"
-ROOT="$(cat "$RES/project_root" 2>/dev/null || true)"
-PY="$ROOT/venv/bin/python"
-if [[ ! -x "$PY" ]]; then PY="/usr/bin/python3"; fi
 export PYTHONUNBUFFERED=1
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$PATH"
+
+pick_py() {
+  local candidates=(
+    "$HOME/.hermes-pong/venv/bin/python"
+    "$(cat "$RES/project_root" 2>/dev/null)/venv/bin/python"
+    "$HOME/DigitalBrain/Boreal/tools/hermes-claude-app/venv/bin/python"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    [[ -n "$c" && -x "$c" ]] || continue
+    if "$c" -c "import AppKit" 2>/dev/null; then
+      echo "$c"
+      return 0
+    fi
+  done
+  for c in python3 /usr/bin/python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import AppKit" 2>/dev/null; then
+      command -v "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PY="$(pick_py || true)"
+if [[ -z "$PY" ]]; then
+  osascript -e 'display alert "Hermes Pong" message "Python + PyObjC not found. Run: bash scripts/setup.sh from the Hermes-Pong repo." as critical' 2>/dev/null || true
+  exit 1
+fi
 exec -a "Hermes Pong" "$PY" "$RES/hermes_pairing.py" --window-only
 LAUNCH
 chmod +x "$PANEL_MACOS/Panel"
@@ -91,9 +118,9 @@ cat > "$PANEL_CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>com.kulpio.hermes-pong.panel</string>
   <key>CFBundleVersion</key>
-  <string>1.3.0</string>
+  <string>1.2.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.3.0</string>
+  <string>1.2.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>
@@ -125,9 +152,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>com.kulpio.hermes-pong</string>
   <key>CFBundleVersion</key>
-  <string>1.3.0</string>
+  <string>1.2.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.3.0</string>
+  <string>1.2.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>

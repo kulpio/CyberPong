@@ -46,7 +46,7 @@ Hermes sends a task into your **live Claude Code terminal** (paste + Enter). You
 
 ---
 
-## Install (macOS)
+## Install (macOS) — v1.2
 
 ### Option A — release zip
 
