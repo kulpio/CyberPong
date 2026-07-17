@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Two terminals. One bridge.</strong><br />
-  Hermes orchestrates. Claude Code builds — in the window you already use.
+  Hermes orchestrates. Your AI terminals build — Claude by default, any model you sign into.
 </p>
 
 <p align="center">
@@ -28,13 +28,17 @@
 | | |
 |--|--|
 | <img src="resources/logo-accent-128.png" width="40" alt="Hermes" /> | **Hermes** — plans, orchestrates, decides next steps |
-| <img src="resources/brand/claude-logo.svg.png" width="40" alt="Claude" /> | **Claude Code** — writes and runs the code |
+| <img src="resources/brand/claude-logo.svg.png" width="40" alt="Worker" /> | **Workers** — Claude Code by default; Kimi, Grok, Codex, custom CLIs |
 
-Hermes sends a task into your **live Claude Code terminal** (paste + Enter). You keep Claude’s model, resume, and chat. You watch the work happen.
+Hermes sends a task into your **live worker terminal** (paste + Enter). Default is Claude Code; same bridge targets any window you pair. You keep model, resume, and chat.
 
 > Chatting only inside Hermes does **not** reach Claude. Work crosses the bridge with one command (below).
 
 ---
+
+## Multi-worker roadmap
+
+See [`docs/PRODUCT-MULTI-WORKER.md`](docs/PRODUCT-MULTI-WORKER.md) — Hermes orchestrates workers (Claude default; Kimi, Grok, custom). Phase 1: pick a worker on New pair. Phase 2+: multi-worker army.
 
 ## Requirements
 
@@ -141,8 +145,8 @@ The loop always runs — there are no supervision modes to configure. It works s
 
 | Control | What it does |
 |--------|----------------|
-| **New pair** | Open two Terminals (Hermes + Claude) |
-| **Link existing terminals** | Pair open Hermes + Claude (keeps Claude context) |
+| **New pair** | Open Hermes + a worker you pick (Claude / Kimi / Grok / Codex / custom) |
+| **Link existing terminals** | Pair open Hermes + any worker terminal (keeps that session) |
 | **Front** | Bring that pair’s windows forward |
 | **Kill** | End the pair |
 | **Perms** | Per-pair access bans + note. Built-in presets: **Full access**, **Ask each time**. Save/load your own packs. Injected into every Claude handoff. |
@@ -211,5 +215,5 @@ bash scripts/install.sh
 <p align="center">
   <img src="resources/logo-accent.png" width="48" alt="" />
   <br />
-  <sub>Built for people who want Hermes to drive and Claude Code to ship.</sub>
+  <sub>Built for people who want Hermes to drive — and any signed-in terminal to ship.</sub>
 </p>
