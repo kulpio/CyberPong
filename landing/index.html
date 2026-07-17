@@ -43,23 +43,109 @@
     header {
       display: flex;
       align-items: center;
-      gap: 14px;
+      justify-content: space-between;
+      gap: 16px;
       margin-bottom: 36px;
+      flex-wrap: wrap;
     }
-    header img {
-      width: 48px;
-      height: 48px;
-      border-radius: 12px;
+    header .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+    header .logo-tile {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #0f0f14, #1a1a22);
+      border: 1px solid rgba(38, 2, 241, 0.18);
+      box-shadow: 0 6px 18px rgba(20, 20, 30, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    header .logo-tile img {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      display: block;
     }
     header .brand {
-      font-weight: 700;
-      font-size: 1.1rem;
+      font-weight: 750;
+      font-size: 1.15rem;
       letter-spacing: -0.02em;
+      line-height: 1.2;
     }
     header .sub {
       color: var(--muted);
       font-size: .85rem;
+      margin-top: 2px;
     }
+    header nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    header nav a {
+      text-decoration: none;
+      font-size: .88rem;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: color .12s ease, border-color .12s ease, background .12s ease;
+    }
+    header nav a:hover {
+      color: var(--text);
+      border-color: var(--line);
+      background: rgba(255,255,255,.7);
+    }
+    header nav a.gh {
+      color: #fff;
+      background: linear-gradient(135deg, var(--hermes), #5b43ff);
+      border-color: transparent;
+      box-shadow: 0 6px 16px rgba(38, 2, 241, 0.2);
+    }
+    header nav a.gh:hover {
+      color: #fff;
+      filter: brightness(1.05);
+      border-color: transparent;
+    }
+    .github-card {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .github-card .copy { flex: 1 1 220px; margin: 0; }
+    .github-card .copy strong { color: var(--text); }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; }
+    .btn-inline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font-weight: 650;
+      font-size: .92rem;
+      padding: 11px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      box-shadow: 0 2px 8px rgba(20,20,30,.04);
+    }
+    .btn-inline.primary {
+      background: linear-gradient(135deg, var(--hermes), #5b43ff);
+      border-color: transparent;
+      color: #fff;
+      box-shadow: 0 8px 22px rgba(38, 2, 241, 0.22);
+    }
+    .btn-inline:hover { transform: translateY(-1px); }
     h1 {
       font-size: clamp(2rem, 5vw, 2.75rem);
       line-height: 1.1;
@@ -284,11 +370,20 @@
 <body>
   <div class="wrap">
     <header>
-      <img src="logo.png" alt="Hermes Pong" />
-      <div>
-        <div class="brand">Hermes Pong</div>
-        <div class="sub">macOS · Terminal · Hermes ↔ Claude Code</div>
+      <div class="brand-block">
+        <div class="logo-tile">
+          <img src="logo.png" alt="Hermes Pong" />
+        </div>
+        <div>
+          <div class="brand">Hermes Pong</div>
+          <div class="sub">macOS · Terminal · Hermes ↔ Claude Code</div>
+        </div>
       </div>
+      <nav aria-label="Primary">
+        <a class="gh" href="https://github.com/kulpio/Hermes-Pong">GitHub</a>
+        <a href="https://github.com/kulpio/Hermes-Pong/blob/main/README.md">Docs</a>
+        <a href="https://github.com/kulpio/Hermes-Pong/releases/latest">Download</a>
+      </nav>
     </header>
 
     <h1>Two terminals.<br /><span class="grad">One bridge.</span></h1>
@@ -376,6 +471,17 @@
         <li><div><strong>Link existing</strong> Hermes + Claude terminals (keeps Claude model &amp; session), or start a <strong>New pair</strong>.</div></li>
         <li><div>When Hermes delegates, the task lands in the <strong>Claude Code window</strong> — you watch it work. Hermes verifies the result and keeps a <strong>local-only verdict ledger</strong>; nothing leaves your Mac.</div></li>
       </ol>
+    </section>
+
+    <section class="card github-card" id="github">
+      <p class="copy">
+        <strong>Open source on GitHub.</strong>
+        Browse the code, file issues, or star the repo if the bridge helps.
+      </p>
+      <div class="btn-row">
+        <a class="btn-inline primary" href="https://github.com/kulpio/Hermes-Pong">View on GitHub</a>
+        <a class="btn-inline" href="https://github.com/kulpio/Hermes-Pong/releases/latest">Releases</a>
+      </div>
     </section>
 
     <section class="card">

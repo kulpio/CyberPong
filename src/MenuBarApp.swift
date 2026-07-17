@@ -357,6 +357,7 @@ enum Pairing {
 
         if let h = hid { flashPairWindows(h, cid) }
         Pong.log("start_fresh \(name) views=\(viewH)/\(viewC) hermes=\(hid ?? "-") claude=\(cid ?? "-")")
+        Tips.afterSuccessfulPair()
         return name
     }
 
@@ -381,6 +382,7 @@ enum Pairing {
             PairState.savePairState(name, hermesWindowId: w1, claudeWindowId: w2, claudeMode: "window")
             startWindowRelay()
             Pong.log("wired \(name) mode=window hermes=\(w1) claude=\(w2) (+relay)")
+            Tips.afterSuccessfulPair()
             return
         }
 
@@ -396,6 +398,7 @@ enum Pairing {
         }
         PairState.savePairState(name, hermesWindowId: w1, claudeWindowId: w2, claudeMode: "tmux")
         Pong.log("wired \(name) mode=tmux hermes=\(w1) claude=\(w2)")
+        Tips.afterSuccessfulPair()
     }
 
     static func killPair(_ name: String) {
@@ -448,6 +451,117 @@ enum Pairing {
             Pong.log("relay stopped pid=\(pid)")
         }
         try? FileManager.default.removeItem(atPath: pidPath)
+    }
+}
+
+// MARK: - Usage + tip milestones (~/.hermes-pong/usage.json)
+
+enum Tips {
+    static let tip20URL = "https://donate.stripe.com/fZufZhbl58V2cQX9xZ1B60a"
+    static let milestones = [3, 10, 30]
+    static var usagePath: String { Pong.stateDir + "/usage.json" }
+
+    static func loadUsage() -> [String: Any] {
+        var u = Pong.loadJSON(usagePath)
+        if u["pair_count"] == nil { u["pair_count"] = 0 }
+        if u["tip_never_ask"] == nil { u["tip_never_ask"] = false }
+        if u["supporter"] == nil { u["supporter"] = false }
+        if u["paid_cents"] == nil { u["paid_cents"] = 0 }
+        if u["tip_milestones_shown"] == nil { u["tip_milestones_shown"] = [Int]() }
+        return u
+    }
+
+    static func saveUsage(_ u: [String: Any]) {
+        Pong.writeJSON(usagePath, u)
+    }
+
+    static func openTip20() {
+        if let url = URL(string: tip20URL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Bump pair_count after a successful New pair / Link. Returns new count.
+    @discardableResult
+    static func recordSuccessfulPair() -> Int {
+        var u = loadUsage()
+        let n = (u["pair_count"] as? Int) ?? Int("\(u["pair_count"] ?? 0)") ?? 0
+        let next = n + 1
+        u["pair_count"] = next
+        u["last_pair_at"] = Date().timeIntervalSince1970
+        saveUsage(u)
+        Pong.log("pair_count=\(next)")
+        return next
+    }
+
+    static func isSupporter(_ u: [String: Any]) -> Bool {
+        if (u["supporter"] as? Bool) == true { return true }
+        let paid = (u["paid_cents"] as? Int) ?? Int("\(u["paid_cents"] ?? 0)") ?? 0
+        return paid >= 50
+    }
+
+    static func shownMilestones(_ u: [String: Any]) -> Set<Int> {
+        if let arr = u["tip_milestones_shown"] as? [Int] { return Set(arr) }
+        if let arr = u["tip_milestones_shown"] as? [NSNumber] {
+            return Set(arr.map { $0.intValue })
+        }
+        return []
+    }
+
+    /// Call on main thread after a successful pair.
+    static func maybeShowTipMilestone(pairCount: Int? = nil) {
+        var u = loadUsage()
+        if (u["tip_never_ask"] as? Bool) == true { return }
+        if isSupporter(u) { return }
+        let count = pairCount ?? ((u["pair_count"] as? Int) ?? 0)
+        guard milestones.contains(count) else { return }
+        var shown = shownMilestones(u)
+        if shown.contains(count) { return }
+
+        shown.insert(count)
+        u["tip_milestones_shown"] = Array(shown).sorted()
+        saveUsage(u)
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Enjoying Hermes Pong?"
+        alert.informativeText =
+            "You've linked \(count) pairs — nice.\n\n" +
+            "The app is free forever. If it's useful, a small tip helps keep shipping.\n\n" +
+            "Already tipped? Choose “I already tipped.”"
+        alert.addButton(withTitle: "Tip $20")
+        alert.addButton(withTitle: "I already tipped")
+        alert.addButton(withTitle: "Maybe later")
+        alert.addButton(withTitle: "Don't ask again")
+        let resp = alert.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn
+        switch resp {
+        case first:
+            openTip20()
+            Pong.log("tip milestone \(count) → stripe $20")
+        case NSApplication.ModalResponse(rawValue: first.rawValue + 1):
+            u = loadUsage()
+            u["supporter"] = true
+            u["paid_cents"] = max((u["paid_cents"] as? Int) ?? 0, 200)
+            u["tip_never_ask"] = true
+            saveUsage(u)
+            Pong.log("tip milestone \(count) → already tipped")
+        case NSApplication.ModalResponse(rawValue: first.rawValue + 3):
+            u = loadUsage()
+            u["tip_never_ask"] = true
+            saveUsage(u)
+            Pong.log("tip milestone \(count) → never ask")
+        default:
+            Pong.log("tip milestone \(count) → later")
+        }
+    }
+
+    /// Record pair + schedule milestone prompt on main.
+    static func afterSuccessfulPair() {
+        let n = recordSuccessfulPair()
+        DispatchQueue.main.async {
+            maybeShowTipMilestone(pairCount: n)
+        }
     }
 }
 
@@ -515,15 +629,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(NSMenuItem.separator())
 
         let open = NSMenuItem(title: "Open Control Panel", action: #selector(openPanel), keyEquivalent: "o")
+        open.keyEquivalentModifierMask = [.command]
         open.target = self
         appMenu.addItem(open)
+
+        let tip = NSMenuItem(title: "Tip developer…", action: #selector(tipDeveloper), keyEquivalent: "")
+        tip.target = self
+        appMenu.addItem(tip)
         appMenu.addItem(NSMenuItem.separator())
 
         let quit = NSMenuItem(title: "Quit Hermes Pong", action: #selector(quitAll), keyEquivalent: "q")
+        quit.keyEquivalentModifierMask = [.command]
         quit.target = self
         appMenu.addItem(quit)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        timer?.invalidate()
+        timer = nil
+        return .terminateNow
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Menu bar app: closing the panel must not quit.
+        return false
     }
 
     @objc func showAbout() {
@@ -807,6 +938,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("New pair", #selector(newPair)))
         menu.addItem(item("Refresh", #selector(refreshMenu)))
+        menu.addItem(item("Tip developer…", #selector(tipDeveloper)))
         menu.addItem(.separator())
         menu.addItem(item("Quit Hermes Pong", #selector(quitAll)))
     }
@@ -850,14 +982,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PanelController.shared.refreshUI()
     }
 
+    @objc func tipDeveloper() {
+        Tips.openTip20()
+        Pong.log("tip developer menu → stripe $20")
+    }
+
     @objc func quitAll() {
-        // Clean up any panel process left over from pre-1.3 installs.
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        p.arguments = ["-f", "hermes_pairing.py"]
-        try? p.run()
-        p.waitUntilExit()
+        timer?.invalidate()
+        timer = nil
+        // Clean up any panel process left over from pre-1.3 installs (non-blocking).
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            p.arguments = ["-f", "hermes_pairing.py"]
+            try? p.run()
+        }
+        // Ensure terminate actually ends the process (Cmd+Q + menu Quit).
         NSApp.terminate(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            exit(0)
+        }
     }
 }
 
