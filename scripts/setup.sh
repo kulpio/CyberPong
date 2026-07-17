@@ -9,28 +9,11 @@ echo "→ Checking prerequisites…"
 command -v tmux >/dev/null || { echo "Installing tmux…"; brew install tmux; }
 command -v swiftc >/dev/null || { echo "Need Xcode CLT: xcode-select --install"; exit 1; }
 
-if [[ ! -x "$ROOT/venv/bin/python" ]]; then
-  echo "→ Creating Python env (project)…"
-  python3 -m venv venv
-  venv/bin/pip install -q -U pip
-  venv/bin/pip install -q 'pyobjc-core==10.3.2' 'pyobjc-framework-Cocoa==10.3.2' 'pyobjc-framework-Quartz==10.3.2'
-else
-  venv/bin/pip install -q 'pyobjc-framework-Quartz==10.3.2' 2>/dev/null || true
-fi
-
-# Portable runtime for the app when project path changes
-echo "→ Installing user runtime (~/.hermes-pong/venv)…"
-USER_VENV="$HOME/.hermes-pong/venv"
-mkdir -p "$HOME/.hermes-pong"
-if [[ ! -x "$USER_VENV/bin/python" ]]; then
-  python3 -m venv "$USER_VENV"
-  "$USER_VENV/bin/pip" install -q -U pip
-fi
-"$USER_VENV/bin/pip" install -q 'pyobjc-core==10.3.2' 'pyobjc-framework-Cocoa==10.3.2' 'pyobjc-framework-Quartz==10.3.2'
+# v1.3: panel is native Swift — no Python/PyObjC runtime needed anymore.
 
 echo "→ Installing bridge CLIs to ~/bin…"
 mkdir -p "$HOME/bin"
-for f in claude-delegate.py claude-window-relay.py pong-gate.py; do
+for f in claude-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$HOME/bin/$f"
     chmod 755 "$HOME/bin/$f"
@@ -44,7 +27,7 @@ echo "→ Installing…"
 bash "$ROOT/scripts/install.sh" "$@"
 
 echo ""
-echo "Done — Hermes Pong 1.2"
+echo "Done — Hermes Pong 1.3"
 echo "  • App: /Applications/HermesPong.app"
 echo "  • Menu bar bolt + control panel"
 echo "  • Bridge: ~/bin/claude-delegate.py"

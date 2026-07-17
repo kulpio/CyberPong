@@ -20,7 +20,7 @@ fi
 
 # Bridge CLIs
 mkdir -p "$BIN_DIR"
-for f in claude-delegate.py claude-window-relay.py pong-gate.py; do
+for f in claude-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$BIN_DIR/$f"
     chmod 755 "$BIN_DIR/$f"
@@ -35,6 +35,13 @@ cp -R "$SKILL_SRC" "$SKILL_DST"
 # ensure readable
 chmod -R u+rwX,go+rX "$SKILL_DST" 2>/dev/null || true
 echo "  ✓ skill installed: hermes-pong-bridge"
+
+# Task template for the verdict loop
+mkdir -p "$HOME/.hermes-pong/templates"
+if [[ -f "$SKILL_SRC/templates/task.md" ]]; then
+  cp "$SKILL_SRC/templates/task.md" "$HOME/.hermes-pong/templates/task.md"
+  echo "  ✓ ~/.hermes-pong/templates/task.md"
+fi
 
 # Optional tiny reminder file for agents that scan ~/.hermes-pong
 mkdir -p "$HOME/.hermes-pong"
@@ -53,7 +60,7 @@ If `BRIDGE_ON`, all coding goes through:
 python3 ~/bin/claude-delegate.py --no-wait '… ##CLAUDE_DONE##'
 ```
 
-Autonomy (Every / Done / Full) is set in the Hermes Pong control panel per pair.
+Verify every CLAIM before accepting (verdict loop) — see the skill for the reject/escalate protocol.
 EOF
 echo "  ✓ ~/.hermes-pong/AGENT-HINT.md"
 

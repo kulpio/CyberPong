@@ -1,5 +1,8 @@
 #!/bin/bash
-# Build Hermes Pong.app — native Swift menu bar + nested Panel.app
+# Build Hermes Pong.app — native Swift menu bar + control panel (no Python runtime)
+# Usage: build-app.sh [--dev]
+#   --dev  embed project_root (points the Panel at this checkout's venv).
+#          Never use for release builds — it bakes in your local path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,21 +12,26 @@ APP="$ROOT/dist/${APP_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VENV="$ROOT/venv"
-SRC_PY="$ROOT/src/hermes_pairing.py"
-SRC_SWIFT="$ROOT/src/MenuBarApp.swift"
+VERSION="1.3.0"
 
-if [[ ! -x "$VENV/bin/python" ]]; then
-  echo "Missing venv. Run: bash scripts/setup.sh"
-  exit 1
-fi
+DEV=0
+[[ "${1:-}" == "--dev" ]] && DEV=1
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
 
-swiftc -O -o "$MACOS/$APP_NAME" "$SRC_SWIFT" \
+# Universal binary: compile per-arch, lipo together. Relative source path so
+# no absolute build path lands in the Mach-O.
+cd "$ROOT"
+swiftc -O -o "$MACOS/$APP_NAME-arm64" "src/MenuBarApp.swift" \
   -framework AppKit -framework Foundation \
   -target arm64-apple-macosx13.0
+swiftc -O -o "$MACOS/$APP_NAME-x86_64" "src/MenuBarApp.swift" \
+  -framework AppKit -framework Foundation \
+  -target x86_64-apple-macosx13.0
+lipo -create -output "$MACOS/$APP_NAME" "$MACOS/$APP_NAME-arm64" "$MACOS/$APP_NAME-x86_64"
+rm -f "$MACOS/$APP_NAME-arm64" "$MACOS/$APP_NAME-x86_64"
+lipo -info "$MACOS/$APP_NAME"
 
 cp "$ROOT/resources/menubar-template.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/menubar-template@2x.png" "$RES/" 2>/dev/null || true
@@ -41,104 +49,18 @@ cp "$ROOT/resources/logo-accent-128.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-active.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-active-dim.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-active-bright.png" "$RES/" 2>/dev/null || true
-cp "$SRC_PY" "$RES/hermes_pairing.py"
-chmod 644 "$RES/hermes_pairing.py"
-# Bundle bridge so Send to Claude works without relying only on ~/bin
-if [[ -f "$ROOT/scripts/claude-delegate.py" ]]; then
-  cp "$ROOT/scripts/claude-delegate.py" "$RES/claude-delegate.py"
-  chmod 755 "$RES/claude-delegate.py"
+# Bridge CLIs bundled so the app works without relying only on ~/bin.
+# (Stdlib-only Python — used by the Hermes side and the window relay.)
+for f in claude-delegate.py claude-window-relay.py pong-ledger.py; do
+  if [[ -f "$ROOT/scripts/$f" ]]; then
+    cp "$ROOT/scripts/$f" "$RES/$f"
+    chmod 755 "$RES/$f"
+  fi
+done
+# project_root embeds an absolute local path — dev builds only.
+if [[ "$DEV" == "1" ]]; then
+  echo "$ROOT" > "$RES/project_root"
 fi
-echo "$ROOT" > "$RES/project_root"
-
-# Nested Panel.app (accessory — no second Dock icon)
-PANEL="$RES/Panel.app"
-PANEL_CONTENTS="$PANEL/Contents"
-PANEL_MACOS="$PANEL_CONTENTS/MacOS"
-PANEL_RES="$PANEL_CONTENTS/Resources"
-mkdir -p "$PANEL_MACOS" "$PANEL_RES"
-cp "$RES/hermes_pairing.py" "$PANEL_RES/"
-cp "$RES/claude-delegate.py" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/AppIcon.icns" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/AppIcon-1024.png" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/pair-illustration.png" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/logo.png" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/logo-accent.png" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/logo-monochrome.png" "$PANEL_RES/" 2>/dev/null || true
-cp "$RES/project_root" "$PANEL_RES/"
-
-cat > "$PANEL_MACOS/Panel" <<'LAUNCH'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-CONTENTS="$(cd "$DIR/.." && pwd)"
-RES="$CONTENTS/Resources"
-export PYTHONUNBUFFERED=1
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$PATH"
-
-pick_py() {
-  local candidates=(
-    "$HOME/.hermes-pong/venv/bin/python"
-    "$(cat "$RES/project_root" 2>/dev/null)/venv/bin/python"
-    "$HOME/DigitalBrain/Boreal/tools/hermes-claude-app/venv/bin/python"
-  )
-  local c
-  for c in "${candidates[@]}"; do
-    [[ -n "$c" && -x "$c" ]] || continue
-    if "$c" -c "import AppKit" 2>/dev/null; then
-      echo "$c"
-      return 0
-    fi
-  done
-  for c in python3 /usr/bin/python3; do
-    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import AppKit" 2>/dev/null; then
-      command -v "$c"
-      return 0
-    fi
-  done
-  return 1
-}
-
-PY="$(pick_py || true)"
-if [[ -z "$PY" ]]; then
-  osascript -e 'display alert "Hermes Pong" message "Python + PyObjC not found. Run: bash scripts/setup.sh from the Hermes-Pong repo." as critical' 2>/dev/null || true
-  exit 1
-fi
-exec -a "Hermes Pong" "$PY" "$RES/hermes_pairing.py" --window-only
-LAUNCH
-chmod +x "$PANEL_MACOS/Panel"
-
-cat > "$PANEL_CONTENTS/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key>
-  <string>Hermes Pong</string>
-  <key>CFBundleDisplayName</key>
-  <string>Hermes Pong</string>
-  <key>CFBundleIdentifier</key>
-  <string>com.kulpio.hermes-pong.panel</string>
-  <key>CFBundleVersion</key>
-  <string>1.2.0</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.2.0</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleExecutable</key>
-  <string>Panel</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
-  <key>LSUIElement</key>
-  <true/>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Hermes Pong controls Terminal windows.</string>
-</dict>
-</plist>
-PLIST
-echo -n "APPL????" > "$PANEL_CONTENTS/PkgInfo"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -152,9 +74,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>com.kulpio.hermes-pong</string>
   <key>CFBundleVersion</key>
-  <string>1.2.0</string>
+  <string>$VERSION</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.2.0</string>
+  <string>$VERSION</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>
@@ -174,7 +96,19 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
-codesign -s - --force --deep "$APP" 2>/dev/null || true
 
-echo "Built: $APP"
+# Ad-hoc sign for dev, no --deep (release signing is separate).
+codesign -s - --force "$APP" 2>/dev/null || true
+echo "hint: ad-hoc signed (dev). Release builds: bash scripts/sign-notarize.sh"
+
+# Release bundles must not leak the local user path.
+if [[ "$DEV" != "1" ]]; then
+  if grep -r "dylandemnard" "$APP" >/dev/null 2>&1; then
+    echo "FAIL: release bundle contains local user path strings:" >&2
+    grep -rl "dylandemnard" "$APP" >&2
+    exit 1
+  fi
+fi
+
+echo "Built: $APP (v$VERSION, $([[ "$DEV" == "1" ]] && echo dev || echo release) build)"
 file "$MACOS/$APP_NAME"

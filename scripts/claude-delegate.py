@@ -25,6 +25,56 @@ STATE_FILE = STATE_DIR / "active-pair.json"
 LAST_REPLY = STATE_DIR / "last-claude.txt"
 LAST_SENT = STATE_DIR / "last-sent.txt"
 
+CLAIM_INSTRUCTION = (
+    f"\n\nWhen completely done, print exactly {MARKER} on its own line, then a CLAIM block:\n"
+    "CLAIM:\n"
+    "files: <comma-separated files you changed>\n"
+    "commands: <commands you ran, with exit codes>\n"
+    'tests_tail: <last 5 lines of test output, or "none run">\n'
+    "notes: <1-2 lines>"
+)
+
+
+def extract_acceptance(text: str) -> str:
+    """The body of a task file's `## Acceptance` section (up to the next `## `)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_section = False
+    for line in lines:
+        if line.strip().lower().startswith("## acceptance"):
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if in_section:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def build_prompt(text: str, criteria_path: str | None = None, claim: bool = False) -> str:
+    """v1.3 prompt assembly. Without criteria/claim this is byte-for-byte v1.2."""
+    prompt = text
+    use_claim = claim or bool(criteria_path)
+    if criteria_path:
+        section = extract_acceptance(Path(criteria_path).read_text())
+        if section:
+            prompt = (
+                prompt.rstrip()
+                + "\n\nACCEPTANCE CRITERIA (Hermes will verify these independently):\n"
+                + section
+            )
+        else:
+            print(f"[bridge] no '## Acceptance' section in {criteria_path}", file=sys.stderr)
+    if use_claim:
+        return prompt.rstrip() + CLAIM_INSTRUCTION
+    if MARKER not in prompt:
+        prompt = (
+            prompt.rstrip()
+            + f"\n\nWhen completely done, print exactly {MARKER} on its own line, "
+            "then a short summary of what you did."
+        )
+    return prompt
+
 
 def run(cmd: list[str], input_text: str | None = None) -> str:
     r = subprocess.run(cmd, input=input_text, capture_output=True, text=True)
@@ -253,7 +303,31 @@ def main() -> None:
     ap.add_argument("--no-wait", action="store_true")
     ap.add_argument("--max-wait", type=int, default=600)
     ap.add_argument("--mode", choices=("auto", "tmux", "window"), default="auto")
+    ap.add_argument("--criteria", default=None, metavar="PATH",
+                    help="task file; its ## Acceptance section is appended and a CLAIM block is required")
+    ap.add_argument("--claim", action="store_true",
+                    help="require a CLAIM block on done (implied by --criteria)")
+    ap.add_argument("--record-verdict", choices=("accept", "reject", "escalate"),
+                    default=None, help="record a verdict via pong-ledger.py and exit")
+    ap.add_argument("--task-id", default=None)
+    ap.add_argument("--round", type=int, default=None)
+    ap.add_argument("--evidence", default="")
     args = ap.parse_args()
+
+    if args.record_verdict:
+        if not args.task_id or args.round is None:
+            print("[bridge] --record-verdict needs --task-id and --round", file=sys.stderr)
+            sys.exit(1)
+        ledger = Path(__file__).resolve().parent / "pong-ledger.py"
+        if not ledger.exists():
+            print(f"[bridge] pong-ledger.py not found next to {__file__}", file=sys.stderr)
+            sys.exit(1)
+        r = subprocess.run(
+            [sys.executable, str(ledger), "record",
+             "--task-id", args.task_id, "--round", str(args.round),
+             "--verdict", args.record_verdict, "--evidence", args.evidence]
+        )
+        sys.exit(r.returncode)
 
     if not args.prompt:
         print(
@@ -264,13 +338,11 @@ def main() -> None:
         )
         sys.exit(1)
 
-    prompt = " ".join(args.prompt)
-    if MARKER not in prompt:
-        prompt = (
-            prompt.rstrip()
-            + f"\n\nWhen completely done, print exactly {MARKER} on its own line, "
-            "then a short summary of what you did."
-        )
+    try:
+        prompt = build_prompt(" ".join(args.prompt), criteria_path=args.criteria, claim=args.claim)
+    except OSError as e:
+        print(f"[bridge] cannot read --criteria file: {e}", file=sys.stderr)
+        sys.exit(1)
 
     state = load_state()
     mode = args.mode
@@ -287,18 +359,9 @@ def main() -> None:
             print("[bridge] No pair. Use Hermes Pong → New pair or Link first.", file=sys.stderr)
             sys.exit(2)
 
-    auto = state.get("autonomy_level") or "ask_on_done"
-    try:
-        sp = STATE_DIR / "settings.json"
-        if sp.exists():
-            import json as _json
-            auto = _json.loads(sp.read_text()).get("autonomy_level", auto)
-        # prefer per-pair from active-pair
-        auto = state.get("autonomy_level") or auto
-    except Exception:
-        pass
+    auto = state.get("autonomy_level") or "full"
     print(f"[bridge] mode={mode} session={state.get('session')} claude_window={state.get('claude_window_id')} autonomy={auto}")
-    print(f"[bridge] autonomy meaning: ask_every=pause each reply | ask_on_done=pause on ##CLAUDE_DONE## | full=Hermes keeps going")
+    print("[bridge] verdict loop: Hermes verifies each CLAIM and loops until accept or escalate")
 
     if mode == "tmux":
         target = resolve_tmux_target(args.session, args.window)

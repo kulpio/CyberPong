@@ -17,7 +17,11 @@ fi
 rm -rf "$DEST"
 cp -R "$SRC_APP" "$DEST"
 xattr -cr "$DEST" 2>/dev/null || true
-codesign -s - --force --deep "$DEST" 2>/dev/null || true
+# Re-sign ad-hoc (no --deep) only if the bundle isn't Developer ID signed —
+# re-signing a notarized app would strip its valid signature.
+if ! codesign -dv "$DEST" 2>&1 | grep -q "Authority=Developer ID"; then
+  codesign -s - --force "$DEST" 2>/dev/null || true
+fi
 
 echo "Installed: $DEST"
 

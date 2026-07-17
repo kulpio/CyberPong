@@ -25,6 +25,7 @@ Allowed while ACTIVE:
 
 - Read/search for context
 - `claude-delegate.py` handoffs
+- Run verification commands (tests, builds, diffs) — verifying is not coding
 - Pair status / Front / Kill guidance
 - Explaining Claude’s results to the user
 
@@ -57,29 +58,30 @@ Then:
 
 1. Wait / poll `~/.hermes-pong/last-claude.txt` (or watch the Claude window)
 2. Read Claude’s result
-3. Apply autonomy (below)
+3. Run the verdict loop (below)
 4. If more code is needed → **another** `claude-delegate` call (never local coding)
 
-## Autonomy (per pair)
+For tasks with checkable criteria, write a task file from `~/.hermes-pong/templates/task.md` and send with:
 
 ```bash
-python3 - <<'PY'
-import json
-from pathlib import Path
-p = Path.home() / ".hermes-pong" / "active-pair.json"
-d = json.loads(p.read_text()) if p.exists() else {}
-print(d.get("autonomy_level", "ask_on_done"))
-PY
+python3 ~/bin/claude-delegate.py --no-wait --criteria path/to/task.md '<task>'
 ```
 
-| Level | Behavior |
-|-------|----------|
-| `ask_every` | After each Claude reply, stop and ask the user |
-| `ask_on_done` | Keep bridging until `##CLAUDE_DONE##`, then report |
-| `full` | Keep bridging toward the goal with minimal interrupts |
+Criteria must be *checkable* — a command with an expected exit/output, not vibes.
 
-Set in the Hermes Pong control panel (Every / Done / Full on the active pair).  
-Autonomy is **not** auto-injected into Claude — you enforce it by how you loop.
+## Verdict loop
+
+**Never accept `##CLAUDE_DONE##` on the claim alone** — same rule as never inventing it from a timeout. While ACTIVE you may (and must) run verification commands: the acceptance checks from the task file, plus diffs/greps. Then:
+
+1. All criteria pass → record `accept` (`python3 ~/bin/pong-ledger.py record --task-id <id> --round <N> --verdict accept --evidence '<what you checked>'`), announce `##HERMES_ACCEPT##`, move on.
+2. Any criterion fails → record `reject` with evidence, send back through `claude-delegate.py` using this shape: `REJECTED round <N>: <criterion that failed>. Evidence: <exact output>. Fix only this. End with ##CLAUDE_DONE## + CLAIM block.` Rejections without specific evidence are **forbidden** — a bare “no” teaches nothing.
+3. Three rejects on one task → record `escalate`, stop, surface the full verdict trail to the user.
+
+**Check-gaming watchlist** — verify specifically that Claude did **not**: delete or skip failing tests, weaken assertions, or edit outside `## Out of scope`. If the check was gamed, that is a reject with the gaming named as evidence.
+
+The loop always runs — there are no ask-modes. Work silently until **accept** (announce `##HERMES_ACCEPT##`, move on) or **escalate** (stop and surface the full verdict trail to the user). Legacy `ask_every` / `ask_on_done` values in old state files mean the same thing: run the loop.
+
+The ledger lives in `~/.hermes-pong/ledger/` (`verdicts.jsonl` + `patterns.md`). `pong-gate.py` re-arms your memory of it (LEDGER / PATTERNS on stderr) every loop; run `python3 ~/bin/pong-ledger.py distill` after notable rejects. Recording is pairing-scoped: `record` refuses (exit 2) unless a pair is ACTIVE — record verdicts in the loop, before the pair is killed.
 
 ## Pre-flight
 
@@ -88,11 +90,13 @@ See `references/shell-vs-tui-preflight.md` and `references/routing.md`.
 
 ## Prompt bank
 
-**Feature:** Implement `<SPEC>` in the open project. Edit real files. Ship. End with `##CLAUDE_DONE##` + file list.
+**Feature:** Implement `<SPEC>` in the open project. Edit real files. Ship. End with `##CLAUDE_DONE##` + CLAIM block.
 
-**Bug:** Bug `<WHAT>`; evidence `<ERR>`. Root-cause, fix, verify. End with `##CLAUDE_DONE##`.
+**Bug:** Bug `<WHAT>`; evidence `<ERR>`. Root-cause, fix, verify. End with `##CLAUDE_DONE##` + CLAIM block.
 
-**Stepwise:** Goal `<GOAL>`. Do only step N. End with `##CLAUDE_DONE##` + proposed next step.
+**Stepwise:** Goal `<GOAL>`. Do only step N. End with `##CLAUDE_DONE##` + CLAIM block (proposed next step in `notes:`).
+
+**Reject:** REJECTED round `<N>`: `<criterion that failed>`. Evidence: `<exact output>`. Fix only this. End with `##CLAUDE_DONE##` + CLAIM block.
 
 ## Recovery
 

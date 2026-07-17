@@ -46,14 +46,16 @@ Hermes sends a task into your **live Claude Code terminal** (paste + Enter). You
 
 ---
 
-## Install (macOS) — v1.2
+## Install (macOS) — v1.3
 
 ### Option A — release zip
 
 1. Open the [latest release](https://github.com/kulpio/Hermes-Pong/releases/latest)
 2. Download **HermesPong-macOS.zip** (or from the [landing page](https://kulpio.github.io/Hermes-Pong/))
 3. Unzip → drag **Hermes Pong** into **Applications**
-4. First open: right-click → **Open** if Gatekeeper warns (ad-hoc signed for now)
+4. Double-click to open — the app is signed and notarized, so Gatekeeper lets it straight through
+
+On first launch a small welcome window explains the two one-time permissions (see [Permissions](#permissions)).
 
 ### Option B — from source
 
@@ -121,6 +123,18 @@ python3 ~/bin/claude-delegate.py --no-wait \
 
 **Do not** hand-type raw `tmux send-keys` into a hidden pane if you want to *see* the work in Claude’s UI. Use `claude-delegate.py`.
 
+### Verdict loop
+
+Since v1.3, Hermes doesn’t take Claude’s word for it. When Claude prints `##CLAUDE_DONE##` plus a **CLAIM block** (files changed, commands run, test tail), Hermes independently runs the acceptance checks before accepting. Every accept/reject lands in a local ledger (`~/.hermes-pong/ledger/`) so recurring failure patterns follow Claude into the next session. Three rejects on one task escalate to you with the full evidence trail.
+
+<p align="center">
+  <img src="resources/verdict-loop.svg" width="760" alt="Hermes sends a task to Claude Code; Claude ships and files a CLAIM; Hermes the detective runs the checks itself; failures loop back as rejections with evidence, passes are saved to the local ledger" />
+</p>
+
+The loop always runs — there are no supervision modes to configure. It works silently until accept, or escalates to you after three rejects. The menu bar shows the ledger at a glance (rounds, accept rate, reject streak).
+
+**Privacy:** everything — pairs, tasks, and the verdict ledger — stays on your Mac. Nothing is sent anywhere.
+
 ---
 
 ## Control panel
@@ -131,24 +145,19 @@ python3 ~/bin/claude-delegate.py --no-wait \
 | **Link existing terminals** | Pair open Hermes + Claude (keeps Claude context) |
 | **Front** | Bring that pair’s windows forward |
 | **Kill** | End the pair |
-| **Every / Done / Full** | How often Hermes should ask you before continuing (autonomy) |
 
-### Autonomy (simple)
-
-- **Every** — ask after each Claude reply  
-- **Done** — ask when Claude finishes the task (`##CLAUDE_DONE##`)  
-- **Full** — keep going with minimal interruptions  
-
-Autonomy is a preference for the orchestrator. It does not replace watching Claude’s window.
+The menu bar bolt glows while a pair is active and shows the verdict ledger (rounds, accept rate, reject streak, last verdict).
 
 ---
 
 ## Permissions
 
-If paste into Claude fails:
+Two one-time permissions, both explained by the first-run welcome window:
 
-**System Settings → Privacy & Security → Accessibility**  
-Allow **Terminal** (and related tools you use to run the bridge).
+- **Automation** — Hermes Pong sends tasks into your Terminal windows. macOS prompts the first time a task is sent; if you decline, re-enable it under **System Settings → Privacy & Security → Automation**.
+- **Accessibility** — needed so paste + Enter lands reliably in the Claude window: **System Settings → Privacy & Security → Accessibility** (allow Terminal and the tools you use to run the bridge).
+
+The welcome window has buttons that jump straight to both Settings panes.
 
 ---
 
@@ -165,7 +174,7 @@ Pay what you want (including **$0**):
 
 ## Optional: Hermes Agent skill
 
-The Mac app pairs windows. **Hermes Agent** still needs a skill so it keeps sending work to Claude (and respects Every / Done / Full).
+The Mac app pairs windows. **Hermes Agent** still needs a skill so it keeps sending work to Claude (and runs the verdict loop on every CLAIM).
 
 Optional install (no personal config; safe to re-run):
 
@@ -178,7 +187,8 @@ bash scripts/setup.sh --with-hermes-skill
 This installs:
 
 - Skill `hermes-pong-bridge` → `~/.hermes/skills/workflow/`
-- CLIs → `~/bin` (`claude-delegate.py`, `claude-window-relay.py`, `pong-gate.py`)
+- CLIs → `~/bin` (`claude-delegate.py`, `claude-window-relay.py`, `pong-gate.py`, `pong-ledger.py`)
+- Task template → `~/.hermes-pong/templates/task.md`
 - Short agent hint → `~/.hermes-pong/AGENT-HINT.md`
 
 Restart Hermes after installing. Then, when a pair is active:
