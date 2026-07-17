@@ -80,11 +80,11 @@ Legacy `claude-delegate.py` becomes a thin alias → default worker (Claude if p
 - State: `worker_type`, `worker_cmd` on pair (prep for array).
 - Landing: multi-model, Claude featured not exclusive.
 
-### Phase 2 — multi-worker attach
-- Link: Hermes + add workers (repeat “Add worker window”).
+### Phase 2 — multi-worker attach ✅ (shipped)
+- Link: Hermes + add workers, then **Done**.
 - New pair: multi-select types → N terminals.
 - Panel row lists workers under the pair.
-- `pong-delegate.py --worker <id>`.
+- `pong-delegate.py --worker <id>` (alias of claude-delegate).
 
 ### Phase 3 — army control
 - Hermes prompt bank: fan-out, specialist roles, cross-check.

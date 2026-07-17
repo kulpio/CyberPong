@@ -13,7 +13,7 @@ command -v swiftc >/dev/null || { echo "Need Xcode CLT: xcode-select --install";
 
 echo "→ Installing bridge CLIs to ~/bin…"
 mkdir -p "$HOME/bin"
-for f in claude-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
+for f in claude-delegate.py pong-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$HOME/bin/$f"
     chmod 755 "$HOME/bin/$f"

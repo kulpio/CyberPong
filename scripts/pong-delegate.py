@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-claude-delegate.py / pong-delegate.py — send a task to a Hermes Pong worker.
+pong-delegate.py (alias of claude-delegate multi-worker) — send a task to a Hermes Pong worker.
 
 Phase 2: one Hermes can have multiple workers. Use --worker w1|w2|… (or type id).
 Default worker = first in state.workers, else legacy claude_window_id.

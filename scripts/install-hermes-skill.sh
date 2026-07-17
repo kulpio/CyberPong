@@ -20,7 +20,7 @@ fi
 
 # Bridge CLIs
 mkdir -p "$BIN_DIR"
-for f in claude-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
+for f in claude-delegate.py pong-delegate.py claude-window-relay.py pong-gate.py pong-ledger.py; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$BIN_DIR/$f"
     chmod 755 "$BIN_DIR/$f"

@@ -51,7 +51,7 @@ cp "$ROOT/resources/bolt-active-dim.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/bolt-active-bright.png" "$RES/" 2>/dev/null || true
 # Bridge CLIs bundled so the app works without relying only on ~/bin.
 # (Stdlib-only Python — used by the Hermes side and the window relay.)
-for f in claude-delegate.py claude-window-relay.py pong-ledger.py; do
+for f in claude-delegate.py pong-delegate.py claude-window-relay.py pong-ledger.py; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$RES/$f"
     chmod 755 "$RES/$f"
