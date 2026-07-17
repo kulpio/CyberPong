@@ -85,8 +85,12 @@ enum PairState {
     static var settingsPath: String { Pong.stateDir + "/settings.json" }
 
     static func isPairName(_ s: String) -> Bool {
+        // View sessions are not pairs (Hermes view, legacy Claude view, worker views).
         if s.hasSuffix("-h") || s.hasSuffix("-c") { return false }
-        return s == "hermes-claude" || s.hasPrefix("hermes-claude-") || s.hasPrefix("hermes-pair")
+        // hermes-pair-w0 / hermes-pair-1-w2 — Phase 2 worker view sessions
+        if s.range(of: #"-w\d+$"#, options: .regularExpression) != nil { return false }
+        return s == "hermes-claude" || s.hasPrefix("hermes-claude-")
+            || s == "hermes-pair" || s.hasPrefix("hermes-pair-")
     }
 
     static func loadPairsDb() -> [String: Any] { Pong.loadJSON(pairsPath) }
@@ -1124,17 +1128,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             idle.isEnabled = false
             menu.addItem(idle)
         } else {
+            let db = PairState.loadPairsDb()
             for s in sessions {
+                let entry = db[s] as? [String: Any] ?? [:]
+                let ws = Workers.list(from: entry)
+                let title: String = {
+                    if ws.isEmpty { return "● \(s)" }
+                    if ws.count == 1 {
+                        let lab = (ws[0]["label"] as? String) ?? "worker"
+                        return "● \(s)  →  \(lab)"
+                    }
+                    let labs = ws.map { ($0["id"] as? String) ?? "?" }.joined(separator: "+")
+                    return "● \(s)  →  army [\(labs)]"
+                }()
                 let sub = NSMenu()
                 let rejoin = NSMenuItem(title: "Bring to front", action: #selector(rejoinNamed(_:)), keyEquivalent: "")
                 rejoin.target = self
                 rejoin.representedObject = s
                 sub.addItem(rejoin)
+                if !ws.isEmpty {
+                    sub.addItem(NSMenuItem.separator())
+                    let head = NSMenuItem(title: "Workers (same Hermes)", action: nil, keyEquivalent: "")
+                    head.isEnabled = false
+                    sub.addItem(head)
+                    for w in ws {
+                        let id = (w["id"] as? String) ?? "?"
+                        let lab = (w["label"] as? String) ?? "?"
+                        let line = NSMenuItem(title: "  \(id)  \(lab)", action: nil, keyEquivalent: "")
+                        line.isEnabled = false
+                        sub.addItem(line)
+                    }
+                    sub.addItem(NSMenuItem.separator())
+                }
                 let kill = NSMenuItem(title: "Kill pair", action: #selector(killNamed(_:)), keyEquivalent: "")
                 kill.target = self
                 kill.representedObject = s
                 sub.addItem(kill)
-                let row = NSMenuItem(title: "● \(s)", action: nil, keyEquivalent: "")
+                let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 row.submenu = sub
                 menu.addItem(row)
             }
@@ -1197,63 +1227,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pickWorkerTypes()?.first
     }
 
-    /// Multi-select workers for New pair (Phase 2). Loop until Done.
+    /// New pair worker selection.
+    /// Always one Hermes session. Single worker or army under that Hermes — never separate pair rows.
     static func pickWorkerTypes() -> [WorkerType]? {
         NSApp.activate(ignoringOtherApps: true)
+        let gate = NSAlert()
+        gate.messageText = "New pair"
+        gate.informativeText =
+            "Always one Hermes window.\n\n" +
+            "• Claude only — fastest (1 worker)\n" +
+            "• Choose one worker — Kimi, Grok, Codex, …\n" +
+            "• Army — several workers under the same Hermes (one Active pair row)"
+        gate.addButton(withTitle: "Claude only")
+        gate.addButton(withTitle: "Choose one…")
+        gate.addButton(withTitle: "Army…")
+        gate.addButton(withTitle: "Cancel")
+        let g = gate.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn
+        if g == first {
+            return [WorkerType.resolved("claude")]
+        }
+        if g == NSApplication.ModalResponse(rawValue: first.rawValue + 1) {
+            return pickOneWorker().map { [$0] }
+        }
+        if g == NSApplication.ModalResponse(rawValue: first.rawValue + 2) {
+            return pickArmyWorkers()
+        }
+        return nil
+    }
+
+    static func pickOneWorker() -> WorkerType? {
+        let alert = NSAlert()
+        alert.messageText = "One worker under Hermes"
+        alert.informativeText = "Opens Hermes + this CLI. Same Active pair row."
+        let choices = WorkerType.all.filter { $0.id != "custom" }
+        for w in choices { alert.addButton(withTitle: w.label) }
+        alert.addButton(withTitle: "Custom…")
+        alert.addButton(withTitle: "Cancel")
+        let resp = alert.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let idx = resp.rawValue - first
+        if idx >= 0 && idx < choices.count {
+            return WorkerType.resolved(choices[idx].id)
+        }
+        if idx == choices.count {
+            return pickCustomWorker()
+        }
+        return nil
+    }
+
+    static func pickCustomWorker() -> WorkerType? {
+        let a2 = NSAlert()
+        a2.messageText = "Custom worker command"
+        a2.informativeText = "Shell command (e.g. kimi, grok, opencode)."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "kimi"
+        a2.accessoryView = field
+        a2.addButton(withTitle: "Use")
+        a2.addButton(withTitle: "Cancel")
+        a2.window.initialFirstResponder = field
+        guard a2.runModal() == .alertFirstButtonReturn else { return nil }
+        let cmd = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cmd.isEmpty { return nil }
+        return WorkerType(id: "custom", label: cmd, cmd: cmd, tmuxWindowName: "Worker")
+    }
+
+    /// Army: N workers under ONE Hermes when Done.
+    static func pickArmyWorkers() -> [WorkerType]? {
         var selected: [WorkerType] = []
         while true {
             let alert = NSAlert()
             if selected.isEmpty {
-                alert.messageText = "New pair — add workers"
+                alert.messageText = "Army — same Hermes"
                 alert.informativeText =
-                    "Hermes opens in one Terminal. Add one or more worker CLIs (Claude, Kimi, …).\\n" +
-                    "You must already be signed into each tool."
+                    "Add workers one by one. They all belong to ONE Hermes session (one Active pair row).\n" +
+                    "Not separate pairs."
             } else {
-                let names = selected.map(\.label).joined(separator: ", ")
-                alert.messageText = "Workers: \(names)"
-                alert.informativeText = "Add another worker, or Done to launch Hermes + these \(selected.count)."
+                let names = selected.enumerated().map { "w\($0.offset + 1)=\($0.element.label)" }.joined(separator: ", ")
+                alert.messageText = "Army so far (\(selected.count))"
+                alert.informativeText = "\(names)\n\nAdd another, or Done to open Hermes + these workers together."
             }
-            for w in WorkerType.all where w.id != "custom" {
-                alert.addButton(withTitle: "+ \(w.label)")
-            }
+            let choices = WorkerType.all.filter { $0.id != "custom" }
+            for w in choices { alert.addButton(withTitle: "+ \(w.label)") }
             alert.addButton(withTitle: "+ Custom…")
             if !selected.isEmpty {
-                alert.addButton(withTitle: "Done (\(selected.count))")
+                alert.addButton(withTitle: "Done — launch army")
             }
             alert.addButton(withTitle: "Cancel")
             let resp = alert.runModal()
             let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
             var idx = resp.rawValue - first
-            let choices = WorkerType.all.filter { $0.id != "custom" }
             if idx >= 0 && idx < choices.count {
                 selected.append(WorkerType.resolved(choices[idx].id))
                 continue
             }
             idx -= choices.count
             if idx == 0 {
-                // Custom
-                let a2 = NSAlert()
-                a2.messageText = "Custom worker command"
-                a2.informativeText = "Shell command (e.g. kimi, grok, opencode)."
-                let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-                field.placeholderString = "kimi"
-                a2.accessoryView = field
-                a2.addButton(withTitle: "Add")
-                a2.addButton(withTitle: "Cancel")
-                a2.window.initialFirstResponder = field
-                if a2.runModal() == .alertFirstButtonReturn {
-                    let cmd = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !cmd.isEmpty {
-                        selected.append(WorkerType(id: "custom", label: cmd, cmd: cmd, tmuxWindowName: "Worker"))
-                    }
-                }
+                if let c = pickCustomWorker() { selected.append(c) }
                 continue
             }
             idx -= 1
             if !selected.isEmpty && idx == 0 {
                 return selected
             }
-            // Cancel
             return nil
         }
     }
@@ -1407,7 +1483,7 @@ final class PanelController: NSObject {
         content.addSubview(button("New pair", #selector(newPairPressed(_:)),
             NSRect(x: PAD, y: y, width: W - 2 * PAD, height: 38)))
         y -= 36
-        content.addSubview(Self.label("Opens Hermes + one or more workers you pick (Claude, Kimi, Grok, …).",
+        content.addSubview(Self.label("One Hermes always. Claude only, one worker, or an army — still one Active pair row.",
             frame: NSRect(x: PAD + 2, y: y, width: W - 2 * PAD - 4, height: 32), size: 12, secondary: true))
         y -= 48
         content.addSubview(button("Link existing terminals", #selector(linkPressed(_:)),
@@ -1458,35 +1534,51 @@ final class PanelController: NSObject {
             return
         }
         var y: CGFloat = 150
+        let db = PairState.loadPairsDb()
         for name in pairs {
-            let row = NSView(frame: NSRect(x: 0, y: y - 8, width: W - 2 * PAD, height: 44))
-            let entry = PairState.loadPairsDb()[name] as? [String: Any] ?? [:]
+            let entry = db[name] as? [String: Any] ?? [:]
             let ws = Workers.list(from: entry)
-            let wlab: String = {
-                if ws.isEmpty { return (entry["worker_label"] as? String) ?? "" }
-                if ws.count == 1 { return (ws[0]["label"] as? String) ?? "worker" }
-                return ws.map { ($0["label"] as? String) ?? "?" }.joined(separator: " · ")
+            // One row per Hermes pair (not per worker).
+            let head = "●  \(name)"
+            let sub: String = {
+                if ws.isEmpty {
+                    let legacy = (entry["worker_label"] as? String) ?? "worker"
+                    return "   Hermes → \(legacy)"
+                }
+                if ws.count == 1 {
+                    let lab = (ws[0]["label"] as? String) ?? "worker"
+                    let id = (ws[0]["id"] as? String) ?? "w1"
+                    return "   Hermes → \(id) \(lab)"
+                }
+                let parts = ws.map { w -> String in
+                    let id = (w["id"] as? String) ?? "?"
+                    let lab = (w["label"] as? String) ?? "?"
+                    return "\(id) \(lab)"
+                }
+                return "   Hermes → " + parts.joined(separator: " · ")
             }()
-            let title = wlab.isEmpty ? "●  \(name)" : "●  \(name)\n  \(wlab)"
-            let rowH: CGFloat = ws.count > 1 ? 40 : 44
-            // title may be two lines for army
-            row.setFrameSize(NSSize(width: row.frame.width, height: max(44, rowH)))
-            row.addSubview(Self.label(title,
-                frame: NSRect(x: 0, y: ws.count > 1 ? 6 : 12, width: 150, height: ws.count > 1 ? 36 : 20), bold: true, size: 11))
+            let rowH: CGFloat = 52
+            let row = NSView(frame: NSRect(x: 0, y: y - 8, width: W - 2 * PAD, height: rowH))
+            row.addSubview(Self.label(head,
+                frame: NSRect(x: 0, y: 28, width: 150, height: 18), bold: true, size: 12))
+            let subLbl = Self.label(sub,
+                frame: NSRect(x: 0, y: 8, width: 150, height: 20), size: 10, secondary: true)
+            subLbl.maximumNumberOfLines = 2
+            row.addSubview(subLbl)
+            let btnY: CGFloat = 14
             row.addSubview(button("Front", #selector(frontPressed(_:)),
-                NSRect(x: 155, y: 6, width: 55, height: 28), id: name))
+                NSRect(x: 155, y: btnY, width: 55, height: 28), id: name))
             row.addSubview(button("Kill", #selector(killPressed(_:)),
-                NSRect(x: 214, y: 6, width: 55, height: 28), id: name))
-            // Per-pair access bans + freeform note (sheet). Label shows count if any ban on.
+                NSRect(x: 214, y: btnY, width: 55, height: 28), id: name))
             let perms = PairState.permissions(for: name)
             let onCount = ["ban_mcp", "ban_root", "ban_network", "ban_system_paths", "repo_only"]
                 .filter { (perms[$0] as? Bool) == true }.count
             let noteOn = !((perms["custom_prompt"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let permsTitle = (onCount > 0 || noteOn) ? "Perms·\(onCount + (noteOn ? 1 : 0))" : "Perms"
             row.addSubview(button(permsTitle, #selector(permsPressed(_:)),
-                NSRect(x: 273, y: 6, width: 90, height: 28), id: name))
+                NSRect(x: 273, y: btnY, width: 90, height: 28), id: name))
             listContainer.addSubview(row)
-            y -= 48
+            y -= 58
         }
     }
 
