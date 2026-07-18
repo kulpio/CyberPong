@@ -36,7 +36,7 @@ Hermes sends a task into your **live worker terminal** (paste + Enter). Default 
 
 ---
 
-## Multi-worker teams (v1.3.1)
+## Multi-worker teams (v1.4.0)
 
 One **Hermes** orchestrates one or more **workers** under a single Active pair (tree UI).
 
@@ -91,7 +91,7 @@ Per-**worker** only (Hermes row has **Save Team** instead of Perms):
 
 ---
 
-## Install (macOS) — v1.3.1
+## Install (macOS) — v1.4.0
 
 ### Option A — release zip
 
@@ -265,18 +265,22 @@ bash scripts/build-app.sh
 bash scripts/install.sh
 ```
 
-App version is set in `scripts/build-app.sh` (`VERSION=1.3.1`).
+App version is set in `scripts/build-app.sh` (`VERSION=1.4.0`).
 
 ---
 
-## Changelog (v1.3.x highlights)
+## Changelog (v1.4.0)
+
+First downloadable multi-worker teams release (tag `v1.3.1` existed without a GitHub release).
 
 - Multi-worker **teams** under one Hermes (tree UI)
-- **New pair**: Claude / Other Model / Team / Show Teams
-- **Save Team** + **Show Teams** manager (open / duplicate / delete, scrollable)
+- **New pair**: Claude / Other Model / Team / Show Teams / Cancel
+- **Save Team** + **Show Teams** manager (open / duplicate / delete, scrollable; hide when empty)
 - Per-pane **rename** + **colors** (Background, Text, Marker)
-- Per-worker **Perms** with highlighted presets
-- Sticky **Refresh / Close Panel**; scrollable active pairs
+- Per-worker **Perms** with highlighted presets (Hermes Save Team has no Perms)
+- Sticky **Refresh / Close Panel**; scrollable active pairs + Show Teams
+- Terminal themes via NSAppleScript + attach-session; `pong-delegate --worker`
+- Landing: multi-worker team art/blurb; tip flow (name + email)
 - Verdict loop always on; local ledger
 
 ---
