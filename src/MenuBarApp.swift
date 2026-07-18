@@ -47,18 +47,31 @@ enum Pong {
     static func osascript(_ script: String) -> String {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("hp-\(ProcessInfo.processInfo.globallyUniqueString).applescript")
-        do { try script.write(to: tmp, atomically: true, encoding: .utf8) } catch { return "" }
+        do { try script.write(to: tmp, atomically: true, encoding: .utf8) } catch {
+            log("osascript write fail: \(error)")
+            return ""
+        }
         defer { try? FileManager.default.removeItem(at: tmp) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = [tmp.path]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return "" }
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        do { try p.run() } catch {
+            log("osascript run fail: \(error)")
+            return ""
+        }
         p.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if p.terminationStatus != 0 || !err.isEmpty {
+            log("osascript exit=\(p.terminationStatus) err=\(err) out=\(out)")
+        }
+        return out
     }
 
     static func loadJSON(_ path: String) -> [String: Any] {
@@ -543,10 +556,14 @@ enum TerminalTheme {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    /// Dedicated profile name — never mutate Basic/Pro (that recolors unrelated Terminals).
+    /// Marker stamped into Terminal custom title so we never paint random windows (e.g. this Hermes chat).
+    static func stamp(pair: String, role: String) -> String {
+        // ASCII only — reliable in AppleScript + window title matching
+        "HP|\(pair)|\(role)"
+    }
+
     static func profileName(pair: String, role: String) -> String {
-        let raw = "HP-\(pair)-\(role)"
-            .replacingOccurrences(of: " ", with: "-")
+        let raw = "HP-\(pair)-\(role)".replacingOccurrences(of: " ", with: "-")
         return raw.count <= 40 ? raw : String(raw.prefix(40))
     }
 
@@ -572,43 +589,52 @@ enum TerminalTheme {
         return rows
     }
 
-    static func resolveWindowId(stored: String?, hints: [String], avoid: Set<String> = []) -> String? {
-        let wins = listWindows().filter { !avoid.contains($0.id) }
-        let ids = Set(wins.map(\.id))
-        if let s = stored, Int(s) != nil, ids.contains(s), !avoid.contains(s) { return s }
-        let lowerHints = hints.map { $0.lowercased() }.filter { !$0.isEmpty }
-        for (id, title) in wins {
-            let t = title.lowercased()
-            for h in lowerHints where t.contains(h) { return id }
+    /// Only accept a window if stored id still exists AND title still has our HP| stamp (or stampHint).
+    static func resolveStampedWindow(stored: String?, stampHint: String) -> String? {
+        let wins = listWindows()
+        let byId = Dictionary(uniqueKeysWithValues: wins.map { ($0.id, $0.title) })
+        if let s = stored, Int(s) != nil, let title = byId[s] {
+            if title.contains(stampHint) || title.contains("HP|") {
+                return s
+            }
+            // id reused by another Terminal — refuse
+            Pong.log("theme refuse window \(s) — title lost stamp: \(title)")
+        }
+        // Fallback: find by stamp only (never bare "hermes"/"claude")
+        for (id, title) in wins where title.contains(stampHint) {
+            return id
         }
         return nil
     }
 
-    /// Paint ONE window via a private settings set (do not touch shared Basic/Pro).
-    static func apply(windowId: String?, title: String?, colors: Colors?, profile: String) {
+    /// Set Terminal custom title + private color profile. Refuses unstamped windows.
+    static func apply(windowId: String?, displayTitle: String, stamp: String, colors: Colors?, profile: String) {
         guard let wid = windowId, Int(wid) != nil else {
             Pong.log("theme apply skip — no window id profile=\(profile)")
             return
         }
+        // Safety: never paint a window that doesn't carry our stamp
+        let wins = listWindows()
+        if let title = wins.first(where: { $0.id == wid })?.title {
+            if !title.contains("HP|") && !title.contains(stamp) {
+                Pong.log("theme APPLY BLOCKED window=\(wid) not stamped (title=\(title)) — would hit wrong Terminal")
+                return
+            }
+        }
+
         let prof = escapeAS(profile)
+        // Title shown to user; keep stamp prefix so we can re-find the window
+        let fullTitle = escapeAS("\(stamp) · \(displayTitle)")
         var script = """
         tell application "Terminal"
           try
             set W to window id \(wid)
             set T to selected tab of W
+            set custom title of W to "\(fullTitle)"
+            try
+              set custom title of T to "\(fullTitle)"
+            end try
         """
-        if let title, !title.isEmpty {
-            let t = escapeAS(title)
-            script += """
-
-            try
-              set custom title of W to "\(t)"
-            end try
-            try
-              set custom title of T to "\(t)"
-            end try
-            """
-        }
         if let c = colors {
             let bg = c.t16(c.bg)
             let tx = c.t16(c.text)
@@ -639,40 +665,72 @@ enum TerminalTheme {
           end try
         end tell
         """
-        let out = Pong.osascript(script).trimmingCharacters(in: .whitespacesAndNewlines)
-        Pong.log("theme apply window=\(wid) profile=\(profile) → \(out.isEmpty ? "(empty)" : out)")
+        let out = Pong.osascript(script)
+        Pong.log("theme apply window=\(wid) profile=\(profile) stamp=\(stamp) → \(out.isEmpty ? "(empty)" : out)")
+    }
+
+    /// Stamp immediately after open (before user renames).
+    static func stampWindow(_ windowId: String?, pair: String, role: String, displayTitle: String) {
+        guard let wid = windowId, Int(wid) != nil else { return }
+        let st = stamp(pair: pair, role: role)
+        let full = escapeAS("\(st) · \(displayTitle)")
+        let out = Pong.osascript("""
+        tell application "Terminal"
+          try
+            set W to window id \(wid)
+            set custom title of W to "\(full)"
+            try
+              set custom title of selected tab of W to "\(full)"
+            end try
+            return "OK"
+          on error errMsg
+            return "ERR:" & errMsg
+          end try
+        end tell
+        """)
+        Pong.log("stamp window=\(wid) \(st) → \(out)")
+    }
+
+    /// tmux window name (shows in Terminal title when set-titles is on)
+    static func tmuxTitle(baseSession: String, tmuxIndex: Int, displayTitle: String) {
+        let safe = displayTitle
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+        // disable auto-rename so our name sticks
+        _ = Pong.sh("tmux set-option -t \(baseSession):\(tmuxIndex) automatic-rename off 2>/dev/null || true")
+        _ = Pong.sh("tmux rename-window -t \(baseSession):\(tmuxIndex) '\(safe)' 2>/dev/null || true")
+        _ = Pong.sh("tmux set-option -t \(baseSession) set-titles on 2>/dev/null || true")
+        _ = Pong.sh("tmux set-option -t \(baseSession) set-titles-string '#W' 2>/dev/null || true")
     }
 
     static func applyPair(_ pair: String) {
         let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
         let display = (entry["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hermesTitle = (display?.isEmpty == false) ? "● \(display!) · Hermes" : "● Hermes · \(pair)"
+        let hermesLabel = (display?.isEmpty == false) ? display! : pair
         let hColors = Colors.from(entry["colors"]) ?? .hermesDefault
         let storedH = entry["hermes_window_id"].flatMap { v -> String? in
             let s = "\(v)"; return (s == "<null>" || s.isEmpty) ? nil : s
         }
-        let viewH = (entry["view_hermes"] as? String) ?? "\(pair)-h"
-        var claimed = Set<String>()
-        let hid = resolveWindowId(stored: storedH, hints: [viewH, "\(pair)-h", "HERMES ·", hermesTitle])
-        if let hid { claimed.insert(hid) }
-        apply(windowId: hid, title: hermesTitle, colors: hColors, profile: profileName(pair: pair, role: "hermes"))
+        let hStamp = stamp(pair: pair, role: "hermes")
+        let hid = resolveStampedWindow(stored: storedH, stampHint: hStamp)
+        apply(windowId: hid, displayTitle: "Hermes · \(hermesLabel)", stamp: hStamp,
+              colors: hColors, profile: profileName(pair: pair, role: "hermes"))
+        tmuxTitle(baseSession: pair, tmuxIndex: 0, displayTitle: "Hermes · \(hermesLabel)")
 
         var ws = Workers.list(from: entry)
         var changed = false
-        let views = (entry["view_workers"] as? [String]) ?? []
         for i in 0..<ws.count {
             let id = (ws[i]["id"] as? String) ?? "w\(i + 1)"
             let lab = (ws[i]["label"] as? String) ?? "Worker"
             let storedW = "\(ws[i]["window_id"] ?? "")"
             let storedOpt = Int(storedW) != nil ? storedW : nil
-            var hints = [lab, id, "→ \(lab)", "WORKER · \(lab)"]
-            if i < views.count { hints.insert(views[i], at: 0) }
-            hints.append("\(pair)-w\(i)")
-            let wid = resolveWindowId(stored: storedOpt, hints: hints, avoid: claimed)
-            if let wid { claimed.insert(wid) }
-            let title = "→ \(lab) · \(id)"
+            let wStamp = stamp(pair: pair, role: id)
+            let wid = resolveStampedWindow(stored: storedOpt, stampHint: wStamp)
             let cols = Colors.from(ws[i]["colors"]) ?? .workerDefault
-            apply(windowId: wid, title: title, colors: cols, profile: profileName(pair: pair, role: id))
+            apply(windowId: wid, displayTitle: lab, stamp: wStamp,
+                  colors: cols, profile: profileName(pair: pair, role: id))
+            let tmuxIdx = (ws[i]["tmux_index"] as? Int) ?? (i + 1)
+            tmuxTitle(baseSession: pair, tmuxIndex: tmuxIdx, displayTitle: lab)
             if let wid, storedW != wid {
                 ws[i]["window_id"] = wid
                 changed = true
@@ -1105,15 +1163,22 @@ enum Pairing {
             Pong.log("closed stray Terminal window \(w.id) title=\(w.title)")
         }
         while windowIds.count < workerRecords.count { windowIds.append("") }
-        // Stack Terminal windows vertically (Hermes on top, workers below)
-        tileWindowsVertically(hermesId: hid, workerIds: windowIds.filter { !$0.isEmpty })
+        // Stamp titles IMMEDIATELY so we never confuse pair panes with other Terminals
+        TerminalTheme.stampWindow(hid, pair: name, role: "hermes", displayTitle: "Hermes · \(name)")
+        TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: 0, displayTitle: "Hermes · \(name)")
         for i in 0..<workerRecords.count {
             if i < windowIds.count, Int(windowIds[i]) != nil {
                 workerRecords[i]["window_id"] = windowIds[i]
+                let role = "w\(i + 1)"
+                let lab = list[i].label
+                TerminalTheme.stampWindow(windowIds[i], pair: name, role: role, displayTitle: lab)
+                TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: i + 1, displayTitle: lab)
             } else {
                 workerRecords[i]["window_id"] = NSNull()
             }
         }
+        // Stack Terminal windows vertically (Hermes on top, workers below)
+        tileWindowsVertically(hermesId: hid, workerIds: windowIds.filter { !$0.isEmpty })
         let primaryWid = windowIds.first(where: { Int($0) != nil })
         let teamLabel = list.count == 1 ? list[0].label : "\(list.count) workers"
 
@@ -2176,8 +2241,7 @@ final class PanelController: NSObject {
             // No Hermes Perms — only workers have access bans. Save Team instead.
             hermesRow.addSubview(button("Save Team", #selector(saveTeamPressed(_:)),
                 NSRect(x: 264, y: 5, width: 90, height: 26), id: name))
-            // Apply titles/colors when list refreshes (cheap)
-            TerminalTheme.applyPair(name)
+            // Do NOT applyPair on every refresh — that re-painted unrelated Terminals.
             listContainer.addSubview(hermesRow)
 
             for (i, w) in ws.enumerated() {
