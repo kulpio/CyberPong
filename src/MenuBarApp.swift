@@ -544,37 +544,56 @@ enum TerminalTheme {
     }
 
     /// Set custom title + colors on a Terminal window by id.
+    /// Colors must target `current settings of selected tab` (window-level colors are ignored on modern Terminal).
     static func apply(windowId: String?, title: String?, colors: Colors?) {
-        guard let wid = windowId, Int(wid) != nil else { return }
+        guard let wid = windowId, Int(wid) != nil else {
+            Pong.log("theme apply skip — no window id")
+            return
+        }
         var lines: [String] = ["tell application \"Terminal\""]
         lines.append("  try")
         lines.append("    set W to window id \(wid)")
+        lines.append("    set T to selected tab of W")
         if let title, !title.isEmpty {
             let t = escapeAS(title)
-            lines.append("    set custom title of W to \"\(t)\"")
-            // also try tab title
             lines.append("    try")
-            lines.append("      set custom title of selected tab of W to \"\(t)\"")
+            lines.append("      set custom title of W to \"\(t)\"")
+            lines.append("    end try")
+            lines.append("    try")
+            lines.append("      set custom title of T to \"\(t)\"")
             lines.append("    end try")
         }
         if let c = colors {
+            let bg = c.t16(c.bg)
+            let tx = c.t16(c.text)
+            let hi = c.t16(c.highlight)
+            // Live profile for this tab
             lines.append("    try")
-            lines.append("      set background color of W to \(c.t16(c.bg))")
-            lines.append("      set normal text color of W to \(c.t16(c.text))")
-            lines.append("      set bold text color of W to \(c.t16(c.highlight))")
-            lines.append("      set cursor color of W to \(c.t16(c.highlight))")
+            lines.append("      set S to current settings of T")
+            lines.append("      set background color of S to \(bg)")
+            lines.append("      set normal text color of S to \(tx)")
+            lines.append("      set bold text color of S to \(hi)")
+            lines.append("      set cursor color of S to \(hi)")
             lines.append("    end try")
-            // highlight / selection — best-effort (varies by macOS Terminal version)
+            // Also try tab-level (some macOS builds)
             lines.append("    try")
-            lines.append("      set selected text color of W to \(c.t16(c.highlight))")
+            lines.append("      set background color of T to \(bg)")
+            lines.append("      set normal text color of T to \(tx)")
+            lines.append("      set bold text color of T to \(hi)")
+            lines.append("      set cursor color of T to \(hi)")
+            lines.append("    end try")
+            lines.append("    try")
+            lines.append("      set selected text color of current settings of T to \(hi)")
             lines.append("    end try")
         }
+        lines.append("  on error errMsg")
+        lines.append("    return \"ERR:\" & errMsg")
         lines.append("  end try")
+        lines.append("  return \"OK\"")
         lines.append("end tell")
         let script = lines.joined(separator: "\n")
         let out = Pong.osascript(script)
-        if !out.isEmpty { Pong.log("theme apply \(wid) → \(out)") }
-        else { Pong.log("theme apply window=\(wid) title=\(title ?? "-")") }
+        Pong.log("theme apply window=\(wid) title=\(title ?? "-") → \(out.isEmpty ? "(empty)" : out)")
     }
 
     static func applyPair(_ pair: String) {
@@ -596,6 +615,156 @@ enum TerminalTheme {
             let cols = Colors.from(w["colors"]) ?? .workerDefault
             apply(windowId: Int(wid) != nil ? wid : nil, title: title, colors: cols)
         }
+    }
+}
+
+
+// MARK: - Saved teams (~/.hermes-pong/teams.json)
+
+/// Snapshot of Hermes display name/colors + worker types/labels/cmds/perms/colors.
+/// Spawnable from New pair → Saved team…
+enum SavedTeams {
+    static var path: String { Pong.stateDir + "/teams.json" }
+
+    struct Team {
+        let id: String
+        let name: String
+        let displayName: String
+        let hermesColors: [String: Any]?
+        let workers: [[String: Any]]
+    }
+
+    static func loadAll() -> [Team] {
+        let raw = Pong.loadJSON(path)
+        let arr = (raw["teams"] as? [[String: Any]]) ?? []
+        var out: [Team] = []
+        for row in arr {
+            guard let id = row["id"] as? String,
+                  let name = row["name"] as? String,
+                  let workers = row["workers"] as? [[String: Any]], !workers.isEmpty else { continue }
+            out.append(Team(
+                id: id,
+                name: name,
+                displayName: (row["display_name"] as? String) ?? name,
+                hermesColors: row["colors"] as? [String: Any],
+                workers: workers
+            ))
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    static func saveFromLivePair(_ pair: String, teamName: String) -> Team? {
+        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
+        let ws = Workers.list(from: entry)
+        if ws.isEmpty { return nil }
+        // Strip live window ids / modes — spawn will create fresh
+        var cleanWorkers: [[String: Any]] = []
+        for (i, w) in ws.enumerated() {
+            var c: [String: Any] = [
+                "id": (w["id"] as? String) ?? "w\(i + 1)",
+                "type": (w["type"] as? String) ?? "claude",
+                "label": (w["label"] as? String) ?? "Worker",
+                "cmd": (w["cmd"] as? String) ?? "claude",
+            ]
+            if let perms = w["permissions"] as? [String: Any] { c["permissions"] = perms }
+            if let colors = w["colors"] as? [String: Any] { c["colors"] = colors }
+            cleanWorkers.append(c)
+        }
+        var trimmed = teamName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { trimmed = "My team" }
+        var list = loadAll()
+        let id: String
+        if let existing = list.first(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            id = existing.id
+            list.removeAll { $0.id == id }
+        } else {
+            id = "team-\(Int(Date().timeIntervalSince1970))-\(Int.random(in: 100...999))"
+        }
+        let display = (entry["display_name"] as? String) ?? trimmed
+        let team = Team(
+            id: id,
+            name: trimmed,
+            displayName: display.isEmpty ? trimmed : display,
+            hermesColors: entry["colors"] as? [String: Any],
+            workers: cleanWorkers
+        )
+        list.append(team)
+        writeAll(list)
+        Pong.log("saved team id=\(id) name=\(trimmed) workers=\(cleanWorkers.count)")
+        return team
+    }
+
+    static func delete(id: String) {
+        writeAll(loadAll().filter { $0.id != id })
+        Pong.log("deleted team \(id)")
+    }
+
+    private static func writeAll(_ list: [Team]) {
+        let rows: [[String: Any]] = list.map { t in
+            var row: [String: Any] = [
+                "id": t.id,
+                "name": t.name,
+                "display_name": t.displayName,
+                "workers": t.workers,
+            ]
+            if let c = t.hermesColors { row["colors"] = c }
+            return row
+        }
+        Pong.writeJSON(path, ["teams": rows, "updated": Date().timeIntervalSince1970])
+    }
+
+    /// Spawn a saved team as a new live pair (fresh Terminals).
+    @discardableResult
+    static func spawn(_ team: Team) -> String {
+        var types: [WorkerType] = []
+        for w in team.workers {
+            let typeId = (w["type"] as? String) ?? "claude"
+            let cmd = (w["cmd"] as? String) ?? WorkerType.resolved(typeId).cmd
+            let label = (w["label"] as? String) ?? WorkerType.resolved(typeId).label
+            if typeId == "custom" || !WorkerType.all.contains(where: { $0.id == typeId }) {
+                types.append(WorkerType(id: "custom", label: label, cmd: cmd, tmuxWindowName: "Worker"))
+            } else {
+                var base = WorkerType.resolved(typeId)
+                // keep custom label from saved team
+                base = WorkerType(id: base.id, label: label, cmd: cmd.isEmpty ? base.cmd : cmd, tmuxWindowName: base.tmuxWindowName)
+                types.append(base)
+            }
+        }
+        if types.isEmpty { types = [WorkerType.resolved("claude")] }
+        let pair = Pairing.startFresh(workers: types)
+        // Apply saved names/colors/perms onto live pair
+        var db = PairState.loadPairsDb()
+        var entry = db[pair] as? [String: Any] ?? [:]
+        entry["display_name"] = team.displayName
+        if let hc = team.hermesColors { entry["colors"] = hc }
+        var live = Workers.list(from: entry)
+        for i in 0..<min(live.count, team.workers.count) {
+            let saved = team.workers[i]
+            if let lab = saved["label"] as? String { live[i]["label"] = lab }
+            if let perms = saved["permissions"] as? [String: Any] { live[i]["permissions"] = perms }
+            if let colors = saved["colors"] as? [String: Any] { live[i]["colors"] = colors }
+            if let cmd = saved["cmd"] as? String { live[i]["cmd"] = cmd }
+            if let typ = saved["type"] as? String { live[i]["type"] = typ }
+        }
+        entry["workers"] = live
+        if let first = live.first {
+            entry["worker_label"] = first["label"] ?? "Worker"
+            entry["worker_type"] = first["type"] ?? "claude"
+            entry["worker_cmd"] = first["cmd"] ?? "claude"
+        }
+        entry["updated"] = Date().timeIntervalSince1970
+        db[pair] = entry
+        Pong.writeJSON(PairState.pairsPath, db)
+        var active = Pong.loadJSON(PairState.activePath)
+        if active["session"] as? String == pair {
+            for (k, v) in entry { active[k] = v }
+            Pong.writeJSON(PairState.activePath, active)
+        }
+        // Small delay so Terminal windows exist, then paint
+        usleep(400_000)
+        TerminalTheme.applyPair(pair)
+        Pong.log("spawned team \(team.name) → \(pair)")
+        return pair
     }
 }
 
@@ -667,6 +836,42 @@ enum Pairing {
     }
 
     /// One clean blink of the paired windows (raise, hide once, show once).
+
+    /// Cascade team Terminals top→bottom so they read like the tree, not a horizontal row.
+    static func tileWindowsVertically(hermesId: String?, workerIds: [String]) {
+        var ids: [String] = []
+        if let h = hermesId, Int(h) != nil { ids.append(h) }
+        ids.append(contentsOf: workerIds.filter { Int($0) != nil })
+        guard !ids.isEmpty else { return }
+        // Screen visible frame
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 40, y: 40, width: 1200, height: 800)
+        let gap: CGFloat = 8
+        let n = CGFloat(ids.count)
+        let h = max(180, (screen.height - gap * (n + 1)) / n)
+        let w = min(screen.width * 0.55, 900)
+        let x = screen.minX + 24
+        // Top of screen first (Hermes)
+        for (i, wid) in ids.enumerated() {
+            // AppleScript set bounds: {left, top, right, bottom} in screen coords (top-left origin)
+            // Terminal uses top-left for bounds in some versions; use position + size via AS
+            let left = Int(x)
+            // Prefer: set bounds of window id to {x, y, x+w, y+h} with y from bottom in Cocoa...
+            // Terminal AppleScript bounds are {left, top, right, bottom} with top measured from top of screen.
+            let topEdge = Int(gap + CGFloat(i) * (h + gap) + 28)  // menu bar clearance
+            let bottomEdge = topEdge + Int(h)
+            let right = left + Int(w)
+            let script = """
+            tell application "Terminal"
+              try
+                set bounds of window id \(wid) to {\(left), \(topEdge), \(right), \(bottomEdge)}
+              end try
+            end tell
+            """
+            _ = Pong.osascript(script)
+        }
+        Pong.log("tileWindowsVertically n=\(ids.count)")
+    }
+
     static func flashPairWindows(_ hermesId: String?, _ claudeId: String?) {
         var ids: [String] = []
         for wid in [claudeId, hermesId] {
@@ -794,6 +999,8 @@ enum Pairing {
             windowIds.append(openAttach(vn) ?? "")
         }
         while windowIds.count < workerRecords.count { windowIds.append("") }
+        // Stack Terminal windows vertically (Hermes on top, workers below)
+        tileWindowsVertically(hermesId: hid, workerIds: windowIds.filter { !$0.isEmpty })
         for i in 0..<workerRecords.count {
             if i < windowIds.count, Int(windowIds[i]) != nil {
                 workerRecords[i]["window_id"] = windowIds[i]
@@ -1521,6 +1728,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func newPair() {
         guard let workers = Self.pickWorkerTypes() else { return }
+        if workers.isEmpty {
+            // Saved team already spawned inside picker
+            lastSessionPoll = .distantPast
+            rebuildMenu()
+            PanelController.shared.refreshUI()
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             _ = Pairing.startFresh(workers: workers)
             DispatchQueue.main.async { [weak self] in
@@ -1531,25 +1745,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Single-worker convenience (used by older call sites).
-    static func pickWorkerType() -> WorkerType? {
-        pickWorkerTypes()?.first
-    }
-
     /// New pair worker selection.
     /// Always one Hermes session. Single worker or army under that Hermes — never separate pair rows.
+        /// Returns workers to launch, OR nil if cancelled.
+    /// New pair: Claude · Other Model · Team · Cancel
     static func pickWorkerTypes() -> [WorkerType]? {
         NSApp.activate(ignoringOtherApps: true)
         let gate = NSAlert()
         gate.messageText = "New pair"
-        gate.informativeText =
-            "Always one Hermes window.\n\n" +
-            "• Claude only — fastest (1 worker)\n" +
-            "• Choose one worker — Kimi, Grok, Codex, …\n" +
-            "• Team — several workers under the same Hermes (one Active pair row)"
-        gate.addButton(withTitle: "Claude only")
-        gate.addButton(withTitle: "Choose one…")
-        gate.addButton(withTitle: "Team…")
+        gate.informativeText = "Always one Hermes. Pick how to staff it."
+        gate.addButton(withTitle: "Claude")
+        gate.addButton(withTitle: "Other Model")
+        gate.addButton(withTitle: "Team")
         gate.addButton(withTitle: "Cancel")
         let g = gate.runModal()
         let first = NSApplication.ModalResponse.alertFirstButtonReturn
@@ -1557,32 +1764,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return [WorkerType.resolved("claude")]
         }
         if g == NSApplication.ModalResponse(rawValue: first.rawValue + 1) {
-            return pickOneWorker().map { [$0] }
+            return TeamBuilderPanel.run(mode: .oneModel)
         }
         if g == NSApplication.ModalResponse(rawValue: first.rawValue + 2) {
-            return pickTeamWorkers()
+            return TeamBuilderPanel.run(mode: .team)
         }
         return nil
     }
 
-    static func pickOneWorker() -> WorkerType? {
-        let alert = NSAlert()
-        alert.messageText = "One worker under Hermes"
-        alert.informativeText = "Opens Hermes + this CLI. Same Active pair row."
-        let choices = WorkerType.all.filter { $0.id != "custom" }
-        for w in choices { alert.addButton(withTitle: w.label) }
-        alert.addButton(withTitle: "Custom…")
-        alert.addButton(withTitle: "Cancel")
-        let resp = alert.runModal()
-        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        let idx = resp.rawValue - first
-        if idx >= 0 && idx < choices.count {
-            return WorkerType.resolved(choices[idx].id)
-        }
-        if idx == choices.count {
-            return pickCustomWorker()
-        }
-        return nil
+    static func pickWorkerType() -> WorkerType? {
+        pickWorkerTypes()?.first
     }
 
     static func pickCustomWorker() -> WorkerType? {
@@ -1601,46 +1792,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return WorkerType(id: "custom", label: cmd, cmd: cmd, tmuxWindowName: "Worker")
     }
 
-    /// Army: N workers under ONE Hermes when Done.
-    static func pickTeamWorkers() -> [WorkerType]? {
-        var selected: [WorkerType] = []
-        while true {
-            let alert = NSAlert()
-            if selected.isEmpty {
-                alert.messageText = "Team — same Hermes"
-                alert.informativeText =
-                    "Add workers one by one. They all belong to ONE Hermes session (one Active pair row).\n" +
-                    "Not separate pairs."
-            } else {
-                let names = selected.enumerated().map { "w\($0.offset + 1)=\($0.element.label)" }.joined(separator: ", ")
-                alert.messageText = "Team so far (\(selected.count))"
-                alert.informativeText = "\(names)\n\nAdd another, or Done to open Hermes + these workers together."
-            }
-            let choices = WorkerType.all.filter { $0.id != "custom" }
-            for w in choices { alert.addButton(withTitle: "+ \(w.label)") }
-            alert.addButton(withTitle: "+ Custom…")
-            if !selected.isEmpty {
-                alert.addButton(withTitle: "Done — launch team")
-            }
-            alert.addButton(withTitle: "Cancel")
-            let resp = alert.runModal()
-            let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-            var idx = resp.rawValue - first
-            if idx >= 0 && idx < choices.count {
-                selected.append(WorkerType.resolved(choices[idx].id))
-                continue
-            }
-            idx -= choices.count
-            if idx == 0 {
-                if let c = pickCustomWorker() { selected.append(c) }
-                continue
-            }
-            idx -= 1
-            if !selected.isEmpty && idx == 0 {
-                return selected
-            }
-            return nil
+    @discardableResult
+    static func pickAndSpawnSavedTeam() -> Bool {
+        let teams = SavedTeams.loadAll()
+        if teams.isEmpty {
+            let a = NSAlert()
+            a.messageText = "No saved teams"
+            a.informativeText = "Open an Active pair → Save Team on the Hermes row."
+            a.addButton(withTitle: "OK")
+            a.runModal()
+            return false
         }
+        // Vertical list via TeamBuilder-style alert isn't needed — use NSAlert with one button per line (vertical stack on macOS)
+        let alert = NSAlert()
+        alert.messageText = "Saved teams"
+        alert.informativeText = "Each launches Hermes + workers (names, colors, perms)."
+        for t in teams {
+            alert.addButton(withTitle: "\(t.name)  ·  \(t.workers.count) workers")
+        }
+        alert.addButton(withTitle: "Cancel")
+        let resp = alert.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let idx = resp.rawValue - first
+        guard idx >= 0 && idx < teams.count else { return false }
+        _ = SavedTeams.spawn(teams[idx])
+        return true
     }
 
     @objc func rejoinNamed(_ sender: NSMenuItem) {
@@ -1792,7 +1968,7 @@ final class PanelController: NSObject {
         content.addSubview(button("New pair", #selector(newPairPressed(_:)),
             NSRect(x: PAD, y: y, width: W - 2 * PAD, height: 38)))
         y -= 36
-        content.addSubview(Self.label("One Hermes always. Claude only, one worker, or a team — still one Active pair row.",
+        content.addSubview(Self.label("Claude · Other Model · Team (vertical). Saved teams live under Team.",
             frame: NSRect(x: PAD + 2, y: y, width: W - 2 * PAD - 4, height: 32), size: 12, secondary: true))
         y -= 48
         content.addSubview(button("Link existing terminals", #selector(linkPressed(_:)),
@@ -1809,7 +1985,7 @@ final class PanelController: NSObject {
         content.addSubview(Self.label("Hermes verifies every CLAIM and loops until accept or escalate.",
             frame: NSRect(x: PAD, y: y, width: W - 2 * PAD, height: 13), size: 9, secondary: true))
         y -= 14
-        content.addSubview(Self.label("Hub = Hermes. Branches = team workers (each has Front / Kill / Perms).",
+        content.addSubview(Self.label("Hub = Hermes (Save Team). Workers = Front / Kill / Perms + colors.",
             frame: NSRect(x: PAD, y: y, width: W - 2 * PAD, height: 13), size: 9, secondary: true))
 
         y -= 280
@@ -1891,13 +2067,9 @@ final class PanelController: NSObject {
                 NSRect(x: 172, y: 5, width: 46, height: 26), id: name))
             hermesRow.addSubview(button("Kill", #selector(killPressed(_:)),
                 NSRect(x: 220, y: 5, width: 42, height: 26), id: name))
-            let pperms = PairState.permissions(for: name)
-            let pon = ["ban_mcp", "ban_root", "ban_network", "ban_system_paths", "repo_only"]
-                .filter { (pperms[$0] as? Bool) == true }.count
-            let pnote = !((pperms["custom_prompt"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let ptitle = (pon > 0 || pnote) ? "Perms·\(pon + (pnote ? 1 : 0))" : "Perms"
-            hermesRow.addSubview(button(ptitle, #selector(permsPressed(_:)),
-                NSRect(x: 264, y: 5, width: 72, height: 26), id: name))
+            // No Hermes Perms — only workers have access bans. Save Team instead.
+            hermesRow.addSubview(button("Save Team", #selector(saveTeamPressed(_:)),
+                NSRect(x: 264, y: 5, width: 90, height: 26), id: name))
             // Apply titles/colors when list refreshes (cheap)
             TerminalTheme.applyPair(name)
             listContainer.addSubview(hermesRow)
@@ -1989,6 +2161,11 @@ final class PanelController: NSObject {
 
     @objc private func newPairPressed(_ sender: NSButton) {
         guard let workers = AppDelegate.pickWorkerTypes() else { return }
+        if workers.isEmpty {
+            // Saved team already spawned
+            refreshUI()
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             let name = Pairing.startFresh(workers: workers)
             usleep(200_000)
@@ -2050,6 +2227,31 @@ final class PanelController: NSObject {
         guard parts.count == 2 else { return }
         PermissionsSheetController.shared.show(for: parts[0], workerId: parts[1]) { [weak self] in
             self?.refreshUI()
+        }
+    }
+
+    @objc private func saveTeamPressed(_ sender: NSButton) {
+        guard let pair = sender.identifier?.rawValue else { return }
+        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
+        let suggestion = (entry["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let seed = (suggestion?.isEmpty == false) ? suggestion! : pair
+        promptName(title: "Save team as…", value: seed) { name in
+            if SavedTeams.saveFromLivePair(pair, teamName: name) != nil {
+                let a = NSAlert()
+                a.messageText = "Team saved"
+                a.informativeText =
+                    "“\(name)” is under New pair → Saved team…\n" +
+                    "Includes workers, names, colors, and per-worker perms."
+                a.addButton(withTitle: "OK")
+                a.runModal()
+            } else {
+                let a = NSAlert()
+                a.messageText = "Nothing to save"
+                a.informativeText = "This pair has no workers yet."
+                a.addButton(withTitle: "OK")
+                a.runModal()
+            }
+            self.refreshUI()
         }
     }
 
@@ -2220,6 +2422,236 @@ enum PermissionPresets {
 }
 
 // MARK: - Per-pair access permissions sheet
+
+
+
+// MARK: - Team / model picker (vertical panel)
+
+/// Vertical list UI for Other Model + Team (not horizontal NSAlert button rows).
+final class TeamBuilderPanel: NSObject {
+    enum Mode { case oneModel, team }
+
+    private var window: NSWindow?
+    private var selected: [WorkerType] = []
+    private var rosterLabel: NSTextField!
+    private var mode: Mode = .team
+    private var result: [WorkerType]?
+    private var finished = false
+
+    /// Modal: returns workers, empty array if saved team spawned, nil if cancelled.
+    static func run(mode: Mode) -> [WorkerType]? {
+        let p = TeamBuilderPanel()
+        return p.runModal(mode: mode)
+    }
+
+    private func runModal(mode: Mode) -> [WorkerType]? {
+        self.mode = mode
+        self.selected = []
+        self.result = nil
+        self.finished = false
+        build()
+        NSApp.activate(ignoringOtherApps: true)
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        // Run a nested loop until Done/Cancel
+        let session = NSApp.beginModalSession(for: window!)
+        while !finished {
+            if NSApp.runModalSession(session) != .continue {
+                break
+            }
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
+        NSApp.endModalSession(session)
+        window?.orderOut(nil)
+        return result
+    }
+
+    private func build() {
+        let W: CGFloat = 360
+        let H: CGFloat = mode == .oneModel ? 420 : 520
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: W, height: H),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        win.title = mode == .oneModel ? "Other Model" : "Team"
+        win.isReleasedWhenClosed = false
+        win.level = .floating
+        win.backgroundColor = NSColor(calibratedRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        var y = H - 28
+
+        let title = NSTextField(labelWithString: mode == .oneModel
+            ? "Pick one worker under Hermes"
+            : "Build a team (vertical list)")
+        title.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        title.textColor = .white
+        title.frame = NSRect(x: 20, y: y - 20, width: W - 40, height: 22)
+        content.addSubview(title)
+        y -= 36
+
+        let sub = NSTextField(wrappingLabelWithString: mode == .oneModel
+            ? "One model + Hermes. Same Active pair row."
+            : "Add models top → bottom. One Hermes orchestrates all.")
+        sub.font = NSFont.systemFont(ofSize: 11)
+        sub.textColor = NSColor(calibratedWhite: 0.6, alpha: 1)
+        sub.frame = NSRect(x: 20, y: y - 32, width: W - 40, height: 34)
+        content.addSubview(sub)
+        y -= 44
+
+        // —— Models (vertical) ——
+        let models = WorkerType.all.filter { $0.id != "custom" }
+        for w in models {
+            y -= 36
+            let btn = NSButton(frame: NSRect(x: 20, y: y, width: W - 40, height: 32))
+            btn.title = mode == .oneModel ? w.label : "+  \(w.label)"
+            btn.bezelStyle = .rounded
+            btn.setButtonType(.momentaryPushIn)
+            btn.target = self
+            btn.action = #selector(addModel(_:))
+            btn.identifier = NSUserInterfaceItemIdentifier(w.id)
+            content.addSubview(btn)
+        }
+        y -= 36
+        let custom = NSButton(frame: NSRect(x: 20, y: y, width: W - 40, height: 32))
+        custom.title = mode == .oneModel ? "Custom…" : "+  Custom…"
+        custom.bezelStyle = .rounded
+        custom.target = self
+        custom.action = #selector(addCustom)
+        content.addSubview(custom)
+
+        if mode == .team {
+            y -= 16
+            // Saved teams section
+            let saved = SavedTeams.loadAll()
+            if !saved.isEmpty {
+                y -= 20
+                let sh = NSTextField(labelWithString: "SAVED TEAMS")
+                sh.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+                sh.textColor = NSColor(calibratedWhite: 0.5, alpha: 1)
+                sh.frame = NSRect(x: 20, y: y, width: W - 40, height: 14)
+                content.addSubview(sh)
+                for t in saved.prefix(6) {
+                    y -= 34
+                    let b = NSButton(frame: NSRect(x: 20, y: y, width: W - 40, height: 30))
+                    b.title = "Spawn  \(t.name)  (\(t.workers.count))"
+                    b.bezelStyle = .rounded
+                    b.target = self
+                    b.action = #selector(spawnSaved(_:))
+                    b.identifier = NSUserInterfaceItemIdentifier(t.id)
+                    content.addSubview(b)
+                }
+            }
+
+            y -= 16
+            rosterLabel = NSTextField(wrappingLabelWithString: "Team: (empty)")
+            rosterLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            rosterLabel.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+            rosterLabel.frame = NSRect(x: 20, y: max(y - 70, 56), width: W - 40, height: 70)
+            content.addSubview(rosterLabel)
+            refreshRoster()
+
+            let launch = NSButton(frame: NSRect(x: 20, y: 16, width: (W - 48) / 2, height: 34))
+            launch.title = "Launch team"
+            launch.bezelStyle = .rounded
+            launch.target = self
+            launch.action = #selector(launchTeam)
+            content.addSubview(launch)
+            let cancel = NSButton(frame: NSRect(x: 28 + (W - 48) / 2, y: 16, width: (W - 48) / 2, height: 34))
+            cancel.title = "Cancel"
+            cancel.bezelStyle = .rounded
+            cancel.target = self
+            cancel.action = #selector(cancelPressed)
+            content.addSubview(cancel)
+        } else {
+            let cancel = NSButton(frame: NSRect(x: 20, y: 16, width: W - 40, height: 34))
+            cancel.title = "Cancel"
+            cancel.bezelStyle = .rounded
+            cancel.target = self
+            cancel.action = #selector(cancelPressed)
+            content.addSubview(cancel)
+        }
+
+        win.contentView = content
+        win.delegate = self
+        window = win
+    }
+
+    private func refreshRoster() {
+        guard mode == .team else { return }
+        if selected.isEmpty {
+            rosterLabel?.stringValue = "Team: (empty)\nAdd models above — order is top → bottom."
+            return
+        }
+        let lines = selected.enumerated().map { i, w in
+            "  w\(i + 1)  \(w.label)"
+        }
+        rosterLabel?.stringValue = "Team (\(selected.count)):\n" + lines.joined(separator: "\n")
+    }
+
+    @objc private func addModel(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        let w = WorkerType.resolved(id)
+        if mode == .oneModel {
+            result = [w]
+            finished = true
+            NSApp.stopModal()
+            return
+        }
+        selected.append(w)
+        refreshRoster()
+    }
+
+    @objc private func addCustom() {
+        guard let w = AppDelegate.pickCustomWorker() else { return }
+        if mode == .oneModel {
+            result = [w]
+            finished = true
+            NSApp.stopModal()
+            return
+        }
+        selected.append(w)
+        refreshRoster()
+    }
+
+    @objc private func spawnSaved(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let team = SavedTeams.loadAll().first(where: { $0.id == id }) else { return }
+        _ = SavedTeams.spawn(team)
+        result = []  // signal: already spawned
+        finished = true
+        NSApp.stopModal()
+    }
+
+    @objc private func launchTeam() {
+        guard !selected.isEmpty else {
+            let a = NSAlert()
+            a.messageText = "Add at least one model"
+            a.addButton(withTitle: "OK")
+            a.runModal()
+            return
+        }
+        result = selected
+        finished = true
+        NSApp.stopModal()
+    }
+
+    @objc private func cancelPressed() {
+        result = nil
+        finished = true
+        NSApp.stopModal()
+    }
+}
+
+extension TeamBuilderPanel: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if !finished {
+            result = nil
+            finished = true
+            NSApp.stopModal()
+        }
+    }
+}
 
 
 // MARK: - Color theme sheet (bg / text / highlight)
