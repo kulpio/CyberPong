@@ -23,7 +23,7 @@ the entire Python/PyObjC runtime dependency are gone from the bundle.
 
 ## Superseded
 
-`src/hermes_pairing.py` remains in the repo as reference but is no longer
+`src/hermes_pairing.py` was removed in v1.3.1 (Swift panel is the only UI). It was
 bundled or launched. Safe to delete after one release of soak time.
 
 ## Remaining runtime requirements (by design)

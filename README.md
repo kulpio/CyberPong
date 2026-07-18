@@ -36,9 +36,20 @@ Hermes sends a task into your **live worker terminal** (paste + Enter). Default 
 
 ---
 
-## Multi-worker roadmap
+## Multi-worker teams (v1.3)
 
-See [`docs/PRODUCT-MULTI-WORKER.md`](docs/PRODUCT-MULTI-WORKER.md) — Hermes orchestrates workers (Claude default; Kimi, Grok, custom). Phase 1: pick a worker on New pair. Phase 2+: multi-worker army.
+One **Hermes** orchestrates one or more **workers** (Claude, Kimi, Grok, Codex, custom).
+
+| | |
+|--|--|
+| **New pair** | Claude · Other Model · Team · **Load Team** |
+| **Team** | Vertical picker; several workers under one Hermes row |
+| **Save Team** | On the Hermes row — names, colors, per-worker perms |
+| **Load Team** | Control panel button + New pair menu |
+| **Tree** | Hermes hub → each worker with Front / Kill / Perms |
+| **Bridge** | `pong-delegate.py --worker w1` (alias of claude-delegate) |
+
+Details: [`docs/PRODUCT-MULTI-WORKER.md`](docs/PRODUCT-MULTI-WORKER.md).
 
 ## Requirements
 
@@ -50,7 +61,7 @@ See [`docs/PRODUCT-MULTI-WORKER.md`](docs/PRODUCT-MULTI-WORKER.md) — Hermes or
 
 ---
 
-## Install (macOS) — v1.3
+## Install (macOS) — v1.3.1
 
 ### Option A — release zip
 
@@ -97,10 +108,11 @@ Nothing is injected into Claude at link time. Your model, resume, and chat stay 
 ### 2. Or start a New pair
 
 1. Click **New pair**  
-2. Two Terminals open: one for Hermes, one for Claude  
-3. Claude starts **fresh** (no prior session)
+2. Choose **Claude**, **Other Model**, **Team**, or **Load Team**  
+3. Terminals open: Hermes + the workers you picked (stacked vertically)  
 
-Use **Link** when you care about an existing Claude conversation.
+Use **Link** when you care about an existing worker conversation.  
+Use **Save Team** on an active pair, then **Load Team** next time.
 
 ---
 
@@ -149,7 +161,7 @@ The loop always runs — there are no supervision modes to configure. It works s
 | **Link existing terminals** | Pair open Hermes + any worker terminal (keeps that session) |
 | **Front** | Bring that pair’s windows forward |
 | **Kill** | End the pair |
-| **Perms** | Per-pair access bans + note. Built-in presets: **Full access**, **Ask each time**. Save/load your own packs. Injected into every Claude handoff. |
+| **Perms** | Per-**worker** access bans + note (Full access / Ask each time presets). Injected on handoff to that worker. Hermes row has **Save Team** instead. |
 
 The menu bar bolt glows while a pair is active and shows the verdict ledger (rounds, accept rate, reject streak, last verdict).
 
