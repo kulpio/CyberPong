@@ -585,8 +585,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             // + add worker handle near orchestrator
             let addId = "add"
             let addKey = CanvasLayout.key(session: session, nodeId: addId, multi: multi)
+            // Small + sits near bottom of orchestrator card (no edge drawn to it)
             let addOrigin = posMap[addKey]
-                ?? CGPoint(x: cOrigin.x + 200, y: cOrigin.y + 40)
+                ?? CGPoint(x: cOrigin.x + 110, y: cOrigin.y - 8)
             models.append(AgentNodeModel(
                 session: session, id: addId, role: "add",
                 title: "+", subtitle: "worker", detail: "Add worker",

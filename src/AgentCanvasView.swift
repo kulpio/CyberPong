@@ -99,7 +99,7 @@ final class AgentNodeView: NSView {
     private var buttons: [NSButton] = []
 
     static let size = NSSize(width: 256, height: 148)
-    static let addSize = NSSize(width: 56, height: 56)
+    static let addSize = NSSize(width: 32, height: 32)
 
     override var mouseDownCanMoveWindow: Bool { false }
 
@@ -127,19 +127,20 @@ final class AgentNodeView: NSView {
 
     private func buildAddStyle() {
         layer?.backgroundColor = PongTheme.magentaSoft.cgColor
-        layer?.borderColor = PongTheme.magenta.withAlphaComponent(0.5).cgColor
+        layer?.borderColor = PongTheme.magenta.withAlphaComponent(0.55).cgColor
         layer?.shadowColor = PongTheme.magenta.cgColor
-        layer?.shadowOpacity = 0.45
-        layer?.shadowRadius = 16
+        layer?.shadowOpacity = 0.35
+        layer?.shadowRadius = 8
         layer?.shadowOffset = .zero
         let plus = NSTextField(labelWithString: "+")
-        plus.font = PongTheme.font(28, weight: .medium)
+        plus.font = PongTheme.font(16, weight: .semibold)
         plus.textColor = PongTheme.magenta
         plus.alignment = .center
-        plus.frame = NSRect(x: 0, y: 10, width: 56, height: 36)
+        plus.frame = NSRect(x: 0, y: 5, width: 32, height: 22)
         plus.isEditable = false
         plus.isBordered = false
         plus.backgroundColor = .clear
+        plus.toolTip = "Add worker"
         addSubview(plus)
     }
 
@@ -394,42 +395,114 @@ final class AgentCanvasView: NSView {
             }
             x += step
         }
-        // Edges per team: conductor → workers; conductor → add handle
+        // Edges per team: orchestrator → workers (labeled). No line to "+".
+        // Workers chained vertically with peer-flow labels when 2+.
         let sessions = Set(models.map(\.session))
         for sess in sessions {
             guard let c = models.first(where: { $0.session == sess && $0.role == "conductor" }),
                   let cv = nodeViews[c.globalId] else { continue }
             let from = NSPoint(x: cv.frame.maxX - 2, y: cv.frame.midY)
-            for m in models where m.session == sess && m.role == "worker" {
+            let workers = models.filter { $0.session == sess && $0.role == "worker" }
+                .sorted { $0.origin.y > $1.origin.y } // top-to-bottom in view coords (y up)
+                .sorted { a, b in
+                    // stable visual order by y descending (higher y first)
+                    a.origin.y > b.origin.y
+                }
+
+            for m in workers {
                 guard let wv = nodeViews[m.globalId] else { continue }
                 let to = NSPoint(x: wv.frame.minX + 2, y: wv.frame.midY)
-                drawEdge(from: from, to: to, human: m.status.lowercased().contains("human"), worker: true)
+                let label: String = {
+                    let st = m.status.lowercased()
+                    if st.contains("human") { return "needs you" }
+                    if st.contains("busy") || st.contains("running") { return "assign · build" }
+                    return "delegate"
+                }()
+                drawEdge(from: from, to: to,
+                         human: m.status.lowercased().contains("human"),
+                         style: .orchToWorker,
+                         label: label)
             }
-            if let add = models.first(where: { $0.session == sess && $0.role == "add" }),
-               let av = nodeViews[add.globalId] {
-                let to = NSPoint(x: av.frame.midX, y: av.frame.midY)
-                drawEdge(from: from, to: to, human: false, worker: false)
+
+            // Peer flow between workers (not for single worker)
+            if workers.count >= 2 {
+                for i in 0..<(workers.count - 1) {
+                    guard let a = nodeViews[workers[i].globalId],
+                          let b = nodeViews[workers[i + 1].globalId] else { continue }
+                    let p0 = NSPoint(x: a.frame.midX, y: a.frame.minY)
+                    let p1 = NSPoint(x: b.frame.midX, y: b.frame.maxY)
+                    drawEdge(from: p0, to: p1, human: false, style: .workerPeer, label: "peer · handoff")
+                }
             }
+            // Intentionally no edge to the small "+" node
         }
     }
 
-    private func drawEdge(from: NSPoint, to: NSPoint, human: Bool, worker: Bool) {
+    private enum EdgeStyle { case orchToWorker, workerPeer }
+
+    private func drawEdge(from: NSPoint, to: NSPoint, human: Bool, style: EdgeStyle, label: String) {
         let path = NSBezierPath()
         path.move(to: from)
         let midX = (from.x + to.x) / 2
-        path.curve(to: to, controlPoint1: NSPoint(x: midX, y: from.y), controlPoint2: NSPoint(x: midX, y: to.y))
-        let color: NSColor = human ? PongTheme.orange : (worker ? PongTheme.magenta : PongTheme.blue)
-        path.lineWidth = 5
-        color.withAlphaComponent(0.18).setStroke()
+        let midY = (from.y + to.y) / 2
+        let c1: NSPoint
+        let c2: NSPoint
+        switch style {
+        case .orchToWorker:
+            c1 = NSPoint(x: midX, y: from.y)
+            c2 = NSPoint(x: midX, y: to.y)
+        case .workerPeer:
+            c1 = NSPoint(x: from.x, y: midY)
+            c2 = NSPoint(x: to.x, y: midY)
+        }
+        path.curve(to: to, controlPoint1: c1, controlPoint2: c2)
+
+        let color: NSColor = {
+            if human { return PongTheme.orange }
+            switch style {
+            case .orchToWorker: return PongTheme.blue
+            case .workerPeer: return PongTheme.magenta
+            }
+        }()
+
+        path.lineWidth = style == .workerPeer ? 3.5 : 5
+        color.withAlphaComponent(0.16).setStroke()
         path.stroke()
-        path.lineWidth = 1.75
-        color.withAlphaComponent(0.8).setStroke()
+        path.lineWidth = style == .workerPeer ? 1.25 : 1.75
+        if style == .workerPeer {
+            // dashed peer links
+            let dashes: [CGFloat] = [5, 4]
+            path.setLineDash(dashes, count: 2, phase: 0)
+        }
+        color.withAlphaComponent(0.85).setStroke()
         path.stroke()
-        let r: CGFloat = 3.5
-        PongTheme.blue.setFill()
-        NSBezierPath(ovalIn: NSRect(x: from.x - r, y: from.y - r, width: r * 2, height: r * 2)).fill()
+        path.setLineDash(nil, count: 0, phase: 0)
+
+        let r: CGFloat = 3
         color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: from.x - r, y: from.y - r, width: r * 2, height: r * 2)).fill()
         NSBezierPath(ovalIn: NSRect(x: to.x - r, y: to.y - r, width: r * 2, height: r * 2)).fill()
+
+        // Flow caption at curve mid
+        guard !label.isEmpty else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: PongTheme.font(9, weight: .semibold),
+            .foregroundColor: color.withAlphaComponent(0.95),
+            .backgroundColor: PongTheme.bg.withAlphaComponent(0.82),
+        ]
+        let s = NSAttributedString(string: " \(label) ", attributes: attrs)
+        let sz = s.size()
+        let labelOrigin = NSPoint(x: midX - sz.width / 2, y: midY - sz.height / 2)
+        // pill behind text
+        let pill = NSBezierPath(roundedRect: NSRect(x: labelOrigin.x - 2, y: labelOrigin.y - 1,
+                                                    width: sz.width + 4, height: sz.height + 2),
+                                xRadius: 4, yRadius: 4)
+        PongTheme.bg.withAlphaComponent(0.88).setFill()
+        pill.fill()
+        color.withAlphaComponent(0.25).setStroke()
+        pill.lineWidth = 1
+        pill.stroke()
+        s.draw(at: labelOrigin)
     }
 
     func reload(models: [AgentNodeModel], multiTeam: Bool) {
