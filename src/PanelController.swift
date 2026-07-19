@@ -1,34 +1,65 @@
 import AppKit
 
-/// Modern SuperGrok-inspired control panel: tabs, cards, snapshot mission view.
-final class PanelController: NSObject {
+/// Modern SuperGrok-inspired control panel: resizable chrome, tabs, agent canvas.
+final class PanelController: NSObject, NSWindowDelegate {
     static let shared = PanelController()
 
     private var window: NSWindow?
     private var rootView: NSView!
+    private var headerView: NSView!
+    private var headerTitle: NSTextField!
+    private var headerSub: NSTextField!
+    private var headerPill: NSView!
+    private var headerLine: NSView!
+    private var tabBarView: NSView!
+    private var footerView: NSView!
+    private var footerLine: NSView!
+    private var footerRefresh: NSButton!
+    private var footerClose: NSButton!
     private var headerStatus: NSTextField!
     private var liveDot: NSView!
     private var tabTeams: NSButton!
     private var tabMission: NSButton!
     private var tabSetup: NSButton!
     private var bodyHost: NSView!
-    private var teamsScroll: NSScrollView!
-    private var teamsList: NSView!
+
+    // Teams canvas
+    private var canvasHost: NSView!
+    private var canvasToolbar: NSView!
+    private var teamPopup: NSPopUpButton!
+    private var fitBtn: NSButton!
+    private var addWorkerBtn: NSButton!
+    private var newTeamBtn: NSButton!
+    private var canvasScroll: NSScrollView!
+    private var canvas: AgentCanvasView!
+    private var canvasEmptyLabel: NSTextField!
+
+    // Mission
     private var missionScroll: NSScrollView!
     private var missionList: NSView!
+
+    // Setup
+    private var setupScroll: NSScrollView!
     private var setupView: NSView!
     private var showTeamsBtn: NSButton?
     private var showTeamsHint: NSTextField?
+
     private var refreshTimer: Timer?
     private var selectedTab: Tab = .teams
+    private var selectedSession: String?
     private let guide = LinkGuideController()
 
-    private let W: CGFloat = 520
-    private let H: CGFloat = 720
-    private let PAD: CGFloat = 20
-    private let headerH: CGFloat = 72
-    private let tabH: CGFloat = 44
-    private let footerH: CGFloat = 56
+    private let minW: CGFloat = 560
+    private let minH: CGFloat = 480
+    private let defaultW: CGFloat = 780
+    private let defaultH: CGFloat = 640
+    /// Clearance under traffic lights when using fullSizeContentView
+    private let trafficClearance: CGFloat = 78
+    private let titlebarLift: CGFloat = 28
+    private let headerH: CGFloat = 56
+    private let tabH: CGFloat = 48
+    private let footerH: CGFloat = 52
+    private let PAD: CGFloat = 16
 
     enum Tab: Int { case teams = 0, mission = 1, setup = 2 }
 
@@ -46,13 +77,14 @@ final class PanelController: NSObject {
         updateHeader()
         updateShowTeamsChrome()
         switch selectedTab {
-        case .teams: rebuildTeams()
+        case .teams: rebuildCanvas()
         case .mission: rebuildMission()
-        case .setup: break
+        case .setup: layoutSetupIfNeeded()
         }
+        layoutChrome()
     }
 
-    // MARK: - Shared label helper (LinkGuide + sheets)
+    // MARK: - Shared label helper
 
     static func label(_ text: String, frame: NSRect, bold: Bool = false,
                       size: CGFloat = 13, secondary: Bool = false) -> NSTextField {
@@ -68,12 +100,12 @@ final class PanelController: NSObject {
         return f
     }
 
-    // MARK: - Window chrome
+    // MARK: - Window
 
     private func buildWindow() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: W, height: H),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: defaultW, height: defaultH),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         win.title = "Pong"
         win.titlebarAppearsTransparent = true
@@ -81,141 +113,252 @@ final class PanelController: NSObject {
         win.isReleasedWhenClosed = false
         win.backgroundColor = PongTheme.bg
         win.isMovableByWindowBackground = true
+        win.minSize = NSSize(width: minW, height: minH)
+        win.setContentSize(NSSize(width: defaultW, height: defaultH))
         win.center()
+        win.delegate = self
 
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: defaultW, height: defaultH))
         root.wantsLayer = true
         root.layer?.backgroundColor = PongTheme.bg.cgColor
+        root.autoresizingMask = [.width, .height]
         rootView = root
 
-        buildHeader(into: root)
-        buildTabs(into: root)
-        buildBody(into: root)
-        buildFooter(into: root)
+        buildHeader()
+        buildTabs()
+        buildBody()
+        buildFooter()
+        root.addSubview(headerView)
+        root.addSubview(tabBarView)
+        root.addSubview(bodyHost)
+        root.addSubview(footerView)
 
         win.contentView = root
         window = win
+        layoutChrome()
         selectTab(.teams, animated: false)
     }
 
-    private func buildHeader(into root: NSView) {
-        let header = NSView(frame: NSRect(x: 0, y: H - headerH, width: W, height: headerH))
-        header.wantsLayer = true
-
-        // Logo
-        let res = Bundle.main.resourcePath ?? ""
-        let logoPath = ["AppIcon-1024.png", "logo-accent.png", "logo.png"]
-            .map { res + "/" + $0 }
-            .first { FileManager.default.fileExists(atPath: $0) }
-        if let logoPath, let img = NSImage(contentsOfFile: logoPath) {
-            let wrap = NSView(frame: NSRect(x: PAD, y: 18, width: 36, height: 36))
-            wrap.wantsLayer = true
-            wrap.layer?.cornerRadius = 10
-            wrap.layer?.masksToBounds = true
-            wrap.layer?.backgroundColor = PongTheme.bgElevated.cgColor
-            wrap.layer?.borderWidth = 1
-            wrap.layer?.borderColor = PongTheme.border.cgColor
-            let iv = NSImageView(frame: NSRect(x: 3, y: 3, width: 30, height: 30))
-            iv.image = img
-            iv.imageScaling = .scaleProportionallyUpOrDown
-            wrap.addSubview(iv)
-            header.addSubview(wrap)
+    func windowDidResize(_ notification: Notification) {
+        layoutChrome()
+        if selectedTab == .teams {
+            // Keep canvas large enough to drag
+            let size = canvasContentSize()
+            canvas.setFrameSize(size)
+            canvas.needsDisplay = true
         }
+        if selectedTab == .mission { rebuildMission() }
+        if selectedTab == .setup { layoutSetupIfNeeded() }
+    }
 
-        let title = Self.label("Pong", frame: NSRect(x: PAD + 48, y: 32, width: 120, height: 24),
-                               bold: true, size: 18)
-        header.addSubview(title)
+    private var contentW: CGFloat { rootView?.bounds.width ?? defaultW }
+    private var contentH: CGFloat { rootView?.bounds.height ?? defaultH }
 
-        let sub = Self.label("Mission control", frame: NSRect(x: PAD + 48, y: 14, width: 160, height: 16),
-                             size: 11, secondary: true)
-        header.addSubview(sub)
+    private func layoutChrome() {
+        guard let root = rootView else { return }
+        let W = root.bounds.width
+        let H = root.bounds.height
 
-        // Live status pill
-        let pill = NSView(frame: NSRect(x: W - PAD - 168, y: 22, width: 168, height: 28))
-        PongTheme.applyCard(pill)
-        pill.layer?.cornerRadius = 14
+        // Header sits BELOW traffic lights
+        let headerTop = H - titlebarLift - headerH
+        headerView.frame = NSRect(x: 0, y: headerTop, width: W, height: headerH)
+        layoutHeaderContents(width: W)
+
+        let tabTop = headerTop - tabH
+        tabBarView.frame = NSRect(x: PAD, y: tabTop + 6, width: W - 2 * PAD, height: 36)
+        layoutTabs(width: W - 2 * PAD)
+
+        footerView.frame = NSRect(x: 0, y: 0, width: W, height: footerH)
+        layoutFooter(width: W)
+
+        let bodyY = footerH
+        let bodyH = max(120, tabTop - footerH)
+        bodyHost.frame = NSRect(x: 0, y: bodyY, width: W, height: bodyH)
+
+        let inset = NSRect(x: PAD, y: 8, width: W - 2 * PAD, height: bodyH - 16)
+        canvasHost?.frame = inset
+        missionScroll?.frame = inset
+        setupScroll?.frame = inset
+
+        if let canvasHost {
+            layoutCanvasHost(canvasHost.bounds)
+        }
+    }
+
+    // MARK: - Header (avoids traffic lights)
+
+    private func buildHeader() {
+        headerView = NSView(frame: .zero)
+        headerView.wantsLayer = true
+
+        headerTitle = Self.label("Pong", frame: .zero, bold: true, size: 17)
+        headerView.addSubview(headerTitle)
+
+        headerSub = Self.label("Agent mission control", frame: .zero, size: 11, secondary: true)
+        headerView.addSubview(headerSub)
+
+        headerPill = NSView(frame: .zero)
+        PongTheme.applyCard(headerPill)
+        headerPill.layer?.cornerRadius = 14
         liveDot = NSView(frame: NSRect(x: 10, y: 10, width: 8, height: 8))
         liveDot.wantsLayer = true
         liveDot.layer?.cornerRadius = 4
         liveDot.layer?.backgroundColor = PongTheme.idle.cgColor
-        pill.addSubview(liveDot)
-        headerStatus = Self.label("Idle", frame: NSRect(x: 24, y: 5, width: 136, height: 18), size: 11, secondary: true)
+        headerPill.addSubview(liveDot)
+        headerStatus = Self.label("Idle", frame: NSRect(x: 24, y: 5, width: 140, height: 18), size: 11, secondary: true)
         headerStatus.lineBreakMode = .byTruncatingTail
         headerStatus.maximumNumberOfLines = 1
-        pill.addSubview(headerStatus)
-        header.addSubview(pill)
+        headerPill.addSubview(headerStatus)
+        headerView.addSubview(headerPill)
 
-        // Hairline
-        let line = NSView(frame: NSRect(x: 0, y: 0, width: W, height: 1))
-        line.wantsLayer = true
-        line.layer?.backgroundColor = PongTheme.border.cgColor
-        header.addSubview(line)
-
-        root.addSubview(header)
+        headerLine = NSView(frame: .zero)
+        headerLine.wantsLayer = true
+        headerLine.layer?.backgroundColor = PongTheme.border.cgColor
+        headerView.addSubview(headerLine)
     }
 
-    private func buildTabs(into root: NSView) {
-        let barY = H - headerH - tabH
-        let bar = NSView(frame: NSRect(x: PAD, y: barY + 6, width: W - 2 * PAD, height: 36))
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = PongTheme.bgInput.cgColor
-        bar.layer?.cornerRadius = 12
-        bar.layer?.borderWidth = 1
-        bar.layer?.borderColor = PongTheme.border.cgColor
-
-        let tw = (W - 2 * PAD - 8) / 3
-        tabTeams = makeTab("Teams", tag: 0, frame: NSRect(x: 4, y: 3, width: tw, height: 30))
-        tabMission = makeTab("Mission", tag: 1, frame: NSRect(x: 4 + tw, y: 3, width: tw, height: 30))
-        tabSetup = makeTab("Setup", tag: 2, frame: NSRect(x: 4 + 2 * tw, y: 3, width: tw, height: 30))
-        bar.addSubview(tabTeams)
-        bar.addSubview(tabMission)
-        bar.addSubview(tabSetup)
-        root.addSubview(bar)
+    private func layoutHeaderContents(width W: CGFloat) {
+        // Leave traffic lights alone — content starts at trafficClearance
+        let left = trafficClearance
+        headerTitle.frame = NSRect(x: left, y: 26, width: 160, height: 22)
+        headerSub.frame = NSRect(x: left, y: 8, width: 220, height: 16)
+        headerPill.frame = NSRect(x: W - PAD - 176, y: 14, width: 176, height: 28)
+        headerLine.frame = NSRect(x: 0, y: 0, width: W, height: 1)
     }
 
-    private func makeTab(_ title: String, tag: Int, frame: NSRect) -> NSButton {
-        let b = NSButton(frame: frame)
+    // MARK: - Tabs
+
+    private func buildTabs() {
+        tabBarView = NSView(frame: .zero)
+        tabBarView.wantsLayer = true
+        tabBarView.layer?.backgroundColor = PongTheme.bgInput.cgColor
+        tabBarView.layer?.cornerRadius = 12
+        tabBarView.layer?.borderWidth = 1
+        tabBarView.layer?.borderColor = PongTheme.border.cgColor
+
+        tabTeams = makeTab("Canvas", tag: 0)
+        tabMission = makeTab("Mission", tag: 1)
+        tabSetup = makeTab("Setup", tag: 2)
+        tabBarView.addSubview(tabTeams)
+        tabBarView.addSubview(tabMission)
+        tabBarView.addSubview(tabSetup)
+    }
+
+    private func layoutTabs(width W: CGFloat) {
+        let tw = (W - 8) / 3
+        tabTeams.frame = NSRect(x: 4, y: 3, width: tw, height: 30)
+        tabMission.frame = NSRect(x: 4 + tw, y: 3, width: tw, height: 30)
+        tabSetup.frame = NSRect(x: 4 + 2 * tw, y: 3, width: tw, height: 30)
+    }
+
+    private func makeTab(_ title: String, tag: Int) -> NSButton {
+        let b = NSButton(frame: .zero)
         b.title = title
         b.bezelStyle = .inline
         b.isBordered = false
-        b.font = PongTheme.font(12, weight: .medium)
-        b.contentTintColor = PongTheme.textSecondary
         b.wantsLayer = true
         b.layer?.cornerRadius = 9
         b.tag = tag
         b.target = self
         b.action = #selector(tabPressed(_:))
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: PongTheme.textSecondary,
+            .font: PongTheme.font(12, weight: .medium),
+        ])
         return b
     }
 
-    private func buildBody(into root: NSView) {
-        let top = H - headerH - tabH
-        let bodyFrame = NSRect(x: 0, y: footerH, width: W, height: top - footerH)
-        bodyHost = NSView(frame: bodyFrame)
+    // MARK: - Body
+
+    private func buildBody() {
+        bodyHost = NSView(frame: .zero)
         bodyHost.wantsLayer = true
-        root.addSubview(bodyHost)
 
-        let inset = NSRect(x: PAD, y: 8, width: W - 2 * PAD, height: bodyFrame.height - 16)
+        // Canvas host
+        canvasHost = NSView(frame: .zero)
+        canvasToolbar = NSView(frame: .zero)
+        canvasToolbar.wantsLayer = true
+        teamPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        teamPopup.target = self
+        teamPopup.action = #selector(teamPopupChanged(_:))
+        teamPopup.bezelStyle = .texturedRounded
+        canvasToolbar.addSubview(teamPopup)
 
-        teamsScroll = makeScroll(inset)
-        teamsList = NSView(frame: inset)
-        teamsScroll.documentView = teamsList
-        bodyHost.addSubview(teamsScroll)
+        fitBtn = softButton("Fit", #selector(fitCanvasPressed(_:)), .zero)
+        canvasToolbar.addSubview(fitBtn)
+        addWorkerBtn = softButton("+ Worker", #selector(addWorkerHint(_:)), .zero)
+        canvasToolbar.addSubview(addWorkerBtn)
+        newTeamBtn = primaryButton("New team", #selector(newPairPressed(_:)), .zero)
+        canvasToolbar.addSubview(newTeamBtn)
+        canvasHost.addSubview(canvasToolbar)
 
-        missionScroll = makeScroll(inset)
-        missionList = NSView(frame: inset)
+        canvasScroll = NSScrollView(frame: .zero)
+        canvasScroll.hasVerticalScroller = true
+        canvasScroll.hasHorizontalScroller = true
+        canvasScroll.autohidesScrollers = true
+        canvasScroll.borderType = .noBorder
+        canvasScroll.drawsBackground = false
+        canvasScroll.backgroundColor = .clear
+        canvas = AgentCanvasView(frame: NSRect(x: 0, y: 0, width: 1200, height: 900))
+        canvas.onFront = { [weak self] session, nodeId in
+            self?.canvasFront(session: session, nodeId: nodeId)
+        }
+        canvas.onKill = { [weak self] session, nodeId in
+            self?.canvasKill(session: session, nodeId: nodeId)
+        }
+        canvas.onOptions = { [weak self] session in
+            TeamOptionsSheetController.shared.show(for: session) { self?.refreshUI() }
+        }
+        canvas.onPerms = { [weak self] session, workerId in
+            PermissionsSheetController.shared.show(for: session, workerId: workerId) {
+                self?.refreshUI()
+            }
+        }
+        canvasScroll.documentView = canvas
+        canvasHost.addSubview(canvasScroll)
+
+        canvasEmptyLabel = Self.label(
+            "No teams yet — create one or link terminals in Setup.",
+            frame: .zero, size: 12, secondary: true)
+        canvasEmptyLabel.alignment = .center
+        canvasEmptyLabel.isHidden = true
+        canvasHost.addSubview(canvasEmptyLabel)
+
+        bodyHost.addSubview(canvasHost)
+
+        missionScroll = makeScroll()
+        missionList = NSView(frame: .zero)
         missionScroll.documentView = missionList
         missionScroll.isHidden = true
         bodyHost.addSubview(missionScroll)
 
-        setupView = NSView(frame: inset)
-        setupView.isHidden = true
-        bodyHost.addSubview(setupView)
+        setupScroll = makeScroll()
+        setupView = NSView(frame: .zero)
+        setupScroll.documentView = setupView
+        setupScroll.isHidden = true
+        bodyHost.addSubview(setupScroll)
         buildSetupContent()
     }
 
-    private func makeScroll(_ frame: NSRect) -> NSScrollView {
-        let s = NSScrollView(frame: frame)
+    private func layoutCanvasHost(_ bounds: NSRect) {
+        let toolH: CGFloat = 40
+        canvasToolbar.frame = NSRect(x: 0, y: bounds.height - toolH, width: bounds.width, height: toolH)
+        // Toolbar layout
+        teamPopup.frame = NSRect(x: 0, y: 6, width: min(220, bounds.width * 0.35), height: 28)
+        fitBtn.frame = NSRect(x: bounds.width - 220, y: 4, width: 52, height: 30)
+        addWorkerBtn.frame = NSRect(x: bounds.width - 160, y: 4, width: 72, height: 30)
+        newTeamBtn.frame = NSRect(x: bounds.width - 80, y: 4, width: 80, height: 30)
+        canvasScroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - toolH - 4)
+        canvasEmptyLabel.frame = NSRect(x: 20, y: bounds.height / 2 - 20, width: bounds.width - 40, height: 40)
+        // Clip canvas view with rounded border
+        canvasScroll.wantsLayer = true
+        canvasScroll.layer?.cornerRadius = 12
+        canvasScroll.layer?.borderWidth = 1
+        canvasScroll.layer?.borderColor = PongTheme.border.cgColor
+    }
+
+    private func makeScroll() -> NSScrollView {
+        let s = NSScrollView(frame: .zero)
         s.hasVerticalScroller = true
         s.hasHorizontalScroller = false
         s.autohidesScrollers = true
@@ -227,12 +370,9 @@ final class PanelController: NSObject {
     }
 
     private func buildSetupContent() {
-        var y = setupView.bounds.height - 8
-        if setupView.bounds.height < 10 {
-            y = H - headerH - tabH - footerH - 40
-            setupView.setFrameSize(NSSize(width: W - 2 * PAD, height: max(400, y)))
-            y = setupView.bounds.height - 8
-        }
+        let W: CGFloat = 700
+        var y: CGFloat = 520
+        setupView.setFrameSize(NSSize(width: W, height: y + 20))
 
         func section(_ t: String) {
             y -= 22
@@ -240,44 +380,43 @@ final class PanelController: NSObject {
                                size: 10, secondary: true)
             l.font = PongTheme.font(10, weight: .semibold)
             setupView.addSubview(l)
-            y -= 10
+            y -= 8
         }
 
         section("Start")
-        y -= 44
+        y -= 40
         setupView.addSubview(primaryButton("New team", #selector(newPairPressed(_:)),
-            NSRect(x: 0, y: y, width: setupView.bounds.width, height: 40)))
-        y -= 12
-        y -= 36
+            NSRect(x: 0, y: y, width: W - 40, height: 40)))
+        y -= 48
         let st = softButton("Show saved teams", #selector(showTeamsPressed(_:)),
-            NSRect(x: 0, y: y, width: setupView.bounds.width, height: 36))
+            NSRect(x: 0, y: y, width: W - 40, height: 36))
         st.isHidden = true
         setupView.addSubview(st)
         showTeamsBtn = st
-        y -= 22
+        y -= 24
         let hint = Self.label("Open, duplicate, or delete saved team layouts.",
-            frame: NSRect(x: 4, y: y, width: setupView.bounds.width - 8, height: 16),
-            size: 11, secondary: true)
+            frame: NSRect(x: 4, y: y, width: W - 48, height: 16), size: 11, secondary: true)
         hint.isHidden = true
         setupView.addSubview(hint)
         showTeamsHint = hint
 
         y -= 48
         setupView.addSubview(softButton("Link existing terminals", #selector(linkPressed(_:)),
-            NSRect(x: 0, y: y, width: setupView.bounds.width, height: 36)))
-        y -= 56
-        let tipCard = NSView(frame: NSRect(x: 0, y: y - 90, width: setupView.bounds.width, height: 100))
+            NSRect(x: 0, y: y, width: W - 40, height: 36)))
+
+        y -= 100
+        let tipCard = NSView(frame: NSRect(x: 0, y: y, width: W - 40, height: 110))
         PongTheme.applyCard(tipCard)
-        tipCard.addSubview(Self.label("How it works",
-            frame: NSRect(x: 14, y: 70, width: 200, height: 18), bold: true, size: 12))
+        tipCard.addSubview(Self.label("Canvas",
+            frame: NSRect(x: 14, y: 80, width: 200, height: 18), bold: true, size: 12))
         tipCard.addSubview(Self.label(
-            "1. Pick a conductor (Grok recommended)\n2. Staff workers (Claude, Codex, …)\n3. Type missions in the conductor TUI\n4. Intervene in any worker window anytime",
-            frame: NSRect(x: 14, y: 10, width: tipCard.bounds.width - 28, height: 58),
+            "Drag agents to rearrange. Double-click or Front to focus a terminal.\nRight-click a node for more actions. Edges show conductor → workers.\nPositions are saved per team.",
+            frame: NSRect(x: 14, y: 12, width: tipCard.bounds.width - 28, height: 64),
             size: 11, secondary: true))
         setupView.addSubview(tipCard)
 
-        y -= 130
-        let cliCard = NSView(frame: NSRect(x: 0, y: y - 70, width: setupView.bounds.width, height: 80))
+        y -= 100
+        let cliCard = NSView(frame: NSRect(x: 0, y: y, width: W - 40, height: 80))
         PongTheme.applyCard(cliCard)
         cliCard.addSubview(Self.label("Control plane",
             frame: NSRect(x: 14, y: 50, width: 200, height: 18), bold: true, size: 12))
@@ -288,39 +427,49 @@ final class PanelController: NSObject {
         setupView.addSubview(cliCard)
     }
 
-    private func buildFooter(into root: NSView) {
-        let footer = NSView(frame: NSRect(x: 0, y: 0, width: W, height: footerH))
-        footer.wantsLayer = true
-        footer.layer?.backgroundColor = PongTheme.bgFooter.cgColor
-        let line = NSView(frame: NSRect(x: 0, y: footerH - 1, width: W, height: 1))
-        line.wantsLayer = true
-        line.layer?.backgroundColor = PongTheme.border.cgColor
-        footer.addSubview(line)
+    private func layoutSetupIfNeeded() {
+        let w = max(400, (setupScroll?.contentSize.width ?? 600) - 8)
+        if abs(setupView.frame.width - w) > 2 {
+            // keep content; just width for scroll
+            setupView.setFrameSize(NSSize(width: w, height: max(setupView.frame.height, 520)))
+        }
+    }
 
+    // MARK: - Footer
+
+    private func buildFooter() {
+        footerView = NSView(frame: .zero)
+        footerView.wantsLayer = true
+        footerView.layer?.backgroundColor = PongTheme.bgFooter.cgColor
+        footerLine = NSView(frame: .zero)
+        footerLine.wantsLayer = true
+        footerLine.layer?.backgroundColor = PongTheme.border.cgColor
+        footerView.addSubview(footerLine)
+        footerRefresh = softButton("Refresh", #selector(refreshPressed(_:)), .zero)
+        footerView.addSubview(footerRefresh)
+        footerClose = ghostButton("Close", #selector(closePressed(_:)), .zero)
+        footerView.addSubview(footerClose)
+    }
+
+    private func layoutFooter(width W: CGFloat) {
+        footerLine.frame = NSRect(x: 0, y: footerH - 1, width: W, height: 1)
         let half = (W - 2 * PAD - 10) / 2
-        footer.addSubview(softButton("Refresh", #selector(refreshPressed(_:)),
-            NSRect(x: PAD, y: 12, width: half, height: 32)))
-        footer.addSubview(ghostButton("Close", #selector(closePressed(_:)),
-            NSRect(x: PAD + half + 10, y: 12, width: half, height: 32)))
-        root.addSubview(footer)
+        footerRefresh.frame = NSRect(x: PAD, y: 11, width: half, height: 30)
+        footerClose.frame = NSRect(x: PAD + half + 10, y: 11, width: half, height: 30)
     }
 
     // MARK: - Buttons
 
     private func primaryButton(_ title: String, _ sel: Selector, _ frame: NSRect, id: String? = nil) -> NSButton {
         let b = NSButton(frame: frame)
-        b.title = title
         b.bezelStyle = .rounded
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.backgroundColor = PongTheme.accent.cgColor
         b.layer?.cornerRadius = PongTheme.radiusBtn
-        b.font = PongTheme.font(13, weight: .semibold)
-        b.contentTintColor = PongTheme.accentInk
-        // NSButton with isBordered false needs attributed title for color
         b.attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: PongTheme.accentInk,
-            .font: PongTheme.font(13, weight: .semibold),
+            .font: PongTheme.font(12, weight: .semibold),
         ])
         b.target = self
         b.action = sel
@@ -339,7 +488,7 @@ final class PanelController: NSObject {
         b.layer?.borderColor = PongTheme.border.cgColor
         b.attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: PongTheme.textPrimary,
-            .font: PongTheme.font(12, weight: .medium),
+            .font: PongTheme.font(11, weight: .medium),
         ])
         b.target = self
         b.action = sel
@@ -350,58 +499,6 @@ final class PanelController: NSObject {
     private func ghostButton(_ title: String, _ sel: Selector, _ frame: NSRect, id: String? = nil) -> NSButton {
         let b = softButton(title, sel, frame, id: id)
         b.layer?.backgroundColor = PongTheme.bgInput.cgColor
-        return b
-    }
-
-    private func chipButton(_ title: String, _ sel: Selector, _ frame: NSRect, id: String) -> NSButton {
-        let b = NSButton(frame: frame)
-        b.bezelStyle = .inline
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.backgroundColor = PongTheme.bgHover.cgColor
-        b.layer?.cornerRadius = 7
-        b.layer?.borderWidth = 1
-        b.layer?.borderColor = PongTheme.border.cgColor
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.textSecondary,
-            .font: PongTheme.font(10, weight: .medium),
-        ])
-        b.target = self
-        b.action = sel
-        b.identifier = NSUserInterfaceItemIdentifier(id)
-        return b
-    }
-
-    private func nameButton(_ title: String, frame: NSRect, id: String, action: Selector) -> NSButton {
-        let b = NSButton(frame: frame)
-        b.bezelStyle = .inline
-        b.isBordered = false
-        b.alignment = .left
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.textPrimary,
-            .font: PongTheme.font(12, weight: .semibold),
-        ])
-        b.target = self
-        b.action = action
-        b.identifier = NSUserInterfaceItemIdentifier(id)
-        b.toolTip = "Click to rename"
-        return b
-    }
-
-    private func swatchButton(color: NSColor, frame: NSRect, id: String, action: Selector) -> NSButton {
-        let b = NSButton(frame: frame)
-        b.title = ""
-        b.bezelStyle = .shadowlessSquare
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.backgroundColor = color.cgColor
-        b.layer?.cornerRadius = frame.height / 2
-        b.layer?.borderWidth = 1
-        b.layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.2).cgColor
-        b.target = self
-        b.action = action
-        b.identifier = NSUserInterfaceItemIdentifier(id)
-        b.toolTip = "Colors"
         return b
     }
 
@@ -417,27 +514,20 @@ final class PanelController: NSObject {
         styleTab(tabTeams, on: tab == .teams)
         styleTab(tabMission, on: tab == .mission)
         styleTab(tabSetup, on: tab == .setup)
-        teamsScroll.isHidden = tab != .teams
+        canvasHost.isHidden = tab != .teams
         missionScroll.isHidden = tab != .mission
-        setupView.isHidden = tab != .setup
+        setupScroll.isHidden = tab != .setup
         refreshUI()
     }
 
     private func styleTab(_ b: NSButton, on: Bool) {
         b.layer?.backgroundColor = (on ? PongTheme.tabSelected : PongTheme.tabIdle).cgColor
-        b.attributedTitle = NSAttributedString(string: b.title.isEmpty ? (b.attributedTitle.string) : b.attributedTitle.string,
-            attributes: [
-                .foregroundColor: on ? PongTheme.textPrimary : PongTheme.textSecondary,
-                .font: PongTheme.font(12, weight: on ? .semibold : .medium),
-            ])
-        // Fix titles after first style
-        let titles = [0: "Teams", 1: "Mission", 2: "Setup"]
-        if let t = titles[b.tag] {
-            b.attributedTitle = NSAttributedString(string: t, attributes: [
-                .foregroundColor: on ? PongTheme.textPrimary : PongTheme.textSecondary,
-                .font: PongTheme.font(12, weight: on ? .semibold : .medium),
-            ])
-        }
+        let titles = [0: "Canvas", 1: "Mission", 2: "Setup"]
+        let t = titles[b.tag] ?? b.attributedTitle.string
+        b.attributedTitle = NSAttributedString(string: t, attributes: [
+            .foregroundColor: on ? PongTheme.textPrimary : PongTheme.textSecondary,
+            .font: PongTheme.font(12, weight: on ? .semibold : .medium),
+        ])
     }
 
     // MARK: - Header / polling
@@ -456,12 +546,10 @@ final class PanelController: NSObject {
 
     private func startPolling() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            // Only refresh mission tab on timer (lighter); header always
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             self?.updateHeader()
-            if self?.selectedTab == .mission {
-                self?.rebuildMission()
-            }
+            if self?.selectedTab == .mission { self?.rebuildMission() }
+            if self?.selectedTab == .teams { self?.rebuildCanvas(light: true) }
         }
     }
 
@@ -471,176 +559,203 @@ final class PanelController: NSObject {
         showTeamsBtn?.isHidden = !has
         showTeamsHint?.isHidden = !has
         if has {
-            let title = "Show saved teams (\(n))"
-            showTeamsBtn?.attributedTitle = NSAttributedString(string: title, attributes: [
-                .foregroundColor: PongTheme.textPrimary,
-                .font: PongTheme.font(12, weight: .medium),
-            ])
+            showTeamsBtn?.attributedTitle = NSAttributedString(
+                string: "Show saved teams (\(n))",
+                attributes: [
+                    .foregroundColor: PongTheme.textPrimary,
+                    .font: PongTheme.font(12, weight: .medium),
+                ])
         }
     }
 
-    // MARK: - Teams tab
+    // MARK: - Canvas
 
-    private func rebuildTeams() {
-        guard let teamsList else { return }
-        teamsList.subviews.forEach { $0.removeFromSuperview() }
-        let boxW = teamsScroll.contentSize.width > 0 ? teamsScroll.contentSize.width : (W - 2 * PAD)
-        let viewH = max(teamsScroll.contentSize.height, 200)
+    private func canvasContentSize() -> NSSize {
+        let base = canvasScroll.contentSize
+        return NSSize(width: max(1100, base.width + 200), height: max(800, base.height + 200))
+    }
+
+    private func rebuildCanvas(light: Bool = false) {
         let pairs = PairState.listPairs()
-        let db = PairState.loadPairsDb()
-
+        // Team popup
+        let previous = selectedSession
+        teamPopup.removeAllItems()
         if pairs.isEmpty {
-            teamsList.setFrameSize(NSSize(width: boxW, height: viewH))
-            let empty = NSView(frame: NSRect(x: 0, y: viewH / 2 - 50, width: boxW, height: 100))
-            PongTheme.applyCard(empty)
-            empty.addSubview(Self.label("No teams yet",
-                frame: NSRect(x: 16, y: 52, width: boxW - 32, height: 20), bold: true, size: 14))
-            empty.addSubview(Self.label("Create a team in Setup, or link terminals you already have open.",
-                frame: NSRect(x: 16, y: 20, width: boxW - 32, height: 32), size: 11, secondary: true))
-            teamsList.addSubview(empty)
-            // Quick CTA
-            let cta = primaryButton("New team", #selector(newPairPressed(_:)),
-                NSRect(x: 0, y: 24, width: boxW, height: 40))
-            teamsList.addSubview(cta)
+            teamPopup.addItem(withTitle: "No teams")
+            teamPopup.isEnabled = false
+            canvasEmptyLabel.isHidden = false
+            canvas.isHidden = true
+            selectedSession = nil
             return
         }
-
-        var est: CGFloat = 8
-        var prepared: [(String, [String: Any], [[String: Any]], String, TerminalTheme.Colors)] = []
-        for name in pairs {
-            let entry = db[name] as? [String: Any] ?? [:]
-            var ws = Workers.list(from: entry)
-            if ws.isEmpty {
-                ws = [[
-                    "id": "w1",
-                    "label": (entry["worker_label"] as? String) ?? "Worker",
-                    "type": (entry["worker_type"] as? String) ?? "linked",
-                ]]
-            }
+        teamPopup.isEnabled = true
+        canvasEmptyLabel.isHidden = true
+        canvas.isHidden = false
+        for p in pairs {
+            let entry = PairState.loadPairsDb()[p] as? [String: Any] ?? [:]
             let display = (entry["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let stowed = (entry["stowed"] as? Bool) == true
-            let hermesTitle = (display.isEmpty ? name : display) + (stowed ? " · hidden" : "")
-            let hCols = TerminalTheme.Colors.from(entry["colors"]) ?? .hermesDefault
-            prepared.append((name, entry, ws, hermesTitle, hCols))
-            est += 72 + CGFloat(ws.count) * 36 + 48 + 14
+            let title = display.isEmpty ? p : "\(display)  (\(p))"
+            teamPopup.addItem(withTitle: title)
+            teamPopup.lastItem?.representedObject = p
         }
-        let contentH = max(viewH, est)
-        teamsList.setFrameSize(NSSize(width: boxW, height: contentH))
+        if let previous, let idx = pairs.firstIndex(of: previous) {
+            teamPopup.selectItem(at: idx)
+            selectedSession = previous
+        } else {
+            teamPopup.selectItem(at: 0)
+            selectedSession = pairs[0]
+        }
+        guard let session = selectedSession else { return }
 
-        var y = contentH - 4
-        for (name, entry, ws, hermesTitle, hCols) in prepared {
-            let stowed = (entry["stowed"] as? Bool) == true
-            let hNS = hCols.asNSColors
-            let cardH: CGFloat = 72 + CGFloat(ws.count) * 36 + 44
-            y -= cardH
-            let card = NSView(frame: NSRect(x: 0, y: y, width: boxW, height: cardH - 8))
-            PongTheme.applyCard(card)
-            card.alphaValue = stowed ? 0.55 : 1
-
-            // Conductor row
-            let cond = entry["conductor"] as? [String: Any]
-            let cl = (cond?["label"] as? String) ?? "Conductor"
-            let condType = (cond?["type"] as? String) ?? ""
-            card.addSubview(swatchButton(color: hNS.hi,
-                frame: NSRect(x: 12, y: cardH - 36, width: 12, height: 12),
-                id: name, action: #selector(hermesColorPressed(_:))))
-            card.addSubview(nameButton("\(cl) · \(hermesTitle)",
-                frame: NSRect(x: 30, y: cardH - 42, width: min(220, boxW - 200), height: 22),
-                id: name, action: #selector(hermesNamePressed(_:))))
-            if !condType.isEmpty {
-                card.addSubview(Self.label(condType,
-                    frame: NSRect(x: 30, y: cardH - 54, width: 80, height: 12), size: 9, secondary: true))
-            }
-            let chipY = cardH - 44
-            var cx = boxW - 12
-            func placeChip(_ t: String, _ sel: Selector) {
-                let w: CGFloat = t.count > 5 ? 52 : 46
-                cx -= w + 4
-                card.addSubview(chipButton(t, sel, NSRect(x: cx, y: chipY, width: w, height: 24), id: name))
-            }
-            placeChip("Kill", #selector(killPressed(_:)))
-            placeChip(stowed ? "Show" : "Hide", #selector(hidePressed(_:)))
-            placeChip("Front", #selector(frontPressed(_:)))
-            placeChip("Options", #selector(teamOptionsPressed(_:)))
-
-            // Workers
-            var wy = chipY - 8
-            for (i, w) in ws.enumerated() {
-                let wid = (w["id"] as? String) ?? "w\(i + 1)"
-                let lab = (w["label"] as? String) ?? "worker"
-                let typ = (w["type"] as? String) ?? ""
-                wy -= 36
-                let row = NSView(frame: NSRect(x: 8, y: wy, width: boxW - 16, height: 32))
-                row.wantsLayer = true
-                row.layer?.backgroundColor = PongTheme.bgInput.cgColor
-                row.layer?.cornerRadius = 8
-                let wCols = TerminalTheme.Colors.from(w["colors"]) ?? .workerDefault
-                let wNS = wCols.asNSColors
-                let tag = "\(name)|\(wid)"
-                row.addSubview(swatchButton(color: wNS.hi,
-                    frame: NSRect(x: 8, y: 10, width: 10, height: 10),
-                    id: tag, action: #selector(workerColorPressed(_:))))
-                row.addSubview(nameButton(lab,
-                    frame: NSRect(x: 24, y: 4, width: 100, height: 24),
-                    id: tag, action: #selector(workerNamePressed(_:))))
-                if !typ.isEmpty {
-                    row.addSubview(Self.label(typ,
-                        frame: NSRect(x: 124, y: 8, width: 50, height: 14), size: 9, secondary: true))
-                }
-                row.addSubview(chipButton("Front", #selector(frontWorkerPressed(_:)),
-                    NSRect(x: boxW - 200, y: 4, width: 44, height: 24), id: tag))
-                row.addSubview(chipButton("Kill", #selector(killWorkerPressed(_:)),
-                    NSRect(x: boxW - 152, y: 4, width: 40, height: 24), id: tag))
-                let wperms = Workers.permissions(pair: name, workerId: wid)
-                let won = ["ban_mcp", "ban_root", "ban_network", "ban_system_paths", "repo_only"]
-                    .filter { (wperms[$0] as? Bool) == true }.count
-                let wnote = !((wperms["custom_prompt"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                let wtitle = (won > 0 || wnote) ? "Perms \(won + (wnote ? 1 : 0))" : "Perms"
-                row.addSubview(chipButton(wtitle, #selector(permsWorkerPressed(_:)),
-                    NSRect(x: boxW - 108, y: 4, width: 56, height: 24), id: tag))
-                card.addSubview(row)
-            }
-
-            // Activity footer of card
-            let act = TeamActivity.info(for: name)
-            let actY: CGFloat = 8
-            card.addSubview(Self.label("\(act.status)" + (act.sentAge.isEmpty ? "" : " · \(act.sentAge)"),
-                frame: NSRect(x: 12, y: actY + 14, width: boxW - 140, height: 14), size: 10, secondary: true))
-            card.addSubview(Self.label(act.claim.isEmpty ? "No claim yet" : act.claim,
-                frame: NSRect(x: 12, y: actY, width: boxW - 140, height: 14), size: 10, secondary: true))
-            card.addSubview(chipButton("Reply", #selector(openReplyPressed(_:)),
-                NSRect(x: boxW - 120, y: actY + 4, width: 48, height: 24), id: name))
-            card.addSubview(chipButton("Sent", #selector(openSentPressed(_:)),
-                NSRect(x: boxW - 68, y: actY + 4, width: 44, height: 24), id: name))
-
-            teamsList.addSubview(card)
-            y -= 6
+        let size = canvasContentSize()
+        if !light || canvas.frame.size.width < size.width {
+            canvas.setFrameSize(size)
         }
 
-        let cv = teamsScroll.contentView
-        let topY = max(0, contentH - cv.bounds.height)
-        cv.scroll(to: NSPoint(x: 0, y: topY))
-        teamsScroll.reflectScrolledClipView(cv)
+        let entry = PairState.loadPairsDb()[session] as? [String: Any] ?? [:]
+        let saved = CanvasLayout.positions(for: session)
+        var models: [AgentNodeModel] = []
+
+        let cond = entry["conductor"] as? [String: Any]
+        let condType = (cond?["type"] as? String) ?? "hermes"
+        let condLabel = (cond?["label"] as? String) ?? "Conductor"
+        let condId = (cond?["id"] as? String) ?? "c1"
+        let stowed = (entry["stowed"] as? Bool) == true
+        let cOrigin = saved[condId] ?? CanvasLayout.defaultPosition(role: "conductor", index: 0, canvas: size)
+        let cAccent = TerminalTheme.Colors.from(entry["colors"])?.asNSColors.hi
+            ?? NSColor(calibratedRed: 0.55, green: 0.45, blue: 0.95, alpha: 1)
+        models.append(AgentNodeModel(
+            id: condId,
+            role: "conductor",
+            title: condLabel,
+            subtitle: "\(condType) · orchestra",
+            status: stowed ? "hidden" : "live",
+            accent: cAccent,
+            origin: cOrigin
+        ))
+
+        let ws = Workers.list(from: entry)
+        for (i, w) in ws.enumerated() {
+            let wid = (w["id"] as? String) ?? "w\(i + 1)"
+            let lab = (w["label"] as? String) ?? wid
+            let typ = (w["type"] as? String) ?? "worker"
+            let origin = saved[wid] ?? CanvasLayout.defaultPosition(role: "worker", index: i, canvas: size)
+            let accent = TerminalTheme.Colors.from(w["colors"])?.asNSColors.hi
+                ?? NSColor(calibratedRed: 0.3, green: 0.7, blue: 0.9, alpha: 1)
+            // Status from snapshot if available
+            var status = "idle"
+            if let snap = lastSnapshotCache,
+               let teams = snap["teams"] as? [[String: Any]],
+               let team = teams.first(where: { ($0["session"] as? String) == session }),
+               let workers = team["workers"] as? [[String: Any]],
+               let match = workers.first(where: { ($0["id"] as? String) == wid }) {
+                status = (match["status_hint"] as? String) ?? status
+                let oj = match["open_jobs"] as? Int ?? 0
+                if oj > 0 { status = "\(status) · \(oj) job\(oj == 1 ? "" : "s")" }
+            }
+            models.append(AgentNodeModel(
+                id: wid,
+                role: "worker",
+                title: lab,
+                subtitle: typ,
+                status: status,
+                accent: accent,
+                origin: origin
+            ))
+        }
+
+        canvas.reload(session: session, models: models)
     }
 
-    // MARK: - Mission tab (snapshot)
+    private var lastSnapshotCache: [String: Any]?
+
+    @objc private func teamPopupChanged(_ sender: NSPopUpButton) {
+        selectedSession = sender.selectedItem?.representedObject as? String
+        rebuildCanvas()
+    }
+
+    @objc private func fitCanvasPressed(_ sender: NSButton) {
+        guard let session = selectedSession else { return }
+        // Reset positions to defaults
+        let size = canvasContentSize()
+        var pos: [String: CGPoint] = [:]
+        let entry = PairState.loadPairsDb()[session] as? [String: Any] ?? [:]
+        let condId = ((entry["conductor"] as? [String: Any])?["id"] as? String) ?? "c1"
+        pos[condId] = CanvasLayout.defaultPosition(role: "conductor", index: 0, canvas: size)
+        for (i, w) in Workers.list(from: entry).enumerated() {
+            let wid = (w["id"] as? String) ?? "w\(i + 1)"
+            pos[wid] = CanvasLayout.defaultPosition(role: "worker", index: i, canvas: size)
+        }
+        CanvasLayout.save(session: session, positions: pos)
+        rebuildCanvas()
+    }
+
+    @objc private func addWorkerHint(_ sender: NSButton) {
+        let a = NSAlert()
+        a.messageText = "Add a worker"
+        a.informativeText =
+            "v1: start a New team with multiple workers, or Link existing terminals.\n\n" +
+            "Canvas already shows every worker on the selected team — drag to arrange."
+        a.addButton(withTitle: "New team")
+        a.addButton(withTitle: "Link terminals")
+        a.addButton(withTitle: "Cancel")
+        let r = a.runModal()
+        if r == .alertFirstButtonReturn {
+            newPairPressed(sender)
+        } else if r == .alertSecondButtonReturn {
+            linkPressed(sender)
+        }
+    }
+
+    private func canvasFront(session: String, nodeId: String) {
+        if nodeId == "c1" || nodeId.hasPrefix("c") {
+            // conductor — front whole pair
+            DispatchQueue.global(qos: .userInitiated).async { Pairing.bringToFront(session) }
+        } else {
+            Workers.frontWorker(pair: session, workerId: nodeId)
+        }
+    }
+
+    private func canvasKill(session: String, nodeId: String) {
+        if nodeId == "c1" || !(nodeId.hasPrefix("w")) {
+            let alert = NSAlert()
+            alert.messageText = "Kill entire team?"
+            alert.informativeText = session
+            alert.addButton(withTitle: "Kill team")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            Pairing.killPair(session)
+            refreshUI()
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Remove worker \(nodeId)?"
+            alert.addButton(withTitle: "Remove")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            _ = Workers.removeWorker(pair: session, workerId: nodeId)
+            refreshUI()
+        }
+    }
+
+    // MARK: - Mission (snapshot)
 
     private func loadSnapshot() -> [String: Any] {
-        // Prefer CLI snapshot for contract fidelity
         let out = Pong.sh("export PATH=\"$HOME/bin:/opt/homebrew/bin:$PATH\"; pong snapshot --compact 2>/dev/null | head -c 500000")
         if let data = out.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            obj["contract_version"] != nil {
+            lastSnapshotCache = obj
             return obj
         }
-        // Fallback: read snapshot.json
-        return Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        let file = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        if !file.isEmpty { lastSnapshotCache = file }
+        return file
     }
 
     private func rebuildMission() {
         guard let missionList else { return }
         missionList.subviews.forEach { $0.removeFromSuperview() }
-        let boxW = missionScroll.contentSize.width > 0 ? missionScroll.contentSize.width : (W - 2 * PAD)
+        let boxW = max(320, missionScroll.contentSize.width > 0 ? missionScroll.contentSize.width : 500)
         let snap = loadSnapshot()
         let teams = (snap["teams"] as? [[String: Any]]) ?? []
         let ledger = (snap["ledger"] as? [String: Any]) ?? [:]
@@ -650,11 +765,14 @@ final class PanelController: NSObject {
         var blocks: [NSView] = []
         var totalH: CGFloat = 12
 
-        // Bridge card
-        let bridgeCard = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: 64))
-        PongTheme.applyCard(bridgeCard)
-        let bridgeTitle = bridgeOn ? "Bridge on" : "Bridge off"
-        bridgeCard.addSubview(Self.label(bridgeTitle,
+        func card(_ h: CGFloat) -> NSView {
+            let v = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: h))
+            PongTheme.applyCard(v)
+            return v
+        }
+
+        let bridgeCard = card(64)
+        bridgeCard.addSubview(Self.label(bridgeOn ? "Bridge on" : "Bridge off",
             frame: NSRect(x: 14, y: 34, width: 200, height: 18), bold: true, size: 13))
         bridgeCard.addSubview(Self.label(bridge.isEmpty ? "No bound session" : bridge,
             frame: NSRect(x: 14, y: 12, width: boxW - 28, height: 18), size: 10, secondary: true))
@@ -664,31 +782,28 @@ final class PanelController: NSObject {
         dot.layer?.backgroundColor = (bridgeOn ? PongTheme.live : PongTheme.idle).cgColor
         bridgeCard.addSubview(dot)
         blocks.append(bridgeCard)
-        totalH += 64 + 10
+        totalH += 74
 
-        // Ledger strip
         let rounds = ledger["rounds"] as? Int ?? 0
         let rate = ledger["accept_rate"] as? Double ?? 0
         let streak = ledger["reject_streak"] as? Int ?? 0
-        let ledCard = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: 56))
-        PongTheme.applyCard(ledCard)
+        let ledCard = card(56)
         ledCard.addSubview(Self.label("Verdict ledger",
             frame: NSRect(x: 14, y: 30, width: 160, height: 16), bold: true, size: 12))
         ledCard.addSubview(Self.label(
             "\(rounds) rounds · \(Int(rate * 100))% accept · reject streak \(streak)",
             frame: NSRect(x: 14, y: 10, width: boxW - 28, height: 16), size: 11, secondary: true))
         blocks.append(ledCard)
-        totalH += 56 + 10
+        totalH += 66
 
         if teams.isEmpty {
-            let empty = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: 80))
-            PongTheme.applyCard(empty)
-            empty.addSubview(Self.label("No team data in snapshot",
-                frame: NSRect(x: 14, y: 44, width: boxW - 28, height: 18), bold: true, size: 13))
-            empty.addSubview(Self.label("Start a team, then jobs will appear here.",
-                frame: NSRect(x: 14, y: 20, width: boxW - 28, height: 18), size: 11, secondary: true))
+            let empty = card(72)
+            empty.addSubview(Self.label("No team data",
+                frame: NSRect(x: 14, y: 38, width: boxW - 28, height: 18), bold: true, size: 13))
+            empty.addSubview(Self.label("Start a team on the Canvas tab.",
+                frame: NSRect(x: 14, y: 16, width: boxW - 28, height: 16), size: 11, secondary: true))
             blocks.append(empty)
-            totalH += 80 + 10
+            totalH += 82
         }
 
         for team in teams {
@@ -698,79 +813,47 @@ final class PanelController: NSObject {
             let condLabel = (cond?["label"] as? String) ?? "Conductor"
             let jobs = team["jobs"] as? [String: Any] ?? [:]
             let openJobs = (jobs["open"] as? [[String: Any]]) ?? []
-            let counts = jobs["counts"] as? [String: Any] ?? [:]
-            let openN = counts["open"] as? Int ?? openJobs.count
+            let openN = (jobs["counts"] as? [String: Any])?["open"] as? Int ?? openJobs.count
             let workers = (team["workers"] as? [[String: Any]]) ?? []
-
             let jobRows = max(openJobs.count, 1)
-            let cardH: CGFloat = 70 + CGFloat(workers.count) * 22 + CGFloat(jobRows) * 28
-            let card = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: cardH))
-            PongTheme.applyCard(card)
-            card.addSubview(Self.label(display,
-                frame: NSRect(x: 14, y: cardH - 28, width: boxW - 100, height: 18), bold: true, size: 13))
-            card.addSubview(Self.label("\(condLabel) · \(openN) open job\(openN == 1 ? "" : "s")",
-                frame: NSRect(x: 14, y: cardH - 44, width: boxW - 28, height: 14), size: 10, secondary: true))
-
-            var ly = cardH - 56
+            let cardH: CGFloat = 64 + CGFloat(workers.count) * 20 + CGFloat(jobRows) * 28
+            let c = card(cardH)
+            c.addSubview(Self.label(display,
+                frame: NSRect(x: 14, y: cardH - 26, width: boxW - 40, height: 18), bold: true, size: 13))
+            c.addSubview(Self.label("\(condLabel) · \(openN) open",
+                frame: NSRect(x: 14, y: cardH - 42, width: boxW - 40, height: 14), size: 10, secondary: true))
+            var ly = cardH - 54
             for w in workers {
-                let lab = (w["label"] as? String) ?? (w["id"] as? String) ?? "?"
+                let lab = (w["label"] as? String) ?? "?"
                 let hint = (w["status_hint"] as? String) ?? "idle"
-                let oj = w["open_jobs"] as? Int ?? 0
-                ly -= 20
-                card.addSubview(Self.label("\(lab)  ·  \(hint)" + (oj > 0 ? " (\(oj))" : ""),
+                ly -= 18
+                c.addSubview(Self.label("\(lab) · \(hint)",
                     frame: NSRect(x: 14, y: ly, width: boxW - 28, height: 16), size: 11, secondary: true))
             }
-
-            ly -= 8
+            ly -= 6
             if openJobs.isEmpty {
-                ly -= 24
-                card.addSubview(Self.label("No open jobs — use pong job create from the conductor",
-                    frame: NSRect(x: 14, y: ly, width: boxW - 28, height: 20), size: 10, secondary: true))
+                ly -= 22
+                c.addSubview(Self.label("No open jobs",
+                    frame: NSRect(x: 14, y: ly, width: boxW - 28, height: 18), size: 10, secondary: true))
             } else {
                 for j in openJobs.prefix(8) {
-                    ly -= 28
-                    let jid = (j["id"] as? String) ?? "?"
+                    ly -= 26
                     let st = (j["status"] as? String) ?? "?"
-                    let prev = (j["task_preview"] as? String) ?? ""
-                    let row = NSView(frame: NSRect(x: 10, y: ly, width: boxW - 20, height: 24))
+                    let prev = (j["task_preview"] as? String) ?? (j["id"] as? String) ?? ""
+                    let row = NSView(frame: NSRect(x: 10, y: ly, width: boxW - 20, height: 22))
                     row.wantsLayer = true
                     row.layer?.backgroundColor = PongTheme.bgInput.cgColor
                     row.layer?.cornerRadius = 6
-                    row.addSubview(Self.label(st,
-                        frame: NSRect(x: 8, y: 4, width: 70, height: 16), size: 10, secondary: false))
-                    row.addSubview(Self.label(prev.isEmpty ? jid : prev,
-                        frame: NSRect(x: 82, y: 4, width: boxW - 120, height: 16), size: 10, secondary: true))
-                    card.addSubview(row)
+                    row.addSubview(Self.label(st, frame: NSRect(x: 8, y: 3, width: 70, height: 16), size: 10))
+                    row.addSubview(Self.label(prev, frame: NSRect(x: 82, y: 3, width: boxW - 120, height: 16), size: 10, secondary: true))
+                    c.addSubview(row)
                 }
             }
-            blocks.append(card)
+            blocks.append(c)
             totalH += cardH + 10
         }
 
-        // Events tail
-        let events = (snap["events_tail"] as? [[String: Any]]) ?? []
-        if !events.isEmpty {
-            let show = Array(events.suffix(6).reversed())
-            let eh: CGFloat = 28 + CGFloat(show.count) * 18
-            let ec = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: eh))
-            PongTheme.applyCard(ec)
-            ec.addSubview(Self.label("Recent events",
-                frame: NSRect(x: 14, y: eh - 24, width: 160, height: 16), bold: true, size: 12))
-            var ey = eh - 40
-            for e in show {
-                let t = (e["type"] as? String) ?? "?"
-                let jid = (e["job_id"] as? String) ?? ""
-                let st = (e["status"] as? String) ?? ""
-                let line = [t, jid, st].filter { !$0.isEmpty }.joined(separator: " · ")
-                ec.addSubview(Self.label(line,
-                    frame: NSRect(x: 14, y: ey, width: boxW - 28, height: 14), size: 10, secondary: true))
-                ey -= 18
-            }
-            blocks.append(ec)
-            totalH += eh + 10
-        }
-
-        let contentH = max(missionScroll.contentSize.height, totalH + 20)
+        let contentH = max(missionScroll.contentSize.height, totalH + 24)
         missionList.setFrameSize(NSSize(width: boxW, height: contentH))
         var y = contentH - 8
         for b in blocks {
@@ -780,12 +863,11 @@ final class PanelController: NSObject {
             y -= 10
         }
         let mcv = missionScroll.contentView
-        let mTop = max(0, contentH - mcv.bounds.height)
-        mcv.scroll(to: NSPoint(x: 0, y: mTop))
+        mcv.scroll(to: NSPoint(x: 0, y: max(0, contentH - mcv.bounds.height)))
         missionScroll.reflectScrolledClipView(mcv)
     }
 
-    // MARK: - Actions (preserved)
+    // MARK: - Actions
 
     @objc private func showTeamsPressed(_ sender: NSButton) {
         TeamsManagerPanel.shared.show { [weak self] in self?.refreshUI() }
@@ -801,6 +883,7 @@ final class PanelController: NSObject {
             let name = Pairing.startFresh(workers: workers, conductor: conductor)
             usleep(200_000)
             DispatchQueue.main.async {
+                self.selectedSession = name
                 self.selectTab(.teams, animated: true)
                 self.refreshUI()
                 Self.showPairPersistTip(name)
@@ -809,145 +892,7 @@ final class PanelController: NSObject {
     }
 
     @objc private func linkPressed(_ sender: NSButton) {
-        Pong.log("link → guide")
         guide.startLink(parent: self)
-    }
-
-    @objc private func frontPressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        DispatchQueue.global(qos: .userInitiated).async { Pairing.bringToFront(name) }
-    }
-
-    @objc private func killPressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        Pairing.killPair(name)
-        refreshUI()
-    }
-
-    @objc private func hidePressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        let stowed = ((PairState.loadPairsDb()[name] as? [String: Any])?["stowed"] as? Bool) == true
-        DispatchQueue.global(qos: .userInitiated).async {
-            if stowed { Pairing.unstow(name) } else { Pairing.stow(name) }
-            DispatchQueue.main.async { self.refreshUI() }
-        }
-    }
-
-    @objc private func openReplyPressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        ReplyViewerController.shared.show(session: name, kind: .reply)
-    }
-
-    @objc private func openSentPressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        ReplyViewerController.shared.show(session: name, kind: .sent)
-    }
-
-    @objc private func permsPressed(_ sender: NSButton) {
-        guard let name = sender.identifier?.rawValue else { return }
-        PermissionsSheetController.shared.show(for: name, workerId: nil) { [weak self] in
-            self?.refreshUI()
-        }
-    }
-
-    @objc private func frontWorkerPressed(_ sender: NSButton) {
-        guard let tag = sender.identifier?.rawValue else { return }
-        let parts = tag.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return }
-        Workers.frontWorker(pair: parts[0], workerId: parts[1])
-    }
-
-    @objc private func killWorkerPressed(_ sender: NSButton) {
-        guard let tag = sender.identifier?.rawValue else { return }
-        let parts = tag.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return }
-        let alert = NSAlert()
-        alert.messageText = "Remove \(parts[1]) from team?"
-        alert.informativeText = "Kills that worker terminal. Conductor stays if other workers remain."
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        _ = Workers.removeWorker(pair: parts[0], workerId: parts[1])
-        refreshUI()
-    }
-
-    @objc private func permsWorkerPressed(_ sender: NSButton) {
-        guard let tag = sender.identifier?.rawValue else { return }
-        let parts = tag.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return }
-        PermissionsSheetController.shared.show(for: parts[0], workerId: parts[1]) { [weak self] in
-            self?.refreshUI()
-        }
-    }
-
-    @objc private func teamOptionsPressed(_ sender: NSButton) {
-        guard let pair = sender.identifier?.rawValue else { return }
-        TeamOptionsSheetController.shared.show(for: pair) { [weak self] in
-            self?.refreshUI()
-        }
-    }
-
-    @objc private func hermesNamePressed(_ sender: NSButton) {
-        guard let pair = sender.identifier?.rawValue else { return }
-        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
-        let current = (entry["display_name"] as? String) ?? pair
-        promptName(title: "Name this team", value: current) { name in
-            Workers.setPairDisplayName(pair, name)
-            self.refreshUI()
-        }
-    }
-
-    @objc private func workerNamePressed(_ sender: NSButton) {
-        guard let tag = sender.identifier?.rawValue else { return }
-        let parts = tag.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return }
-        let entry = PairState.loadPairsDb()[parts[0]] as? [String: Any] ?? [:]
-        let ws = Workers.list(from: entry)
-        let cur = (ws.first(where: { ($0["id"] as? String) == parts[1] })?["label"] as? String) ?? parts[1]
-        promptName(title: "Name worker \(parts[1])", value: cur) { name in
-            Workers.setWorkerLabel(pair: parts[0], workerId: parts[1], label: name)
-            self.refreshUI()
-        }
-    }
-
-    @objc private func hermesColorPressed(_ sender: NSButton) {
-        guard let pair = sender.identifier?.rawValue else { return }
-        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
-        let cols = TerminalTheme.Colors.from(entry["colors"]) ?? .hermesDefault
-        ColorThemeSheet.shared.show(title: "Conductor colors · \(pair)", colors: cols) { [weak self] c in
-            Workers.setPairColors(pair, colors: c)
-            self?.refreshUI()
-        }
-    }
-
-    @objc private func workerColorPressed(_ sender: NSButton) {
-        guard let tag = sender.identifier?.rawValue else { return }
-        let parts = tag.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return }
-        let entry = PairState.loadPairsDb()[parts[0]] as? [String: Any] ?? [:]
-        let ws = Workers.list(from: entry)
-        let w = ws.first(where: { ($0["id"] as? String) == parts[1] }) ?? [:]
-        let cols = TerminalTheme.Colors.from(w["colors"]) ?? .workerDefault
-        ColorThemeSheet.shared.show(title: "Colors · \(parts[1])", colors: cols) { [weak self] c in
-            Workers.setWorkerColors(pair: parts[0], workerId: parts[1], colors: c)
-            self?.refreshUI()
-        }
-    }
-
-    private func promptName(title: String, value: String, onOK: @escaping (String) -> Void) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = "Shows in the panel and Terminal title."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.stringValue = value
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty { onOK(name) }
     }
 
     @objc private func refreshPressed(_ sender: NSButton) { refreshUI() }
@@ -967,10 +912,9 @@ final class PanelController: NSObject {
         let alert = NSAlert()
         alert.messageText = "Team stays connected"
         alert.informativeText =
-            "“\(label)” stays linked until you hit Kill — even if you quit Pong.\n\n" +
-            "Link existing keeps the worker’s model and chat.\n" +
-            "New team starts clean conductor + workers.\n\n" +
-            "Jobs: pong job create · paste is optional."
+            "“\(label)” stays linked until Kill.\n\n" +
+            "Canvas: drag agents, double-click to Front.\n" +
+            "Jobs: pong job create · paste optional."
         alert.addButton(withTitle: "Got it")
         alert.addButton(withTitle: "Don't remind me")
         if alert.runModal() == .alertSecondButtonReturn {
