@@ -316,9 +316,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         canvas.onDragStateChanged = { [weak self] dragging in
             self?.canvasDragging = dragging
-            self?.canvasScroll.hasVerticalScroller = !dragging
-            self?.canvasScroll.hasHorizontalScroller = !dragging
+            // Keep scrollers during pan; only suppress autoscroll fight while moving nodes
+            if self?.canvas.isPanning != true {
+                self?.canvasScroll.hasVerticalScroller = !dragging
+                self?.canvasScroll.hasHorizontalScroller = !dragging
+            }
         }
+        // Large document so pan has room
+        canvasScroll.allowsMagnification = true
+        canvasScroll.minMagnification = 0.5
+        canvasScroll.maxMagnification = 2.0
         canvasScroll.documentView = canvas
         canvasPage.addSubview(canvasScroll)
 
@@ -519,8 +526,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         let showPairs: [String] = multi ? pairs : [selectedSession ?? pairs[0]].compactMap { $0 }
 
         let size = NSSize(
-            width: max(1400, canvasScroll.contentSize.width + 400 + CGFloat(max(0, showPairs.count - 1)) * 520),
-            height: max(1000, canvasScroll.contentSize.height + 320)
+            width: max(2200, canvasScroll.contentSize.width + 800 + CGFloat(max(0, showPairs.count - 1)) * 520),
+            height: max(1600, canvasScroll.contentSize.height + 600)
         )
         if !light { canvas.setFrameSize(size) }
 
@@ -582,7 +589,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 ))
             }
 
-            // + docked to orchestrator right edge (layoutDockedAddButtons snaps it)
+            // Single + docked to orchestrator only (no auto + on every worker)
             models.append(AgentNodeModel(
                 session: session, id: "add", role: "add",
                 title: "+", subtitle: "worker", detail: "Add worker",
@@ -590,20 +597,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 origin: CGPoint(x: cOrigin.x + AgentNodeView.size.width + 6,
                                 y: cOrigin.y + AgentNodeView.size.height / 2 - 14)
             ))
-            // + on each worker edge for subagents
-            for (i, w) in ws.enumerated() {
-                let wid = (w["id"] as? String) ?? "w\(i + 1)"
-                let wKey = CanvasLayout.key(session: session, nodeId: wid, multi: multi)
-                let wOrigin = posMap[wKey] ?? posMap[wid]
-                    ?? CanvasLayout.defaultPosition(teamIndex: ti, role: "worker", workerIndex: i, canvas: size, multi: multi)
-                models.append(AgentNodeModel(
-                    session: session, id: "add-sub-\(wid)", role: "add-sub",
-                    title: "+", subtitle: "subagent", detail: "Add subagent",
-                    status: "idle", teamLabel: "", accent: PongTheme.blue,
-                    origin: CGPoint(x: wOrigin.x + AgentNodeView.size.width + 6,
-                                    y: wOrigin.y + AgentNodeView.size.height / 2 - 14)
-                ))
-            }
+            // Subagents: right-click a worker → "Add subagent…" (no floating chips)
         }
 
         canvas.reload(models: models, multiTeam: multi)

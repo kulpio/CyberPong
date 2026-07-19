@@ -351,6 +351,7 @@ final class AgentNodeView: NSView {
             menu.addItem(withTitle: "Team options", action: #selector(optsTap), keyEquivalent: "")
             menu.addItem(withTitle: "Kill team", action: #selector(killTap), keyEquivalent: "")
         } else {
+            menu.addItem(withTitle: "Add subagent…", action: #selector(addFromMenu), keyEquivalent: "")
             menu.addItem(withTitle: "Permissions", action: #selector(permsTap), keyEquivalent: "")
             menu.addItem(withTitle: "Remove worker", action: #selector(killTap), keyEquivalent: "")
         }
@@ -359,16 +360,43 @@ final class AgentNodeView: NSView {
     }
 
     @objc private func killTap() { onKill?(model) }
-    @objc private func addFromMenu() { onAddWorker?(model) }
+    @objc private func addFromMenu() {
+        // Worker context → treat as subagent request; orchestrator → worker
+        if model.role == "worker" {
+            // Synthesize add-sub identity for handler
+            let sub = AgentNodeModel(
+                session: model.session, id: "add-sub-\(model.id)", role: "add-sub",
+                title: "+", subtitle: "subagent", detail: "", status: "idle",
+                teamLabel: "", accent: PongTheme.blue, origin: model.origin
+            )
+            onAddWorker?(sub)
+        } else {
+            onAddWorker?(model)
+        }
+    }
+}
+
+private extension NSView {
+    func enclosingNodeView() -> AgentNodeView? {
+        var v: NSView? = self
+        while let cur = v {
+            if let n = cur as? AgentNodeView { return n }
+            v = cur.superview
+        }
+        return nil
+    }
 }
 
 // MARK: - Canvas
 
 final class AgentCanvasView: NSView {
     private(set) var isDragging = false
+    private(set) var isPanning = false
     private var multiTeam = false
     private var models: [AgentNodeModel] = []
     private var nodeViews: [String: AgentNodeView] = [:]
+    private var panStart: NSPoint?
+    private var scrollOriginStart: NSPoint?
 
     var onFront: ((AgentNodeModel) -> Void)?
     var onKill: ((AgentNodeModel) -> Void)?
@@ -384,6 +412,67 @@ final class AgentCanvasView: NSView {
         layer?.backgroundColor = PongTheme.bg.cgColor
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Background hit → pan; nodes handle themselves.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // point is in superview coords
+        guard let hit = super.hitTest(point) else { return nil }
+        if hit is AgentNodeView || hit.enclosingNodeView() != nil {
+            return hit
+        }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Only pan if click is not on a node
+        let local = convert(event.locationInWindow, from: nil)
+        for (_, v) in nodeViews {
+            if v.frame.contains(local) { return }
+        }
+        guard let scroll = enclosingScrollView else { return }
+        panStart = event.locationInWindow
+        scrollOriginStart = scroll.contentView.bounds.origin
+        isPanning = true
+        onDragStateChanged?(true)
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isPanning, let panStart, let scrollOriginStart,
+              let scroll = enclosingScrollView else { return }
+        let p = event.locationInWindow
+        let dx = p.x - panStart.x
+        let dy = p.y - panStart.y
+        // Drag background: content moves with cursor (natural pan)
+        var origin = scrollOriginStart
+        origin.x -= dx
+        origin.y -= dy
+        // Clamp to document
+        let doc = bounds.size
+        let vis = scroll.contentView.bounds.size
+        let maxX = max(0, doc.width - vis.width)
+        let maxY = max(0, doc.height - vis.height)
+        origin.x = min(max(0, origin.x), maxX)
+        origin.y = min(max(0, origin.y), maxY)
+        scroll.contentView.setBoundsOrigin(origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if isPanning {
+            isPanning = false
+            panStart = nil
+            scrollOriginStart = nil
+            onDragStateChanged?(false)
+            NSCursor.arrow.set()
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
