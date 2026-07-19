@@ -41,6 +41,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var selected: Destination = .canvas
     private var selectedSession: String?
     private var lastSnapshot: [String: Any]?
+    private var canvasDragging = false
     private var poll: Timer?
     private let guide = LinkGuideController()
 
@@ -307,6 +308,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         canvas.onPerms = { [weak self] s, w in
             PermissionsSheetController.shared.show(for: s, workerId: w) { self?.reload() }
         }
+        canvas.onDragStateChanged = { [weak self] dragging in
+            self?.canvasDragging = dragging
+            // Prevent scroll view from fighting the drag
+            self?.canvasScroll.hasVerticalScroller = !dragging
+            self?.canvasScroll.hasHorizontalScroller = !dragging
+        }
         canvasScroll.documentView = canvas
         canvasPage.addSubview(canvasScroll)
 
@@ -432,9 +439,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func startPoll() {
         poll?.invalidate()
         poll = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
-            self?.updateStatus()
-            if self?.selected == .mission { self?.paintMission() }
-            if self?.selected == .canvas { self?.refreshCanvas(light: true) }
+            guard let self else { return }
+            if self.canvasDragging { return }
+            self.updateStatus()
+            if self.selected == .mission { self.paintMission() }
+            if self.selected == .canvas { self.refreshCanvas(light: true) }
         }
     }
 
@@ -484,6 +493,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Canvas
 
     private func refreshCanvas(light: Bool = false) {
+        if canvasDragging { return }
         let pairs = PairState.listPairs()
         canvasEmpty.isHidden = !pairs.isEmpty
         canvasScroll.isHidden = pairs.isEmpty
@@ -610,10 +620,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         let tw = (boxW - gap * 3) / 4
         for i in 0..<4 {
             let tile = NSView(frame: NSRect(x: CGFloat(i) * (tw + gap), y: 0, width: tw, height: metricsH))
-            PongTheme.applyMetricCard(tile)
+            PongTheme.applyFloating(tile)
+            tile.layer?.cornerRadius = 14
             let top = NSView(frame: NSRect(x: 0, y: metricsH - 3, width: tw, height: 3))
             top.wantsLayer = true
-            top.layer?.backgroundColor = (i == 0 ? PongTheme.accent : (i == 1 ? PongTheme.live : PongTheme.borderStrong)).cgColor
+            let accentBar: NSColor = [PongTheme.blue, PongTheme.magenta, PongTheme.blue, PongTheme.orange][i]
+            top.layer?.backgroundColor = accentBar.cgColor
             top.layer?.cornerRadius = 1
             tile.addSubview(top)
             tile.addSubview(Self.label(titles[i], frame: NSRect(x: 14, y: 70, width: tw - 28, height: 14), size: 10, secondary: true))
@@ -627,7 +639,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let show = Array(events.suffix(8).reversed())
         let actH: CGFloat = 44 + CGFloat(max(show.count, 1)) * 32
         let act = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: actH))
-        PongTheme.applyCard(act)
+        PongTheme.applyFloating(act)
         act.addSubview(Self.label("Recent activity", frame: NSRect(x: 16, y: actH - 32, width: 200, height: 18), bold: true, size: 14))
         if show.isEmpty {
             act.addSubview(Self.label("Jobs and verdicts will appear here.",
@@ -741,36 +753,36 @@ final class PanelController: NSObject, NSWindowDelegate {
         y -= 36
 
         let card1 = actionCard(
-            frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
+            frame: NSRect(x: 0, y: y - 118, width: W - 20, height: 118),
             title: "New team",
             body: "Pick a conductor (Grok recommended) and workers. Opens real terminal sessions on a shared canvas.",
             button: "Create team",
             action: #selector(newTeamPressed)
         )
         setupBody.addSubview(card1)
-        y -= 120
+        y -= 136
 
         let card2 = actionCard(
-            frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
+            frame: NSRect(x: 0, y: y - 118, width: W - 20, height: 118),
             title: "Link terminals",
             body: "Point Pong at windows that are already running — keep model, chat, and resume as-is.",
             button: "Link…",
             action: #selector(linkPressed)
         )
         setupBody.addSubview(card2)
-        y -= 120
+        y -= 136
 
         let n = SavedTeams.loadAll().count
         if n > 0 {
             let card3 = actionCard(
-                frame: NSRect(x: 0, y: y - 90, width: W - 20, height: 90),
+                frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
                 title: "Saved teams",
                 body: "\(n) saved layout\(n == 1 ? "" : "s"). Open, duplicate, or delete.",
                 button: "Manage",
                 action: #selector(showTeamsPressed)
             )
             setupBody.addSubview(card3)
-            y -= 110
+            y -= 118
         }
 
         let note = NSView(frame: NSRect(x: 0, y: y - 80, width: W - 20, height: 80))
@@ -783,11 +795,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func actionCard(frame: NSRect, title: String, body: String, button: String, action: Selector) -> NSView {
         let v = NSView(frame: frame)
-        PongTheme.applyCard(v)
-        v.addSubview(Self.label(title, frame: NSRect(x: 16, y: frame.height - 32, width: 200, height: 18), bold: true, size: 15))
-        v.addSubview(Self.label(body, frame: NSRect(x: 16, y: 40, width: frame.width - 140, height: 40), size: 12, secondary: true))
+        PongTheme.applyFloating(v)
+        // Stacked: title (top) → body → button (bottom-right) — no overlap
+        let titleL = Self.label(title, frame: NSRect(x: 20, y: frame.height - 36, width: frame.width - 40, height: 22), bold: true, size: 15)
+        v.addSubview(titleL)
+        let bodyL = Self.label(body, frame: NSRect(x: 20, y: 48, width: frame.width - 140, height: frame.height - 92), size: 12, secondary: true)
+        bodyL.maximumNumberOfLines = 3
+        v.addSubview(bodyL)
         let b = accentButton(button, action)
-        b.frame = NSRect(x: frame.width - 120, y: 16, width: 100, height: 32)
+        b.frame = NSRect(x: frame.width - 124, y: 16, width: 104, height: 32)
         v.addSubview(b)
         return v
     }

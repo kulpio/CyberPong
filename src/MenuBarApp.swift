@@ -1741,7 +1741,7 @@ enum Tips {
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Enjoying Hermes Pong?"
+        alert.messageText = "Enjoying Pong?"
         alert.informativeText =
             "You've linked \(count) pairs — nice.\n\n" +
             "The app is free forever. If it's useful, a small tip helps keep shipping.\n\n" +
@@ -1786,28 +1786,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var glowPhase: CGFloat = 0
-    private var boltIdle: NSImage?
-    private var boltActiveDim: NSImage?
-    private var boltActiveBright: NSImage?
     private var hasActivePair = false
+    private var menuSignal: PongTheme.SystemSignal = .idle
     private var onboardingWindow: NSWindow?
     private var cachedSessions: [String] = []
     private var lastSessionPoll = Date.distantPast
 
-    private var onboardedFlagPath: String { NSHomeDirectory() + "/.hermes-pong/onboarded" }
+    private var onboardedFlagPath: String { Pong.stateDir + "/onboarded" }
     private var isOnboarded: Bool { FileManager.default.fileExists(atPath: onboardedFlagPath) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        loadIcons()
         NSApp.setActivationPolicy(.regular)
         installMainMenu()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = boltIdle
-            button.image?.isTemplate = true
+            button.image = PongTheme.menuIcon(signal: .idle, phase: 0)
+            button.image?.isTemplate = false
             button.title = ""
-            button.toolTip = "Hermes Pong"
+            button.toolTip = "Pong — agent mission control"
             button.appearsDisabled = false
         }
         statusItem.isVisible = true
@@ -1837,10 +1834,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mainMenu = NSMenu()
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
-        let appMenu = NSMenu(title: "Hermes Pong")
+        let appMenu = NSMenu(title: "Pong")
         appItem.submenu = appMenu
 
-        let about = NSMenuItem(title: "About Hermes Pong", action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: "About Pong", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         appMenu.addItem(about)
         appMenu.addItem(NSMenuItem.separator())
@@ -1855,7 +1852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(tip)
         appMenu.addItem(NSMenuItem.separator())
 
-        let quit = NSMenuItem(title: "Quit Hermes Pong", action: #selector(quitAll), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit Pong", action: #selector(quitAll), keyEquivalent: "q")
         quit.keyEquivalentModifierMask = [.command]
         quit.target = self
         appMenu.addItem(quit)
@@ -1876,8 +1873,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "Hermes Pong"
-        alert.informativeText = "Hermes orchestrates any AI terminal workers.\nClaude default · multi-model ready.\nkulpio/Hermes-Pong"
+        alert.messageText = "Pong"
+        alert.informativeText = "Local agent mission control.\nOrchestrator + multi-CLI workers on a canvas.\nkulpio/Agent-Pong"
         alert.runModal()
     }
 
@@ -1912,13 +1909,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         stack.addArrangedSubview(label("Two one-time macOS permissions", bold: true, size: 15))
         stack.addArrangedSubview(label(
-            "Hermes Pong bridges two Terminal windows. macOS asks once for each permission below — that's it.",
+            "Pong pairs orchestrator and worker Terminal windows. macOS asks once for each permission below.",
             muted: true))
 
         stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
         stack.addArrangedSubview(label("Automation", bold: true))
         stack.addArrangedSubview(label(
-            "Hermes Pong sends tasks into your Terminal windows. macOS prompts the first time a task is sent — if you decline, re-enable it in Settings.",
+            "Pong can send tasks into Terminal windows. macOS prompts the first time — re-enable in Settings if you decline.",
             muted: true))
         stack.addArrangedSubview(button("Open Automation Settings…", #selector(openAutomationSettings)))
 
@@ -1945,7 +1942,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Welcome to Hermes Pong"
+        window.title = "Welcome to Pong"
         window.isReleasedWhenClosed = false
         guard let content = window.contentView else { return }
         content.addSubview(stack)
@@ -1985,32 +1982,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openPanel()
     }
 
-    private func loadIcons() {
-        let res = Bundle.main.resourcePath ?? ""
-        func load(_ name: String, template: Bool, size: CGFloat = 18) -> NSImage? {
-            let path = (res as NSString).appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: path),
-                  let i = NSImage(contentsOfFile: path) else { return nil }
-            let c = i.copy() as! NSImage
-            c.size = NSSize(width: size, height: size)
-            c.isTemplate = template
-            return c
-        }
-        boltIdle = load("menubar-template.png", template: true)
-            ?? load("logo-mono-128.png", template: true)
-            ?? load("bolt-black.png", template: true)
-        boltActiveBright = load("bolt-active.png", template: false)
-            ?? load("logo-accent-128.png", template: false)
-            ?? load("logo-accent.png", template: false)
-        boltActiveDim = load("bolt-active-dim.png", template: false) ?? boltActiveBright
-
-        if boltIdle == nil,
-           let sf = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Hermes Pong") {
-            sf.isTemplate = true
-            boltIdle = sf
-        }
-    }
-
     // MARK: - Verdict ledger (read-only monitoring surface)
 
     private struct LedgerSummary {
@@ -2020,7 +1991,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let lastLine: String
     }
 
-    private var ledgerDirPath: String { NSHomeDirectory() + "/.hermes-pong/ledger" }
+    private var ledgerDirPath: String { Pong.stateDir + "/ledger" }
 
     private func ledgerSummary() -> LedgerSummary? {
         let path = ledgerDirPath + "/verdicts.jsonl"
@@ -2069,30 +2040,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hasActivePair = active
             rebuildMenu()
         }
-        guard let button = statusItem?.button else { return }
-
-        if active, let dim = boltActiveDim, let bright = boltActiveBright {
-            glowPhase += 0.08
-            if glowPhase > .pi * 2 { glowPhase -= .pi * 2 }
-            let t = (sin(glowPhase) + 1) / 2
-            button.image = crossfade(dim, bright, t: t)
-            button.image?.isTemplate = false
-            button.title = ""
-        } else if let idle = boltIdle {
-            button.image = idle
-            button.image?.isTemplate = true
-            button.title = ""
-        } else {
-            button.title = "HP"
+        // Refresh signal ~every 1s (not every 0.1s) for snapshot I/O
+        if Int(glowPhase * 10) % 10 == 0 {
+            menuSignal = PongTheme.signalFromState()
         }
-    }
-
-    private func crossfade(_ a: NSImage, _ b: NSImage, t: CGFloat) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        return NSImage(size: size, flipped: false) { rect in
-            a.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1 - t)
-            b.draw(in: rect, from: .zero, operation: .sourceOver, fraction: t)
-            return true
+        glowPhase += 0.1
+        if glowPhase > .pi * 2 { glowPhase -= .pi * 2 }
+        let phase = CGFloat((sin(Double(glowPhase)) + 1) / 2)
+        guard let button = statusItem?.button else { return }
+        button.image = PongTheme.menuIcon(signal: menuSignal, phase: phase)
+        button.image?.isTemplate = false
+        button.title = ""
+        switch menuSignal {
+        case .idle:
+            button.toolTip = "Pong — idle"
+        case .orchestratorWorking:
+            button.toolTip = "Pong — orchestrator working"
+        case .humanNeeded:
+            button.toolTip = "Pong — human input needed"
         }
     }
 
@@ -2183,7 +2148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Refresh", #selector(refreshMenu)))
         menu.addItem(item("Tip developer…", #selector(tipDeveloper)))
         menu.addItem(.separator())
-        menu.addItem(item("Quit Hermes Pong", #selector(quitAll)))
+        menu.addItem(item("Quit Pong", #selector(quitAll)))
     }
 
     private func item(_ title: String, _ sel: Selector) -> NSMenuItem {
@@ -3691,7 +3656,7 @@ final class TeamOptionsSheetController: NSObject, NSWindowDelegate {
         y -= briefH + 6
         let briefHelp = NSTextField(wrappingLabelWithString:
             "Injected at the top of every handoff for this pair only. What this team is building, constraints, definition of done.\n" +
-            "Example: This pair builds Hermes Pong only. Repo: ~/src/Hermes-Pong. Never touch other projects' repos.")
+            "Example: This team builds App X only. Repo: ~/src/app-x. Never touch other projects' repos.")
         briefHelp.font = .systemFont(ofSize: 11)
         briefHelp.textColor = .secondaryLabelColor
         briefHelp.frame = NSRect(x: PAD, y: y - 58, width: W - 2 * PAD, height: 58)
@@ -3903,23 +3868,25 @@ final class LinkGuideController: NSObject {
             contentRect: NSRect(x: 0, y: 0, width: GW, height: GH),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
-        win.title = "Hermes Pong — Link team"
+        win.title = "Pong — Link team"
         win.level = .floating
         win.isReleasedWhenClosed = false
-        win.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 1.0)
+        win.backgroundColor = PongTheme.bgElevated
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: GW, height: GH))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = PongTheme.bgElevated.cgColor
         stepLabel = PanelController.label("Step 1",
             frame: NSRect(x: 16, y: GH - 36, width: GW - 32, height: 18), size: 11, secondary: true)
-        titleLabel = PanelController.label("Click the HERMES Terminal",
+        titleLabel = PanelController.label("Click the Orchestrator Terminal",
             frame: NSRect(x: 16, y: GH - 68, width: GW - 32, height: 28), bold: true, size: 15)
-        hermesMark = PanelController.label("○  Hermes  —  not selected",
+        hermesMark = PanelController.label("○  Orchestrator  —  not selected",
             frame: NSRect(x: 16, y: GH - 110, width: GW - 32, height: 22), size: 13)
         workersMark = PanelController.label("○  Workers  —  none yet",
             frame: NSRect(x: 16, y: GH - 168, width: GW - 32, height: 48), size: 12)
         workersMark.maximumNumberOfLines = 4
         hintLabel = PanelController.label(
-            "Click Terminal windows. Marks only appear here.",
+            "First: orchestrator (Grok / Hermes / …). Then workers.",
             frame: NSRect(x: 16, y: 56, width: GW - 32, height: 50), size: 12, secondary: true)
 
         doneBtn = NSButton(frame: NSRect(x: GW - 200, y: 14, width: 100, height: 32))
@@ -3956,41 +3923,41 @@ final class LinkGuideController: NSObject {
     private func render() {
         switch phase {
         case .hermes:
-            stepLabel.stringValue = "Step 1 — Hermes"
-            titleLabel.stringValue = "Click the HERMES Terminal window"
-            hintLabel.stringValue = "Then add one or more worker Terminals."
+            stepLabel.stringValue = "Step 1 — Orchestrator"
+            titleLabel.stringValue = "Click the Orchestrator Terminal"
+            hintLabel.stringValue = "Grok Build, Hermes, Claude — whichever leads the team. Then add workers."
             doneBtn.isHidden = true
         case .workers:
             stepLabel.stringValue = "Step 2 — Workers (\(workerIds.count))"
             titleLabel.stringValue = workerIds.isEmpty
-                ? "Click a WORKER Terminal"
+                ? "Click a worker Terminal"
                 : "Add another worker, or Done"
-            hintLabel.stringValue = "Click other Terminals (Claude, Kimi, …).\\nPress Done when the army is complete."
+            hintLabel.stringValue = "Claude, Codex, Kimi, Grok worker…\nPress Done when the team is complete."
             doneBtn.isHidden = workerIds.isEmpty
             doneBtn.isEnabled = !workerIds.isEmpty
             doneBtn.title = "Done (\(workerIds.count))"
         case .wiring:
             stepLabel.stringValue = "Linking…"
             titleLabel.stringValue = "Registering windows"
-            hintLabel.stringValue = "No scripts injected into worker TUIs."
+            hintLabel.stringValue = "Workers keep their sessions — nothing injected into TUIs."
             doneBtn.isHidden = true
         case .done:
             stepLabel.stringValue = "Done"
-            titleLabel.stringValue = "Linked"
-            hintLabel.stringValue = "Route with pong-delegate --worker w1|w2|…"
+            titleLabel.stringValue = "Team linked"
+            hintLabel.stringValue = "Arrange on Canvas · jobs via pong job create"
             doneBtn.isHidden = true
         case .idle:
             break
         }
         hermesMark.stringValue = hermesId != nil
-            ? "✓  Hermes  —  \(titleFor(hermesId))" : "○  Hermes  —  not selected"
+            ? "✓  Orchestrator  —  \(titleFor(hermesId))" : "○  Orchestrator  —  not selected"
         if workerIds.isEmpty {
             workersMark.stringValue = "○  Workers  —  none yet"
         } else {
             let lines = workerIds.enumerated().map { i, id in
                 "✓  w\(i + 1)  —  \(titleFor(id))"
             }
-            workersMark.stringValue = lines.joined(separator: "\\n")
+            workersMark.stringValue = lines.joined(separator: "\n")
         }
     }
 
@@ -4046,7 +4013,7 @@ final class LinkGuideController: NSObject {
             accept(wid)
         } else {
             if wid == hermesId {
-                hintLabel.stringValue = "That’s Hermes. Click a worker Terminal."
+                hintLabel.stringValue = "That’s the orchestrator. Click a worker Terminal."
                 lastFront = wid
                 return
             }
@@ -4062,7 +4029,7 @@ final class LinkGuideController: NSObject {
             started = Date()
             baselineId = wid
             lastFront = wid
-            Pong.log("selected HERMES id=\(wid)")
+            Pong.log("selected ORCHESTRATOR id=\(wid)")
             render()
             return
         }

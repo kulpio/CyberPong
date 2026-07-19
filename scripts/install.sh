@@ -23,7 +23,7 @@ if ! codesign -dv "$DEST" 2>&1 | grep -q "Authority=Developer ID"; then
   codesign -s - --force "$DEST" 2>/dev/null || true
 fi
 
-echo "Installed: $DEST"
+echo "Installed: $DEST (Pong)"
 
 if [[ "${1:-}" == "--login" ]]; then
   osascript <<EOF

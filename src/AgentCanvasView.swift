@@ -1,6 +1,6 @@
 import AppKit
 
-// MARK: - Canvas positions (persisted on pair)
+// MARK: - Canvas positions
 
 enum CanvasLayout {
     static func positions(for session: String) -> [String: CGPoint] {
@@ -30,21 +30,21 @@ enum CanvasLayout {
 
     static func defaultPosition(role: String, index: Int, canvas: CGSize) -> CGPoint {
         if role == "conductor" {
-            return CGPoint(x: max(48, canvas.width * 0.18), y: max(80, canvas.height * 0.42))
+            return CGPoint(x: max(48, canvas.width * 0.16), y: max(100, canvas.height * 0.42))
         }
-        let col = index % 2
-        let row = index / 2
-        let baseX = max(320, canvas.width * 0.48) + CGFloat(col) * 40
-        let baseY = max(60, canvas.height * 0.22) + CGFloat(row) * 150
-        return CGPoint(x: min(canvas.width - 280, baseX), y: baseY)
+        let row = index
+        return CGPoint(
+            x: min(canvas.width - 280, max(340, canvas.width * 0.52)),
+            y: max(60, canvas.height * 0.18) + CGFloat(row) * 160
+        )
     }
 }
 
-// MARK: - Node model
+// MARK: - Model
 
 struct AgentNodeModel {
     let id: String
-    let role: String // conductor | worker
+    let role: String
     let title: String
     let subtitle: String
     let detail: String
@@ -53,7 +53,7 @@ struct AgentNodeModel {
     var origin: CGPoint
 }
 
-// MARK: - Polished agent card (orchestration dashboard style)
+// MARK: - Node card
 
 final class AgentNodeView: NSView {
     let modelId: String
@@ -63,9 +63,12 @@ final class AgentNodeView: NSView {
     var onOptions: ((String) -> Void)?
     var onPerms: ((String) -> Void)?
     var onDoubleClick: ((String) -> Void)?
+    var onDragBegan: (() -> Void)?
+    var onDragEnded: (() -> Void)?
 
     private var dragStart: NSPoint?
     private var originStart: NSPoint?
+    private var dragging = false
     private let iconBadge = NSView()
     private let iconLabel = NSTextField(labelWithString: "")
     private let titleField = NSTextField(labelWithString: "")
@@ -77,7 +80,9 @@ final class AgentNodeView: NSView {
     private var secondaryBtn: NSButton!
     private var isConductor = false
 
-    static let size = NSSize(width: 248, height: 132)
+    static let size = NSSize(width: 252, height: 136)
+
+    override var mouseDownCanMoveWindow: Bool { false }
 
     init(model: AgentNodeModel) {
         self.modelId = model.id
@@ -87,90 +92,81 @@ final class AgentNodeView: NSView {
         layer?.borderWidth = 1
         layer?.masksToBounds = false
         isConductor = model.role == "conductor"
-        applyChrome(model)
 
-        // Icon tile
-        iconBadge.frame = NSRect(x: 14, y: Self.size.height - 48, width: 32, height: 32)
+        iconBadge.frame = NSRect(x: 14, y: Self.size.height - 50, width: 34, height: 34)
         iconBadge.wantsLayer = true
         iconBadge.layer?.cornerRadius = 10
-        iconBadge.layer?.backgroundColor = PongTheme.accentSoft.cgColor
         addSubview(iconBadge)
-        iconLabel.font = PongTheme.font(14, weight: .bold)
+        iconLabel.font = PongTheme.font(15, weight: .bold)
         iconLabel.alignment = .center
-        iconLabel.frame = NSRect(x: 0, y: 6, width: 32, height: 20)
-        iconLabel.isEditable = false
-        iconLabel.isBordered = false
-        iconLabel.backgroundColor = .clear
-        iconLabel.textColor = PongTheme.accent
+        iconLabel.frame = NSRect(x: 0, y: 7, width: 34, height: 20)
+        styleLabel(iconLabel)
         iconBadge.addSubview(iconLabel)
 
-        // Status pill (top-right)
-        statusPill.frame = NSRect(x: Self.size.width - 88, y: Self.size.height - 34, width: 74, height: 22)
+        statusPill.frame = NSRect(x: Self.size.width - 90, y: Self.size.height - 36, width: 76, height: 22)
         statusPill.wantsLayer = true
         statusPill.layer?.cornerRadius = 6
         addSubview(statusPill)
         statusLabel.font = PongTheme.font(9, weight: .bold)
         statusLabel.alignment = .center
-        statusLabel.frame = NSRect(x: 0, y: 3, width: 74, height: 16)
-        statusLabel.isEditable = false
-        statusLabel.isBordered = false
-        statusLabel.backgroundColor = .clear
+        statusLabel.frame = NSRect(x: 0, y: 3, width: 76, height: 16)
+        styleLabel(statusLabel)
         statusPill.addSubview(statusLabel)
 
         titleField.font = PongTheme.font(13, weight: .semibold)
         titleField.textColor = PongTheme.textPrimary
-        titleField.frame = NSRect(x: 54, y: Self.size.height - 44, width: 100, height: 18)
+        titleField.frame = NSRect(x: 56, y: Self.size.height - 46, width: 100, height: 18)
         titleField.lineBreakMode = .byTruncatingTail
-        configureLabel(titleField)
+        styleLabel(titleField)
         addSubview(titleField)
 
         subField.font = PongTheme.font(10)
         subField.textColor = PongTheme.textSecondary
-        subField.frame = NSRect(x: 54, y: Self.size.height - 60, width: 100, height: 14)
+        subField.frame = NSRect(x: 56, y: Self.size.height - 62, width: 100, height: 14)
         subField.lineBreakMode = .byTruncatingTail
-        configureLabel(subField)
+        styleLabel(subField)
         addSubview(subField)
 
         detailField.font = PongTheme.font(10)
         detailField.textColor = PongTheme.textTertiary
-        detailField.frame = NSRect(x: 14, y: 40, width: Self.size.width - 28, height: 28)
+        detailField.frame = NSRect(x: 14, y: 42, width: Self.size.width - 28, height: 28)
         detailField.maximumNumberOfLines = 2
         detailField.lineBreakMode = .byWordWrapping
-        configureLabel(detailField)
+        styleLabel(detailField)
         addSubview(detailField)
 
-        primaryBtn = makeAction("Open", #selector(frontTap), filled: true,
-                                frame: NSRect(x: 14, y: 10, width: 72, height: 26))
+        primaryBtn = actionBtn("Open", #selector(frontTap), filled: true,
+                               frame: NSRect(x: 14, y: 10, width: 72, height: 26))
         addSubview(primaryBtn)
-        secondaryBtn = makeAction(isConductor ? "Options" : "Perms",
-                                  isConductor ? #selector(optsTap) : #selector(permsTap),
-                                  filled: false,
-                                  frame: NSRect(x: 92, y: 10, width: 72, height: 26))
+        secondaryBtn = actionBtn(isConductor ? "Options" : "Perms",
+                                 isConductor ? #selector(optsTap) : #selector(permsTap),
+                                 filled: false,
+                                 frame: NSRect(x: 94, y: 10, width: 72, height: 26))
         addSubview(secondaryBtn)
 
         apply(model)
-        toolTip = "Drag to rearrange · double-click to Open · right-click for more"
+        toolTip = "Drag card to rearrange · double-click to Open"
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private func configureLabel(_ f: NSTextField) {
+    private func styleLabel(_ f: NSTextField) {
         f.isEditable = false
         f.isBordered = false
-        f.backgroundColor = .clear
         f.drawsBackground = false
+        f.backgroundColor = .clear
     }
 
-    private func makeAction(_ title: String, _ sel: Selector, filled: Bool, frame: NSRect) -> NSButton {
+    private func actionBtn(_ title: String, _ sel: Selector, filled: Bool, frame: NSRect) -> NSButton {
         let b = NSButton(frame: frame)
         b.bezelStyle = .inline
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.cornerRadius = 8
         if filled {
-            b.layer?.backgroundColor = PongTheme.accent.cgColor
+            b.layer?.backgroundColor = PongTheme.blue.cgColor
             b.attributedTitle = NSAttributedString(string: title, attributes: [
-                .foregroundColor: PongTheme.accentInk,
+                .foregroundColor: NSColor.white,
                 .font: PongTheme.font(10, weight: .semibold),
             ])
         } else {
@@ -187,70 +183,89 @@ final class AgentNodeView: NSView {
         return b
     }
 
-    private func applyChrome(_ model: AgentNodeModel) {
-        layer?.backgroundColor = PongTheme.bgElevated.cgColor
-        if model.role == "conductor" {
-            layer?.borderColor = PongTheme.borderAccent.cgColor
-            layer?.shadowColor = PongTheme.accent.cgColor
-            layer?.shadowOpacity = 0.25
-            layer?.shadowRadius = 12
-            layer?.shadowOffset = CGSize(width: 0, height: 0)
-        } else {
-            layer?.borderColor = PongTheme.border.cgColor
-            layer?.shadowOpacity = 0
-        }
-    }
-
     func apply(_ model: AgentNodeModel) {
-        applyChrome(model)
+        // Never jump the node while user is dragging
+        if !dragging, frame.origin != model.origin {
+            setFrameOrigin(model.origin)
+        }
         titleField.stringValue = model.title
         subField.stringValue = model.subtitle
         detailField.stringValue = model.detail
         iconLabel.stringValue = model.role == "conductor" ? "◎" : "◇"
+        iconLabel.textColor = model.role == "conductor" ? PongTheme.blue : PongTheme.magenta
+        iconBadge.layer?.backgroundColor = (model.role == "conductor" ? PongTheme.blueSoft : PongTheme.magentaSoft).cgColor
+
+        layer?.backgroundColor = PongTheme.bgElevated.cgColor
+        if model.role == "conductor" {
+            layer?.borderColor = PongTheme.borderAccent.cgColor
+            layer?.shadowColor = PongTheme.blue.cgColor
+            layer?.shadowOpacity = 0.35
+            layer?.shadowRadius = 14
+            layer?.shadowOffset = .zero
+        } else {
+            layer?.borderColor = PongTheme.border.cgColor
+            layer?.shadowOpacity = 0.15
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowRadius = 8
+        }
+
         let sk = PongTheme.statusKind(model.status)
         statusLabel.stringValue = sk.label
         statusLabel.textColor = sk.color
         statusPill.layer?.backgroundColor = sk.soft.cgColor
-        if frame.origin != model.origin {
-            setFrameOrigin(model.origin)
-        }
     }
 
     @objc private func frontTap() { onFront?(modelId) }
     @objc private func optsTap() { onOptions?(modelId) }
     @objc private func permsTap() { onPerms?(modelId) }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Ensure we receive events over the whole card (not only subviews)
+        guard !isHidden, alphaValue > 0.01, frame.contains(point) else { return nil }
+        let local = convert(point, from: superview)
+        if primaryBtn.frame.contains(local) { return primaryBtn }
+        if secondaryBtn.frame.contains(local) { return secondaryBtn }
+        return self
+    }
+
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 {
+        if event.clickCount >= 2 {
             onDoubleClick?(modelId)
             return
         }
-        // Don't start drag if clicking a button
         let local = convert(event.locationInWindow, from: nil)
         if primaryBtn.frame.contains(local) || secondaryBtn.frame.contains(local) {
             return
         }
         dragStart = event.locationInWindow
         originStart = frame.origin
-        superview?.addSubview(self)
+        dragging = true
+        onDragBegan?()
+        superview?.addSubview(self) // z-order front
+        window?.disableCursorRects()
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let dragStart, let originStart, let superV = superview else { return }
+        guard dragging, let dragStart, let originStart, let superV = superview else { return }
         let p = event.locationInWindow
         var nx = originStart.x + (p.x - dragStart.x)
         var ny = originStart.y + (p.y - dragStart.y)
         nx = min(max(12, nx), max(12, superV.bounds.width - bounds.width - 12))
         ny = min(max(12, ny), max(12, superV.bounds.height - bounds.height - 12))
         setFrameOrigin(NSPoint(x: nx, y: ny))
-        (superview as? AgentCanvasView)?.setNeedsDisplay(superV.bounds)
+        (superview as? AgentCanvasView)?.needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
-        onMoved?(modelId, frame.origin)
+        if dragging {
+            onMoved?(modelId, frame.origin)
+            onDragEnded?()
+        }
+        dragging = false
         dragStart = nil
         originStart = nil
-        (superview as? AgentCanvasView)?.setNeedsDisplay(superview?.bounds ?? bounds)
+        window?.enableCursorRects()
+        (superview as? AgentCanvasView)?.needsDisplay = true
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -275,12 +290,13 @@ final class AgentNodeView: NSView {
 final class AgentCanvasView: NSView {
     var session: String = ""
     var nodes: [AgentNodeModel] = []
+    private(set) var isDragging = false
     private var nodeViews: [String: AgentNodeView] = [:]
     var onFront: ((String, String) -> Void)?
     var onKill: ((String, String) -> Void)?
     var onOptions: ((String) -> Void)?
     var onPerms: ((String, String) -> Void)?
-    var onLayoutChanged: (() -> Void)?
+    var onDragStateChanged: ((Bool) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -295,53 +311,54 @@ final class AgentCanvasView: NSView {
         PongTheme.bg.setFill()
         bounds.fill()
 
-        // Fine dot grid
+        // Dot grid
         let step: CGFloat = 22
-        NSColor(calibratedWhite: 1, alpha: 0.05).setFill()
+        NSColor(calibratedWhite: 1, alpha: 0.045).setFill()
         var x: CGFloat = 0
         while x < bounds.width {
             var y: CGFloat = 0
             while y < bounds.height {
-                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1.6, height: 1.6)).fill()
+                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1.5, height: 1.5)).fill()
                 y += step
             }
             x += step
         }
 
-        // Edges under nodes
         guard let cNode = nodes.first(where: { $0.role == "conductor" }),
               let cView = nodeViews[cNode.id] else { return }
-        let from = NSPoint(x: cView.frame.maxX - 4, y: cView.frame.midY)
+        let from = NSPoint(x: cView.frame.maxX - 2, y: cView.frame.midY)
         for n in nodes where n.role == "worker" {
             guard let wv = nodeViews[n.id] else { continue }
-            let to = NSPoint(x: wv.frame.minX + 4, y: wv.frame.midY)
-            drawEdge(from: from, to: to)
+            let to = NSPoint(x: wv.frame.minX + 2, y: wv.frame.midY)
+            let human = n.status.lowercased().contains("human")
+            drawEdge(from: from, to: to, human: human)
         }
     }
 
-    private func drawEdge(from: NSPoint, to: NSPoint) {
+    private func drawEdge(from: NSPoint, to: NSPoint, human: Bool) {
         let path = NSBezierPath()
         path.move(to: from)
         let midX = (from.x + to.x) / 2
         path.curve(to: to,
                    controlPoint1: NSPoint(x: midX, y: from.y),
                    controlPoint2: NSPoint(x: midX, y: to.y))
-        // Soft glow
-        path.lineWidth = 4
-        PongTheme.accentGlow.setStroke()
+        let color = human ? PongTheme.orange : PongTheme.blue
+        path.lineWidth = 5
+        color.withAlphaComponent(0.2).setStroke()
         path.stroke()
-        path.lineWidth = 1.5
-        PongTheme.accent.withAlphaComponent(0.55).setStroke()
+        path.lineWidth = 1.75
+        color.withAlphaComponent(0.75).setStroke()
         path.stroke()
-
-        // Endpoint dots
         let r: CGFloat = 3.5
-        PongTheme.accent.setFill()
+        color.setFill()
         NSBezierPath(ovalIn: NSRect(x: from.x - r, y: from.y - r, width: r * 2, height: r * 2)).fill()
+        (human ? PongTheme.orange : PongTheme.magenta).setFill()
         NSBezierPath(ovalIn: NSRect(x: to.x - r, y: to.y - r, width: r * 2, height: r * 2)).fill()
     }
 
     func reload(session: String, models: [AgentNodeModel]) {
+        // Never rebuild nodes mid-drag
+        if isDragging { return }
         self.session = session
         self.nodes = models
         let keep = Set(models.map(\.id))
@@ -354,12 +371,20 @@ final class AgentCanvasView: NSView {
                 existing.apply(m)
             } else {
                 let v = AgentNodeView(model: m)
-                v.onMoved = { [weak self] id, origin in self?.persistPosition(id: id, origin: origin) }
+                v.onMoved = { [weak self] id, origin in self?.persist(id: id, origin: origin) }
                 v.onFront = { [weak self] id in guard let self else { return }; self.onFront?(self.session, id) }
                 v.onKill = { [weak self] id in guard let self else { return }; self.onKill?(self.session, id) }
                 v.onOptions = { [weak self] _ in guard let self else { return }; self.onOptions?(self.session) }
                 v.onPerms = { [weak self] id in guard let self else { return }; self.onPerms?(self.session, id) }
                 v.onDoubleClick = { [weak self] id in guard let self else { return }; self.onFront?(self.session, id) }
+                v.onDragBegan = { [weak self] in
+                    self?.isDragging = true
+                    self?.onDragStateChanged?(true)
+                }
+                v.onDragEnded = { [weak self] in
+                    self?.isDragging = false
+                    self?.onDragStateChanged?(false)
+                }
                 addSubview(v)
                 nodeViews[m.id] = v
             }
@@ -367,7 +392,7 @@ final class AgentCanvasView: NSView {
         needsDisplay = true
     }
 
-    private func persistPosition(id: String, origin: CGPoint) {
+    private func persist(id: String, origin: CGPoint) {
         var pos = CanvasLayout.positions(for: session)
         pos[id] = origin
         if let i = nodes.firstIndex(where: { $0.id == id }) {
@@ -375,7 +400,6 @@ final class AgentCanvasView: NSView {
         }
         CanvasLayout.save(session: session, positions: pos)
         needsDisplay = true
-        onLayoutChanged?()
     }
 
     override func layout() {
