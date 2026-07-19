@@ -200,8 +200,9 @@ final class AgentNodeView: NSView {
         labelStyle(detailField)
         addSubview(detailField)
 
-        // —— Action bar (always visible, full width) ——
-        actionBar.frame = NSRect(x: 8, y: 8, width: Self.size.width - 16, height: 34)
+        // —— Action bar (always visible) ——
+        // Left cluster: Open + Focus/Opts or Perms · Right: Kill (always)
+        actionBar.frame = NSRect(x: 8, y: 8, width: Self.size.width - 16, height: 36)
         actionBar.wantsLayer = true
         actionBar.layer?.backgroundColor = PongTheme.bgInput.cgColor
         actionBar.layer?.cornerRadius = 10
@@ -209,22 +210,26 @@ final class AgentNodeView: NSView {
         actionBar.layer?.borderColor = PongTheme.border.cgColor
         addSubview(actionBar)
 
+        let barW = Self.size.width - 16
+        let killW: CGFloat = 48
+        let kill = makeBtn("Kill", #selector(killTap), style: .danger,
+                           frame: NSRect(x: barW - killW - 6, y: 6, width: killW, height: 24))
+        actionBar.addSubview(kill)
+        buttons.append(kill)
+
         var x: CGFloat = 6
-        func addBtn(_ t: String, _ sel: Selector, style: BtnStyle, w: CGFloat) {
-            let b = makeBtn(t, sel, style: style, frame: NSRect(x: x, y: 5, width: w, height: 24))
+        func addLeft(_ t: String, _ sel: Selector, style: BtnStyle, w: CGFloat) {
+            let b = makeBtn(t, sel, style: style, frame: NSRect(x: x, y: 6, width: w, height: 24))
             actionBar.addSubview(b)
             buttons.append(b)
             x += w + 5
         }
-        // Primary actions both roles
-        addBtn("Open", #selector(frontTap), style: .primary, w: 50)
+        addLeft("Open", #selector(frontTap), style: .primary, w: 52)
         if model.role == "conductor" {
-            addBtn("Focus", #selector(focusTap), style: .secondary, w: 48)
-            addBtn("Opts", #selector(optsTap), style: .secondary, w: 44)
-            addBtn("Kill", #selector(killTap), style: .danger, w: 42)
+            addLeft("Focus", #selector(focusTap), style: .secondary, w: 50)
+            addLeft("Opts", #selector(optsTap), style: .secondary, w: 46)
         } else {
-            addBtn("Perms", #selector(permsTap), style: .secondary, w: 48)
-            addBtn("Kill", #selector(killTap), style: .danger, w: 42)
+            addLeft("Perms", #selector(permsTap), style: .secondary, w: 52)
         }
     }
 
@@ -260,16 +265,17 @@ final class AgentNodeView: NSView {
                 .foregroundColor: PongTheme.textPrimary, .font: font,
             ])
         case .danger:
-            b.layer?.backgroundColor = PongTheme.danger.withAlphaComponent(0.2).cgColor
-            b.layer?.borderWidth = 1
-            b.layer?.borderColor = PongTheme.danger.withAlphaComponent(0.45).cgColor
+            // Solid, hard to miss
+            b.layer?.backgroundColor = NSColor(calibratedRed: 0.75, green: 0.18, blue: 0.22, alpha: 1).cgColor
             b.attributedTitle = NSAttributedString(string: title, attributes: [
-                .foregroundColor: PongTheme.danger, .font: font,
+                .foregroundColor: NSColor.white, .font: font,
             ])
         }
         b.target = self
         b.action = sel
-        b.toolTip = title
+        b.toolTip = title == "Kill"
+            ? (model.role == "conductor" ? "Kill entire team" : "Remove this worker")
+            : title
         return b
     }
 
