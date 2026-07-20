@@ -11,8 +11,8 @@
     "100": "https://donate.stripe.com/00wfZh3SD8V2g399xZ1B60b"
   },
   "notes": "Each tip price uses custom_unit_amount (preset shown, min $1). Checkout requires first name (custom field) + email (customer_creation=always).",
-  "free_download": "https://github.com/kulpio/Hermes-Pong/releases/latest/download/HermesPong-macOS.zip",
-  "release": "https://github.com/kulpio/Hermes-Pong/releases/latest",
+  "free_download": "https://github.com/kulpio/Agent-Pong/releases/latest/download/CyberPong-macOS.zip",
+  "release": "https://github.com/kulpio/Agent-Pong/releases/latest",
   "checkout_collects": [
     "email",
     "first_name"

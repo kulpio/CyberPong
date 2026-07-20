@@ -4,12 +4,13 @@
 
 CyberPong lets you run a **team of AI coding tools** on your machine: one conductor plans and assigns work, workers build in real Terminal sessions, and you stay in the loop when something needs a human.
 
-The menu-bar app shows as **CyberPong**. The binary and paths still say `Pong` for compatibility (`/Applications/Pong.app`, `pong` CLI, `~/.pong/`).
+The menu-bar app shows as **CyberPong**. The binary and CLI still say `Pong` for compatibility (`/Applications/CyberPong.app` → executable `Pong`, `pong` CLI, `~/.pong/`).
 
 | | |
 |--|--|
 | **UI name** | CyberPong |
 | **Repo** | [kulpio/Agent-Pong](https://github.com/kulpio/Agent-Pong) |
+| **Version** | **1.4.0** |
 | **Conductors** | Grok Build, Claude Code, Hermes Agent, custom CLI |
 | **Workers** | Claude, Grok, Codex, Kimi, OpenCode, Hermes, custom |
 | **State** | `~/.pong/` (jobs, events, ledger, teams) |
@@ -34,6 +35,13 @@ In plain language:
 
 ## Quick start
 
+### Release zip
+
+1. Download [CyberPong-macOS.zip](https://github.com/kulpio/Agent-Pong/releases/latest/download/CyberPong-macOS.zip) from [Releases](https://github.com/kulpio/Agent-Pong/releases/latest).
+2. Open **CyberPong**. Allow Accessibility / Automation for Terminal when macOS asks.
+
+### From source
+
 ```bash
 git clone https://github.com/kulpio/Agent-Pong.git
 cd Agent-Pong
@@ -45,7 +53,7 @@ CLIs install to `~/bin` (`pong`, `pong-gate.py`, `pong-delegate.py`, …).
 ### Build the Mac app
 
 ```bash
-bash scripts/build-app.sh --dev
+bash scripts/build-app.sh
 bash scripts/install.sh
 ```
 
@@ -123,7 +131,7 @@ Env on team panes: `PONG_SESSION` (legacy: `HERMES_PONG_SESSION`).
 
 ## Landing page
 
-Marketing site sources live in [`landing/`](landing/). Deploy that folder (e.g. Vercel) for the public page.
+Marketing site sources live in [`landing/`](landing/). Deploy that folder (e.g. Vercel or GitHub Pages) for the public page.
 
 Brand kit (mark, wordmarks, favicons): [`brand/`](brand/) and [`resources/brand/`](resources/brand/).
 
@@ -131,11 +139,12 @@ Brand kit (mark, wordmarks, favicons): [`brand/`](brand/) and [`resources/brand/
 
 ## Version
 
-**2.0.0-alpha** — control plane, multi-CLI teams, 3D mission map, architecture editor, cron timeline, human console.
+**1.4.0** — CyberPong brand, multi-CLI teams, 3D mission map, architecture editor, cron timeline, human console, job control plane.
+
+Formerly shipped as Hermes Pong (through 1.3.x).
 
 ---
 
 ## License / privacy
 
 Local-only teams, jobs, and ledger. No vendor API keys stored by CyberPong.
-}
