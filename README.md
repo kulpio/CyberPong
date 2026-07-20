@@ -49,7 +49,8 @@ bash scripts/build-app.sh --dev
 bash scripts/install.sh
 ```
 
-That installs `/Applications/Pong.app` and launches **CyberPong**.
+That installs `/Applications/CyberPong.app` and launches **CyberPong**
+(the Dock/Finder name). The binary inside the bundle is still named `Pong` for path compatibility.
 
 Migrate older Hermes Pong state if needed:
 

@@ -1,9 +1,11 @@
 #!/bin/bash
-# Install Pong to /Applications and relaunch so the new binary is always running.
+# Install CyberPong to /Applications and relaunch so the new binary is always running.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="Pong.app"
+# Dock / Finder name comes from the .app basename — must be CyberPong.app
+BUNDLE_NAME="CyberPong"
+APP_NAME="${BUNDLE_NAME}.app"
 SRC_APP="$ROOT/dist/$APP_NAME"
 DEST="/Applications/$APP_NAME"
 
@@ -12,25 +14,33 @@ DEST="/Applications/$APP_NAME"
 # appears to “do nothing” until you quit by hand.
 quit_apps() {
   local name
-  for name in Pong HermesPong Hermes_Pairing HermesClaude; do
+  for name in CyberPong Pong HermesPong Hermes_Pairing HermesClaude; do
     osascript -e "tell application \"$name\" to quit" 2>/dev/null || true
   done
   # Give graceful quit a moment, then force leftover processes.
   sleep 0.6
-  for name in Pong HermesPong Hermes_Pairing HermesClaude; do
+  for name in CyberPong Pong HermesPong Hermes_Pairing HermesClaude; do
     pkill -x "$name" 2>/dev/null || true
   done
   # Bundle executable paths (covers renamed/stale launches)
+  # Executable inside the bundle is still "Pong" for binary-name stability.
+  pkill -f "/Applications/CyberPong.app/Contents/MacOS/Pong" 2>/dev/null || true
   pkill -f "/Applications/Pong.app/Contents/MacOS/Pong" 2>/dev/null || true
   pkill -f "/Applications/HermesPong.app/Contents/MacOS/HermesPong" 2>/dev/null || true
+  pkill -f "$ROOT/dist/CyberPong.app/Contents/MacOS/Pong" 2>/dev/null || true
   pkill -f "$ROOT/dist/Pong.app/Contents/MacOS/Pong" 2>/dev/null || true
   sleep 0.2
 }
 
 quit_apps
 
-# Remove old app bundle names from /Applications
-rm -rf /Applications/Hermes_Pairing.app /Applications/HermesClaude.app /Applications/HermesPong.app 2>/dev/null || true
+# Remove old app bundle names from /Applications (legacy Dock labels)
+rm -rf \
+  /Applications/Pong.app \
+  /Applications/Hermes_Pairing.app \
+  /Applications/HermesClaude.app \
+  /Applications/HermesPong.app \
+  2>/dev/null || true
 
 if [[ ! -d "$SRC_APP" ]]; then
   bash "$ROOT/scripts/build-app.sh"
@@ -45,7 +55,13 @@ if ! codesign -dv "$DEST" 2>&1 | grep -q "Authority=Developer ID"; then
   codesign -s - --force "$DEST" 2>/dev/null || true
 fi
 
-echo "Installed: $DEST (Pong)"
+# Refresh Launch Services so Dock/Spotlight pick up CyberPong (not cached "Pong")
+if [[ -x /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister ]]; then
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$DEST" 2>/dev/null || true
+fi
+
+echo "Installed: $DEST (CyberPong)"
 
 if [[ "${1:-}" == "--login" ]]; then
   osascript <<EOF
@@ -62,6 +78,9 @@ tell application "System Events"
   try
     delete login item "Pong"
   end try
+  try
+    delete login item "CyberPong"
+  end try
   make login item at end with properties {path:"$DEST", hidden:false}
 end tell
 EOF
@@ -70,4 +89,4 @@ fi
 
 # Fresh launch only (never reuse a lingering instance)
 open -n -a "$DEST"
-echo "Launched Pong (fresh process)."
+echo "Launched CyberPong (fresh process)."

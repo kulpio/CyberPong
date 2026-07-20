@@ -4,10 +4,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Executable binary name (CFBundleExecutable) — keep short/stable for pkill/compat.
 APP_NAME="Pong"
-# Public display name (bundle UI); executable stays Pong for path/compat.
+# Bundle folder + Dock/Finder name. macOS uses the .app basename for Dock labels.
+BUNDLE_NAME="CyberPong"
 DISPLAY_NAME="CyberPong"
-APP="$ROOT/dist/${APP_NAME}.app"
+APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
@@ -16,7 +18,8 @@ VERSION="2.0.0-alpha"
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1
 
-rm -rf "$APP"
+# Drop legacy dist names so we never ship the wrong Dock label
+rm -rf "$APP" "$ROOT/dist/Pong.app"
 mkdir -p "$MACOS" "$RES"
 
 # Universal binary: compile per-arch, lipo together. Relative source path so

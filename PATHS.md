@@ -186,8 +186,9 @@ Quick index of project, brand, landing, app, and install locations.
 
 | What | Path |
 |------|------|
-| Built app (local dist) | `/Users/dylandemnard/Personal/Projects/HermesPong/dist/Pong.app` |
-| Installed app | `/Applications/Pong.app` |
+| Built app (local dist) | `/Users/dylandemnard/Personal/Projects/HermesPong/dist/CyberPong.app` |
+| Installed app | `/Applications/CyberPong.app` |
+| Bundle executable | `…/CyberPong.app/Contents/MacOS/Pong` |
 | Runtime state | `~/.pong/` |
 | Legacy state | `~/.hermes-pong/` |
 | CLI binaries (after setup) | `~/bin/pong` · `~/bin/pong-gate.py` · `~/bin/pong-delegate.py` |
@@ -226,7 +227,7 @@ docs/
 ## Notes
 
 - **UI name:** CyberPong  
-- **Binary / paths still say Pong:** `/Applications/Pong.app`, `pong` CLI, `~/.pong/`  
+- **Dock name:** `CyberPong.app` · **executable inside bundle:** `Pong` · **CLI / state:** `pong`, `~/.pong/`  
 - **Repo privacy:** GitHub repo is private unless changed in settings  
 - **Landing deploy:** serve the `landing/` folder (e.g. Vercel)  
 - **Not tracked:** `*.zip`, `brand 2/`, `dist/`, local `.DS_Store`

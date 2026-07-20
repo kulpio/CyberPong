@@ -12,12 +12,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# App name must match build-app.sh output (Pong.app — not legacy HermesPong.app)
-APP="$ROOT/dist/Pong.app"
+# Bundle folder must match build-app.sh (CyberPong.app — Dock/Finder name)
+APP="$ROOT/dist/CyberPong.app"
 ENTITLEMENTS="$ROOT/resources/entitlements.plist"
 PROFILE="hermes-pong"
-ZIP_NOTARIZE="$ROOT/dist/Pong-notarize.zip"
-ZIP_RELEASE="$ROOT/dist/Pong-macOS.zip"
+ZIP_NOTARIZE="$ROOT/dist/CyberPong-notarize.zip"
+ZIP_RELEASE="$ROOT/dist/CyberPong-macOS.zip"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -109,12 +109,12 @@ echo "→ Packaging release zip (post-staple)"
 rm -f "$ZIP_RELEASE"
 ditto -c -k --keepParent "$APP" "$ZIP_RELEASE"
 
-# zip must contain only Pong.app
-if zipinfo -1 "$ZIP_RELEASE" | grep -v "^Pong.app/" | grep -q .; then
-  zipinfo -1 "$ZIP_RELEASE" | grep -v "^Pong.app/" >&2
-  fail "release zip contains entries outside Pong.app/"
+# zip must contain only CyberPong.app
+if zipinfo -1 "$ZIP_RELEASE" | grep -v "^CyberPong.app/" | grep -q .; then
+  zipinfo -1 "$ZIP_RELEASE" | grep -v "^CyberPong.app/" >&2
+  fail "release zip contains entries outside CyberPong.app/"
 fi
-echo "  ✓ zip contains only Pong.app"
+echo "  ✓ zip contains only CyberPong.app"
 
 echo "→ Gatekeeper assessment"
 spctl --assess --type execute -vv "$APP"
