@@ -1449,6 +1449,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         selectHumanOrch(session: session)
         refreshHumanDock()
         reloadHumanInbox()
+        relayoutHumanToLinkedOrch()
         window?.makeFirstResponder(humanInput)
     }
 
@@ -1520,7 +1521,53 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanSession = s
             reloadHumanInbox()
             reloadTaskRecap()
+            reloadCronTimeline()
+            // YOU seat + floor line follow the orchestrator this human window is wired to
+            relayoutHumanToLinkedOrch()
         }
+    }
+
+    /// Move the YOU blob and rewire YOU→orch to `humanSession` (console dropdown).
+    private func relayoutHumanToLinkedOrch() {
+        sceneLock.lock()
+        lastSeatsSig = ""
+        layoutSeats()
+        sceneLock.unlock()
+        requestMapRender()
+    }
+
+    /// True when the linked team is actually waiting on a human (not “any team”).
+    private func sessionNeedsHuman(_ session: String) -> Bool {
+        guard !session.isEmpty else { return false }
+        for s in seats where s.session == session {
+            let st = s.status.lowercased()
+            if st.contains("human") || st.contains("takeover") || st.contains("ask") {
+                return true
+            }
+        }
+        // Snapshot open jobs for this session (seat status can lag)
+        let snap = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        if let team = (snap["teams"] as? [[String: Any]])?.first(where: { ($0["session"] as? String) == session }) {
+            for j in ((team["jobs"] as? [String: Any])?["open"] as? [[String: Any]]) ?? [] {
+                let st = ((j["status"] as? String) ?? "").lowercased()
+                if st.contains("human") || st.contains("ask") { return true }
+            }
+            for w in (team["workers"] as? [[String: Any]]) ?? [] {
+                let h = ((w["status_hint"] as? String) ?? "").lowercased()
+                if h.contains("human") || h.contains("takeover") { return true }
+            }
+        }
+        return false
+    }
+
+    /// Orchestrator the human console is wired to (dropdown), not a guessed primary team.
+    private func linkedHumanOrchSession(fallbackSeatSession: String) -> String {
+        if let s = humanOrchPop.selectedItem?.representedObject as? String, !s.isEmpty {
+            return s
+        }
+        if !humanSession.isEmpty { return humanSession }
+        if !fallbackSeatSession.isEmpty { return fallbackSeatSession }
+        return seats.first(where: { $0.role == "conductor" })?.session ?? ""
     }
 
     /// Build “Name → brief recap” lines from open jobs + seat state (not event jargon).
@@ -3283,26 +3330,33 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             }
         }
 
-        // Single YOU cube — above the human seat’s home orch (or first visible team)
+        // Single YOU cube — parked on the orchestrator the human console is wired to
+        // (dropdown / humanSession), not a guessed “primary” team.
         if let human = seats.first(where: { $0.role == "human" }) {
-            let homeSession = human.session
+            let homeSession = linkedHumanOrchSession(fallbackSeatSession: human.session)
+            // Keep console state in sync without clobbering a valid dropdown choice
+            if humanSession.isEmpty, !homeSession.isEmpty {
+                humanSession = homeSession
+            }
             let orch = seats.first(where: { $0.session == homeSession && $0.role == "conductor" })
                 ?? seats.first(where: { $0.role == "conductor" })
             let orchNode = orch.flatMap { seatNodes[$0.globalId] }
             let baseX: Float = orchNode.map { Float($0.position.x) } ?? 0
             let baseZ: Float = orchNode.map { Float($0.position.z) } ?? 0
             var pos = SCNVector3(baseX, yHuman, baseZ)
-            if let p = Map3DLayout.load(session: human.session, nodeId: human.id) {
+            // Layout key is global YOU — not per-team (one human for all teams)
+            if let p = Map3DLayout.load(session: homeSession, nodeId: human.id) {
                 let dx = p.x - baseX, dz = p.z - baseZ
-                if dx * dx + dz * dz < 4 {
+                // Only honor saved offset when it still sits near this orch; otherwise snap home
+                if dx * dx + dz * dz < 16 {
                     pos = SCNVector3(p.x, yHuman, p.z)
                 }
             }
             placeBlob(human, at: pos)
             if let orch, let from = seatNodes[human.globalId], let to = seatNodes[orch.globalId] {
                 let edgeKey = "you>\(orch.session)|\(orch.id)"
-                // Live only when needs-input OR brief linger after a real Send — never always-on.
-                let need = human.status.lowercased().contains("human")
+                // Packets only when *this* linked team needs you (or post-Send linger)
+                let need = sessionNeedsHuman(orch.session)
                 let flowing = linkFlowing(id: edgeKey, liveNow: need)
                 let link = FlowLink3D(
                     id: edgeKey,
@@ -3316,7 +3370,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 desiredSigs[link.id] = sig
                 pendingEdges.append((from, to, link, 0, 1, sig))
             }
-            humanSession = human.session
+            // Do NOT set humanSession = human.session here — that overwrote the console
+            // dropdown and rewired YOU to the wrong orchestrator every poll.
         }
 
         // Remove edges that disappeared; rebuild only when signature (geometry/active/label) changed.
