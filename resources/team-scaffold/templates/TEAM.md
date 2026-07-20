@@ -25,6 +25,7 @@
 | **Reviewer** | Reviews diffs, claims, and evidence; rejects weak claims |
 | **Operator** | Runs tools, deploys, browser/ops actions when policy allows |
 | **Researcher** | Explores codebase, docs, web (within session policy) |
+| **Task runner** | Discrete jobs only — cron ticks, one-shots, handoffs; claim and clear |
 
 ## Interaction rules
 

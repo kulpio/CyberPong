@@ -4458,6 +4458,18 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 gPath.move(to: NSPoint(x: cx, y: cy))
                 gPath.line(to: NSPoint(x: cx + gScale * 0.65, y: cy - gScale * 0.7))
                 gPath.stroke()
+            case .taskRunner:
+                // Checklist / discrete job mark
+                gPath.appendRoundedRect(
+                    NSRect(x: cx - gScale * 0.85, y: cy - gScale * 0.75,
+                           width: gScale * 1.7, height: gScale * 1.5),
+                    xRadius: gScale * 0.15, yRadius: gScale * 0.15)
+                gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy + gScale * 0.25))
+                gPath.line(to: NSPoint(x: cx - gScale * 0.15, y: cy - gScale * 0.1))
+                gPath.line(to: NSPoint(x: cx + gScale * 0.5, y: cy + gScale * 0.45))
+                gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy - gScale * 0.35))
+                gPath.line(to: NSPoint(x: cx + gScale * 0.45, y: cy - gScale * 0.35))
+                gPath.stroke()
             default:
                 let brace = "{  }" as NSString
                 brace.draw(at: NSPoint(x: cx - gScale * 1.1, y: cy - gScale * 0.55), withAttributes: [

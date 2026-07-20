@@ -4,18 +4,26 @@ import AppKit
 
 /// Who does what on a team. Stored as `mission_role` on seats.
 /// "Operator" replaced the old "Actor" label (same job: run tools / deploy / browser).
+/// "Task runner" is for discrete / scheduled jobs (cron, one-shots) — not a long product thread.
 enum MissionRole: String, CaseIterable {
     case orchestrator
     case coder
     case reviewer
     case `operator` = "operator"
     case researcher
+    /// Discrete jobs: cron ticks, one-shots, fire-and-claim — not a long product owner.
+    case taskRunner = "task_runner"
 
-    /// Parse wire value; accepts legacy `"actor"`.
+    /// Parse wire value; accepts legacy `"actor"` and aliases for task runner.
     static func parse(_ raw: String?) -> MissionRole? {
-        guard let raw = raw?.lowercased(), !raw.isEmpty else { return nil }
+        guard let raw = raw?.lowercased().replacingOccurrences(of: "-", with: "_"),
+              !raw.isEmpty else { return nil }
         if raw == "actor" || raw == "ops" || raw == "runner" { return .operator }
         if raw == "orch" || raw == "conductor" { return .orchestrator }
+        if raw == "tasks" || raw == "task" || raw == "cron" || raw == "job"
+            || raw == "jobs" || raw == "scheduled" || raw == "taskrunner" {
+            return .taskRunner
+        }
         return MissionRole(rawValue: raw)
     }
 
@@ -26,6 +34,7 @@ enum MissionRole: String, CaseIterable {
         case .reviewer: return "Reviewer"
         case .operator: return "Operator"
         case .researcher: return "Researcher"
+        case .taskRunner: return "Task runner"
         }
     }
 
@@ -37,6 +46,7 @@ enum MissionRole: String, CaseIterable {
         case .reviewer: return "✓"       // approve / reject
         case .operator: return "▶"       // run / act
         case .researcher: return "⌕"     // explore
+        case .taskRunner: return "◷"     // scheduled / discrete work
         }
     }
 
@@ -47,6 +57,7 @@ enum MissionRole: String, CaseIterable {
         case .reviewer: return "checkmark.seal"
         case .operator: return "play.circle"
         case .researcher: return "magnifyingglass"
+        case .taskRunner: return "checklist"
         }
     }
 
@@ -62,6 +73,8 @@ enum MissionRole: String, CaseIterable {
             return "Runs tools, deploys, browser, and ops actions within policy."
         case .researcher:
             return "Explores codebase, docs, and (if allowed) web research."
+        case .taskRunner:
+            return "Runs discrete jobs — cron ticks, one-shots, handoffs. Claim, finish, move on."
         }
     }
 
@@ -77,6 +90,8 @@ enum MissionRole: String, CaseIterable {
             return "- Prefer scripted, reversible actions\n- Log every external side effect\n- Stop on policy bans"
         case .researcher:
             return "- Map the codebase first\n- Cite paths and symbols\n- Do not invent APIs"
+        case .taskRunner:
+            return "- Read the job task only — no freelancing beyond scope\n- Prefer scripted, idempotent steps\n- Claim with evidence when done\n- Ready for the next tick (cron / queue) — do not hold product context"
         }
     }
 
@@ -85,6 +100,7 @@ enum MissionRole: String, CaseIterable {
         case 0: return .coder
         case 1: return .reviewer
         case 2: return .operator
+        case 3: return .taskRunner
         default: return .coder
         }
     }
@@ -606,7 +622,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
     private func pageRoles() {
         var y = H - 120
         let intro = wrap(
-            "Who does what? The orchestrator plans and verifies. Assign each agent a mission role.",
+            "Who does what? Orchestrator plans and verifies. Pick Coder, Reviewer, Operator, Researcher, or Task runner (cron / one-shot jobs).",
             frame: NSRect(x: 28, y: y - 40, width: W - 56, height: 40)
         )
         content.addSubview(intro)
