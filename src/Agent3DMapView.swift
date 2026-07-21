@@ -158,11 +158,17 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private let humanToggle = NSButton(frame: .zero)  // chevron ▾ / ▸ top-right
     private let humanOrchPop = NSPopUpButton(frame: .zero, pullsDown: false)
     private let humanInbox = NSTextField(wrappingLabelWithString: "")
+    private let humanAskLabel = NSTextField(wrappingLabelWithString: "")
+    private let humanDenyBtn = NSButton(frame: .zero)
+    private let humanAcceptOnceBtn = NSButton(frame: .zero)
+    private let humanAlwaysBtn = NSButton(frame: .zero)
+    private let humanAskRow = NSView(frame: .zero)
     private let humanInput = NSTextField(frame: .zero)
     private let humanSend = NSButton(frame: .zero)
     private var humanSession: String = ""
     private var humanExpanded = true
     private var humanPanelHeight: NSLayoutConstraint?
+    private var humanAskRowHeight: NSLayoutConstraint?
 
     /// Task recap under YOU — “worker → what they’re doing” (replaces orch Focus button).
     private let taskPanel = NSView(frame: .zero)
@@ -1333,9 +1339,49 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanInbox.textColor = NSColor(calibratedWhite: 0.8, alpha: 1)
         humanInbox.isBordered = false
         humanInbox.drawsBackground = false
-        humanInbox.maximumNumberOfLines = 12
+        humanInbox.maximumNumberOfLines = 8
         humanInbox.translatesAutoresizingMaskIntoConstraints = false
         humanPanel.addSubview(humanInbox)
+
+        // Ask decision row — Deny / Accept once / Always accept
+        humanAskRow.wantsLayer = true
+        humanAskRow.layer?.backgroundColor = NSColor(calibratedRed: 0.16, green: 0.11, blue: 0.04, alpha: 0.95).cgColor
+        humanAskRow.layer?.cornerRadius = 5
+        humanAskRow.layer?.borderWidth = 1
+        humanAskRow.layer?.borderColor = PongTheme.amber.withAlphaComponent(0.35).cgColor
+        humanAskRow.translatesAutoresizingMaskIntoConstraints = false
+        humanAskRow.isHidden = true
+        humanPanel.addSubview(humanAskRow)
+
+        humanAskLabel.font = PongTheme.mono(9)
+        humanAskLabel.textColor = PongTheme.amber
+        humanAskLabel.isBordered = false
+        humanAskLabel.drawsBackground = false
+        humanAskLabel.maximumNumberOfLines = 3
+        humanAskLabel.translatesAutoresizingMaskIntoConstraints = false
+        humanAskRow.addSubview(humanAskLabel)
+
+        func styleAskBtn(_ b: NSButton, title: String, action: Selector) {
+            b.title = title
+            b.bezelStyle = .inline
+            b.isBordered = false
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 3
+            b.layer?.backgroundColor = NSColor(calibratedWhite: 0.18, alpha: 1).cgColor
+            b.font = PongTheme.labelFont(9)
+            b.contentTintColor = .white
+            b.target = self
+            b.action = action
+            b.translatesAutoresizingMaskIntoConstraints = false
+            humanAskRow.addSubview(b)
+        }
+        styleAskBtn(humanDenyBtn, title: "Deny", action: #selector(humanDenyAsk))
+        styleAskBtn(humanAcceptOnceBtn, title: "Accept once", action: #selector(humanAcceptOnceAsk))
+        styleAskBtn(humanAlwaysBtn, title: "Always accept", action: #selector(humanAlwaysAsk))
+        humanAlwaysBtn.toolTip = "Allow elevated actions for the rest of this session without re-asking"
+        humanDenyBtn.layer?.backgroundColor = NSColor(calibratedRed: 0.35, green: 0.12, blue: 0.12, alpha: 1).cgColor
+        humanAcceptOnceBtn.layer?.backgroundColor = NSColor(calibratedRed: 0.15, green: 0.28, blue: 0.18, alpha: 1).cgColor
+        humanAlwaysBtn.layer?.backgroundColor = NSColor(calibratedRed: 0.12, green: 0.22, blue: 0.32, alpha: 1).cgColor
 
         humanInput.font = PongTheme.font(11)
         humanInput.placeholderString = "Message selected orchestrator…"
@@ -1361,6 +1407,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanPanel.addSubview(humanSend)
 
         humanPanelHeight = humanPanel.heightAnchor.constraint(equalToConstant: 228)
+        humanAskRowHeight = humanAskRow.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             humanPanel.leadingAnchor.constraint(equalTo: leftHUDStack.leadingAnchor),
             humanPanel.topAnchor.constraint(equalTo: trackPanel.bottomAnchor, constant: 8),
@@ -1369,12 +1416,10 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanTitle.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 12),
             humanTitle.topAnchor.constraint(equalTo: humanPanel.topAnchor, constant: 10),
             humanTitle.trailingAnchor.constraint(lessThanOrEqualTo: humanToggle.leadingAnchor, constant: -4),
-            // Chevron top-right
             humanToggle.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -8),
             humanToggle.centerYAnchor.constraint(equalTo: humanTitle.centerYAnchor),
             humanToggle.widthAnchor.constraint(equalToConstant: 22),
             humanToggle.heightAnchor.constraint(equalToConstant: 20),
-            // Orchestrator picker
             humanOrchPop.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
             humanOrchPop.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
             humanOrchPop.topAnchor.constraint(equalTo: humanTitle.bottomAnchor, constant: 6),
@@ -1382,7 +1427,24 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanInbox.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 12),
             humanInbox.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -12),
             humanInbox.topAnchor.constraint(equalTo: humanOrchPop.bottomAnchor, constant: 6),
-            humanInbox.bottomAnchor.constraint(equalTo: humanInput.topAnchor, constant: -8),
+            humanAskRow.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 8),
+            humanAskRow.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -8),
+            humanAskRow.topAnchor.constraint(equalTo: humanInbox.bottomAnchor, constant: 6),
+            humanAskRowHeight!,
+            humanAskLabel.leadingAnchor.constraint(equalTo: humanAskRow.leadingAnchor, constant: 8),
+            humanAskLabel.trailingAnchor.constraint(equalTo: humanAskRow.trailingAnchor, constant: -8),
+            humanAskLabel.topAnchor.constraint(equalTo: humanAskRow.topAnchor, constant: 6),
+            humanDenyBtn.leadingAnchor.constraint(equalTo: humanAskRow.leadingAnchor, constant: 6),
+            humanDenyBtn.bottomAnchor.constraint(equalTo: humanAskRow.bottomAnchor, constant: -6),
+            humanDenyBtn.heightAnchor.constraint(equalToConstant: 22),
+            humanAcceptOnceBtn.leadingAnchor.constraint(equalTo: humanDenyBtn.trailingAnchor, constant: 4),
+            humanAcceptOnceBtn.centerYAnchor.constraint(equalTo: humanDenyBtn.centerYAnchor),
+            humanAcceptOnceBtn.heightAnchor.constraint(equalToConstant: 22),
+            humanAlwaysBtn.leadingAnchor.constraint(equalTo: humanAcceptOnceBtn.trailingAnchor, constant: 4),
+            humanAlwaysBtn.trailingAnchor.constraint(lessThanOrEqualTo: humanAskRow.trailingAnchor, constant: -6),
+            humanAlwaysBtn.centerYAnchor.constraint(equalTo: humanDenyBtn.centerYAnchor),
+            humanAlwaysBtn.heightAnchor.constraint(equalToConstant: 22),
+            humanAskRow.bottomAnchor.constraint(equalTo: humanInput.topAnchor, constant: -8),
             humanInput.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
             humanInput.bottomAnchor.constraint(equalTo: humanPanel.bottomAnchor, constant: -10),
             humanInput.heightAnchor.constraint(equalToConstant: 24),
@@ -1469,9 +1531,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanToggle.toolTip = humanExpanded ? "Collapse" : "Expand"
         humanOrchPop.isHidden = !humanExpanded
         humanInbox.isHidden = !humanExpanded
+        humanAskRow.isHidden = !humanExpanded || humanAskRowHeight?.constant == 0
         humanInput.isHidden = !humanExpanded
         humanSend.isHidden = !humanExpanded
-        humanPanelHeight?.constant = humanExpanded ? 228 : 34
+        if humanExpanded {
+            let askOn = !(humanAskRowHeight?.constant == 0)
+            humanPanelHeight?.constant = askOn ? 300 : 228
+        } else {
+            humanPanelHeight?.constant = 34
+        }
         humanPanel.needsLayout = true
         layoutSubtreeIfNeeded()
         // Expand/collapse changes document height — keep scroll content in sync
@@ -1732,6 +1800,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         guard !humanSession.isEmpty else {
             humanInbox.stringValue = "Pick an orchestrator above."
             humanTitle.stringValue = "YOU · HUMAN"
+            setHumanAskVisible(false)
             return
         }
         var lines: [String] = []
@@ -1760,10 +1829,47 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         let log = HumanConsoleController.logPath(session: humanSession)
         if let data = try? String(contentsOfFile: log, encoding: .utf8), !data.isEmpty {
             lines.append("── recent ──")
-            lines.append(String(data.suffix(500)))
+            lines.append(String(data.suffix(400)))
         }
         humanInbox.stringValue = lines.joined(separator: "\n")
-        humanTitle.stringValue = asks > 0 ? "YOU · \(asks) ASK(S)" : "YOU · HUMAN"
+
+        // Structured / synthesized ask → Deny · Accept once · Always accept
+        if let ask = HumanConsoleController.loadPendingAsk(session: humanSession) {
+            humanAskLabel.stringValue = ask.question
+            setHumanAskVisible(true)
+            humanTitle.stringValue = "YOU · DECIDE"
+        } else {
+            setHumanAskVisible(false)
+            humanTitle.stringValue = asks > 0 ? "YOU · \(asks) ASK(S)" : "YOU · HUMAN"
+        }
+    }
+
+    private func setHumanAskVisible(_ on: Bool) {
+        humanAskRow.isHidden = !on
+        humanAskRowHeight?.constant = on ? 72 : 0
+        if humanExpanded {
+            humanPanelHeight?.constant = on ? 300 : 228
+        }
+        humanPanel.needsLayout = true
+        leftHUDStack.layoutSubtreeIfNeeded()
+        leftHUDScroll.reflectScrolledClipView(leftHUDScroll.contentView)
+    }
+
+    @objc private func humanDenyAsk() { humanRespondAsk(.deny) }
+    @objc private func humanAcceptOnceAsk() { humanRespondAsk(.acceptOnce) }
+    @objc private func humanAlwaysAsk() { humanRespondAsk(.alwaysAccept) }
+
+    private func humanRespondAsk(_ decision: HumanAskDecision) {
+        if let s = humanOrchPop.selectedItem?.representedObject as? String {
+            humanSession = s
+        }
+        let session = humanSession
+        guard !session.isEmpty else { return }
+        pulseHumanOrchLink(session: session)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = HumanConsoleController.respondToAsk(session: session, decision: decision)
+            DispatchQueue.main.async { self.reloadHumanInbox() }
+        }
     }
 
     @objc private func sendHumanChat() {

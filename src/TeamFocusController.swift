@@ -508,6 +508,43 @@ final class TeamFocusController: NSObject {
     }
 }
 
+// MARK: - Human ask protocol (Deny / Accept once / Always accept)
+
+/// A question from the orchestrator (or a job) waiting on the human.
+struct HumanAsk: Equatable {
+    let id: String
+    let session: String
+    let question: String
+    let source: String       // c1 / worker id / "orchestrator"
+    let jobId: String?
+}
+
+enum HumanAskDecision: String {
+    case deny
+    case acceptOnce = "accept_once"
+    case alwaysAccept = "always_accept"
+
+    var title: String {
+        switch self {
+        case .deny: return "Deny"
+        case .acceptOnce: return "Accept once"
+        case .alwaysAccept: return "Always accept"
+        }
+    }
+
+    /// Message pasted into the orchestrator pane.
+    var replyText: String {
+        switch self {
+        case .deny:
+            return "HUMAN DECISION: DENY — do not proceed with the requested action."
+        case .acceptOnce:
+            return "HUMAN DECISION: ACCEPT ONCE — proceed with this action only; ask again next time."
+        case .alwaysAccept:
+            return "HUMAN DECISION: ALWAYS ACCEPT — proceed, and do not ask again for elevated actions this session (full access)."
+        }
+    }
+}
+
 // MARK: - Human console (YOU cube on the map)
 
 /// Unified place to talk to orchestrators and answer “needs you” without Terminal hunting.
@@ -520,8 +557,15 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
     private var inboxView: NSTextView!
     private var inputView: NSTextView!
     private var statusLabel: NSTextField!
+    /// Pending-ask chrome (hidden when idle).
+    private var askBar: NSView!
+    private var askQuestionLabel: NSTextField!
+    private var denyBtn: NSButton!
+    private var acceptOnceBtn: NSButton!
+    private var alwaysBtn: NSButton!
+    private var currentAsk: HumanAsk?
     private let W: CGFloat = 520
-    private let H: CGFloat = 560
+    private let H: CGFloat = 600
 
     func show(session: String) {
         self.session = session
@@ -544,7 +588,7 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         win.isReleasedWhenClosed = false
         win.level = .floating
         win.backgroundColor = PongTheme.bg
-        win.minSize = NSSize(width: 420, height: 420)
+        win.minSize = NSSize(width: 420, height: 460)
         win.setFrameAutosaveName("PongHumanConsole")
         win.delegate = self
 
@@ -573,20 +617,63 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         sessionPop.autoresizingMask = [.minYMargin]
         root.addSubview(sessionPop)
 
+        // Pending ask bar — Deny / Accept once / Always accept
+        askBar = NSView(frame: NSRect(x: 20, y: H - 200, width: W - 40, height: 100))
+        askBar.wantsLayer = true
+        askBar.layer?.backgroundColor = NSColor(calibratedRed: 0.18, green: 0.12, blue: 0.04, alpha: 0.95).cgColor
+        askBar.layer?.cornerRadius = 10
+        askBar.layer?.borderWidth = 1
+        askBar.layer?.borderColor = PongTheme.amber.withAlphaComponent(0.45).cgColor
+        askBar.autoresizingMask = [.minYMargin, .width]
+        askBar.isHidden = true
+
+        let askHead = NSTextField(labelWithString: "ORCHESTRATOR ASKS")
+        askHead.font = PongTheme.labelFont(10)
+        askHead.textColor = PongTheme.amber
+        askHead.frame = NSRect(x: 12, y: 74, width: 200, height: 14)
+        askBar.addSubview(askHead)
+
+        askQuestionLabel = NSTextField(wrappingLabelWithString: "")
+        askQuestionLabel.font = PongTheme.font(12, weight: .medium)
+        askQuestionLabel.textColor = PongTheme.textPrimary
+        askQuestionLabel.maximumNumberOfLines = 3
+        askQuestionLabel.frame = NSRect(x: 12, y: 36, width: W - 64, height: 38)
+        askQuestionLabel.autoresizingMask = [.width]
+        askBar.addSubview(askQuestionLabel)
+
+        denyBtn = NSButton(title: "Deny", target: self, action: #selector(denyPressed))
+        denyBtn.bezelStyle = .rounded
+        denyBtn.frame = NSRect(x: 12, y: 8, width: 88, height: 26)
+        askBar.addSubview(denyBtn)
+
+        acceptOnceBtn = NSButton(title: "Accept once", target: self, action: #selector(acceptOncePressed))
+        acceptOnceBtn.bezelStyle = .rounded
+        acceptOnceBtn.frame = NSRect(x: 108, y: 8, width: 110, height: 26)
+        askBar.addSubview(acceptOnceBtn)
+
+        alwaysBtn = NSButton(title: "Always accept", target: self, action: #selector(alwaysPressed))
+        alwaysBtn.bezelStyle = .rounded
+        alwaysBtn.frame = NSRect(x: 226, y: 8, width: 120, height: 26)
+        alwaysBtn.toolTip = "Allow elevated actions for the rest of this session without asking again"
+        askBar.addSubview(alwaysBtn)
+
+        root.addSubview(askBar)
+
         // Inbox
         let inLab = NSTextField(labelWithString: "FROM TEAM  ·  asks & human-needed jobs")
         inLab.font = PongTheme.labelFont(10)
         inLab.textColor = PongTheme.textTertiary
-        inLab.frame = NSRect(x: 20, y: H - 112, width: 300, height: 14)
+        inLab.frame = NSRect(x: 20, y: H - 224, width: 300, height: 14)
         inLab.autoresizingMask = [.minYMargin]
         root.addSubview(inLab)
 
-        let inScroll = NSScrollView(frame: NSRect(x: 20, y: 168, width: W - 40, height: H - 290))
+        let inScroll = NSScrollView(frame: NSRect(x: 20, y: 168, width: W - 40, height: H - 350))
         inScroll.hasVerticalScroller = true
         inScroll.borderType = .noBorder
         inScroll.drawsBackground = true
         inScroll.backgroundColor = PongTheme.bgElevated
         inScroll.autoresizingMask = [.width, .height]
+        inScroll.identifier = NSUserInterfaceItemIdentifier("humanInboxScroll")
         inboxView = NSTextView(frame: inScroll.bounds)
         inboxView.isEditable = false
         inboxView.isSelectable = true
@@ -695,12 +782,19 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             }
         }
 
-        if asks.isEmpty {
+        // Pending structured ask (or synthesized from jobs/workers)
+        currentAsk = Self.loadPendingAsk(session: session)
+        updateAskBar()
+
+        if asks.isEmpty && currentAsk == nil {
             lines.append("")
             lines.append("No open asks. You can still send a prompt to the orchestrator below.")
         } else {
             lines.append("")
             lines.append("NEEDS YOU")
+            if let ask = currentAsk {
+                lines.append("• \(ask.source): \(ask.question)")
+            }
             lines.append(contentsOf: asks)
         }
 
@@ -713,10 +807,40 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         }
 
         inboxView.string = lines.joined(separator: "\n")
-        statusLabel.stringValue = asks.isEmpty
-            ? "Ready · ⌘↩ send"
-            : "\(asks.count) open ask(s) · reply below"
-        statusLabel.textColor = asks.isEmpty ? PongTheme.textTertiary : PongTheme.amber
+        if currentAsk != nil {
+            statusLabel.stringValue = "Decision required · Deny / Accept once / Always accept"
+            statusLabel.textColor = PongTheme.amber
+        } else if asks.isEmpty {
+            statusLabel.stringValue = "Ready · ⌘↩ send"
+            statusLabel.textColor = PongTheme.textTertiary
+        } else {
+            statusLabel.stringValue = "\(asks.count) open ask(s) · reply below or use buttons"
+            statusLabel.textColor = PongTheme.amber
+        }
+    }
+
+    private func updateAskBar() {
+        guard let askBar else { return }
+        if let ask = currentAsk {
+            askBar.isHidden = false
+            askQuestionLabel.stringValue = ask.question
+            // Nudge inbox under the ask bar
+            if let scroll = window?.contentView?.subviews.first(where: {
+                $0 is NSScrollView && ($0 as? NSScrollView)?.documentView === inboxView
+            }) as? NSScrollView {
+                let h = window?.contentView?.bounds.height ?? H
+                scroll.frame = NSRect(x: 20, y: 168, width: (window?.contentView?.bounds.width ?? W) - 40, height: h - 350)
+            }
+        } else {
+            askBar.isHidden = true
+            if let scroll = window?.contentView?.subviews.first(where: {
+                $0 is NSScrollView && ($0 as? NSScrollView)?.documentView === inboxView
+            }) as? NSScrollView {
+                let h = window?.contentView?.bounds.height ?? H
+                // Expand inbox when no ask bar
+                scroll.frame = NSRect(x: 20, y: 168, width: (window?.contentView?.bounds.width ?? W) - 40, height: h - 250)
+            }
+        }
     }
 
     @objc private func sessionChanged() {
@@ -730,6 +854,25 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
 
     @objc private func openOrchPressed() {
         DispatchQueue.global(qos: .userInitiated).async { Pairing.bringToFront(self.session) }
+    }
+
+    @objc private func denyPressed() { respond(.deny) }
+    @objc private func acceptOncePressed() { respond(.acceptOnce) }
+    @objc private func alwaysPressed() { respond(.alwaysAccept) }
+
+    private func respond(_ decision: HumanAskDecision) {
+        guard !session.isEmpty else { return }
+        statusLabel.stringValue = "Sending \(decision.title)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = Self.respondToAsk(session: self.session, decision: decision)
+            DispatchQueue.main.async {
+                self.statusLabel.stringValue = ok
+                    ? "\(decision.title) sent · \(Date().formatted(date: .omitted, time: .shortened))"
+                    : "Could not deliver decision"
+                self.statusLabel.textColor = ok ? PongTheme.amber : PongTheme.danger
+                self.reloadInbox()
+            }
+        }
     }
 
     @objc private func sendPressed() {
@@ -750,6 +893,155 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
                 self.reloadInbox()
             }
         }
+    }
+
+    // MARK: - Pending ask files
+
+    static func humanDir(session: String) -> String {
+        Pong.stateDir + "/human/\(session)"
+    }
+
+    static func pendingAskPath(session: String) -> String {
+        humanDir(session: session) + "/pending_ask.json"
+    }
+
+    static func lastResponsePath(session: String) -> String {
+        humanDir(session: session) + "/last_response.json"
+    }
+
+    /// Load explicit pending_ask.json, else synthesize from open human jobs / worker hints.
+    static func loadPendingAsk(session: String) -> HumanAsk? {
+        guard !session.isEmpty else { return nil }
+        let path = pendingAskPath(session: session)
+        let file = Pong.loadJSON(path)
+        if let q = file["question"] as? String, !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return HumanAsk(
+                id: (file["id"] as? String) ?? "ask-\(session)",
+                session: session,
+                question: q.trimmingCharacters(in: .whitespacesAndNewlines),
+                source: (file["source"] as? String) ?? "orchestrator",
+                jobId: file["job_id"] as? String
+            )
+        }
+
+        let snap = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        let team = ((snap["teams"] as? [[String: Any]]) ?? []).first { ($0["session"] as? String) == session }
+        let openJobs = ((team?["jobs"] as? [String: Any])?["open"] as? [[String: Any]]) ?? []
+        for j in openJobs {
+            let st = ((j["status"] as? String) ?? "").lowercased()
+            let takeover = (j["human_takeover"] as? Bool) == true
+            if st.contains("human") || st.contains("ask") || takeover {
+                let prev = (j["task_preview"] as? String)
+                    ?? (j["task"] as? String)
+                    ?? "Job needs your decision"
+                let jid = (j["id"] as? String) ?? "job"
+                let wid = (j["worker"] as? String) ?? (j["worker_id"] as? String) ?? "team"
+                return HumanAsk(
+                    id: "job-\(jid)",
+                    session: session,
+                    question: String(prev.prefix(280)),
+                    source: wid,
+                    jobId: jid
+                )
+            }
+        }
+        for w in (team?["workers"] as? [[String: Any]]) ?? [] {
+            let h = ((w["status_hint"] as? String) ?? "").lowercased()
+            if h.contains("human") || h.contains("takeover") || h.contains("ask") {
+                let id = (w["id"] as? String) ?? "w"
+                let lab = (w["label"] as? String) ?? id
+                let detail = (w["status_hint"] as? String) ?? "needs your input"
+                return HumanAsk(
+                    id: "seat-\(id)",
+                    session: session,
+                    question: "\(lab) needs you — \(detail)",
+                    source: id,
+                    jobId: nil
+                )
+            }
+        }
+        return nil
+    }
+
+    /// Write a structured ask (for agents / bridge). Overwrites previous pending ask.
+    @discardableResult
+    static func postAsk(session: String, question: String, source: String = "orchestrator",
+                        jobId: String? = nil) -> Bool {
+        guard !session.isEmpty, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let dir = humanDir(session: session)
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var dict: [String: Any] = [
+            "id": "ask-\(Int(Date().timeIntervalSince1970))",
+            "session": session,
+            "question": question.trimmingCharacters(in: .whitespacesAndNewlines),
+            "source": source,
+            "created_at": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if let jobId { dict["job_id"] = jobId }
+        Pong.writeJSON(pendingAskPath(session: session), dict)
+        return true
+    }
+
+    /// Apply Deny / Accept once / Always accept: deliver reply, clear pending, update policy if needed.
+    @discardableResult
+    static func respondToAsk(session: String, decision: HumanAskDecision) -> Bool {
+        let ask = loadPendingAsk(session: session)
+        var reply = decision.replyText
+        if let ask {
+            reply += "\n\nRe: \(ask.question)"
+            if let jid = ask.jobId { reply += "\nJob: \(jid)" }
+        }
+        let ok = deliver(session: session, text: reply)
+
+        // Persist decision for agents to poll
+        let dir = humanDir(session: session)
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var resp: [String: Any] = [
+            "decision": decision.rawValue,
+            "session": session,
+            "at": ISO8601DateFormatter().string(from: Date()),
+            "reply": reply,
+        ]
+        if let ask {
+            resp["ask_id"] = ask.id
+            resp["question"] = ask.question
+            if let jid = ask.jobId { resp["job_id"] = jid }
+        }
+        Pong.writeJSON(lastResponsePath(session: session), resp)
+
+        // Clear pending file
+        try? FileManager.default.removeItem(atPath: pendingAskPath(session: session))
+
+        if decision == .alwaysAccept {
+            // Session policy: stop ask-each gate
+            var perms = PairState.permissions(for: session)
+            perms["ask_each"] = false
+            perms["always_accept"] = true
+            perms["custom_prompt"] =
+                "Human chose ALWAYS ACCEPT for this session. Proceed with elevated actions " +
+                "without re-asking unless something is irreversible/destructive outside policy."
+            PairState.savePairState(session, permissions: perms)
+        } else if decision == .deny {
+            // If tied to a job, mark rejected when possible
+            if let jid = ask?.jobId, !jid.isEmpty {
+                let q = jid.replacingOccurrences(of: "'", with: "'\\''")
+                _ = Pong.sh("""
+                    export PATH="$HOME/bin:/opt/homebrew/bin:$PATH"
+                    pong job status --session '\(session)' '\(q)' rejected 2>/dev/null || true
+                    """)
+            }
+        } else if decision == .acceptOnce {
+            if let jid = ask?.jobId, !jid.isEmpty {
+                let q = jid.replacingOccurrences(of: "'", with: "'\\''")
+                _ = Pong.sh("""
+                    export PATH="$HOME/bin:/opt/homebrew/bin:$PATH"
+                    pong job status --session '\(session)' '\(q)' running 2>/dev/null || true
+                    """)
+            }
+        }
+        return ok
     }
 
     /// Paste into conductor tmux pane + append human log (unified path).
