@@ -639,10 +639,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         canvasScroll.frame = mapFrame
         canvasScroll.frame.size.height = max(100, b.height - 24)
         map3D.frame = mapFrame
-        // Floating toolbar centered bottom — wide enough for Orbit…New team
-        let tw: CGFloat = min(b.width - 24, 720)
+        // Floating toolbar: hug content width, then center (no empty void on the right)
+        let contentW = layoutGlassBar(canvasToolbar)
+        let tw = min(b.width - 24, max(120, contentW))
         canvasToolbar.frame = NSRect(x: (b.width - tw) / 2, y: 20, width: tw, height: 44)
-        layoutGlassBar(canvasToolbar)
+        // Re-layout into final frame (same widths; ensures pads look even)
+        _ = layoutGlassBar(canvasToolbar)
         canvasEmpty.frame = NSRect(x: (b.width - 360) / 2, y: (b.height - 160) / 2, width: 360, height: 160)
     }
 
@@ -676,7 +678,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                     b.isHidden = !use3DMap
                 }
             }
-            layoutGlassBar(canvasToolbar)
+            // Re-center after hide/show changes content width
+            layoutCanvasPage()
         }
     }
 
@@ -706,11 +709,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         return v
     }
 
-    private func layoutGlassBar(_ bar: NSView) {
+    /// Lays out visible pills left→right with tight padding. Returns total bar content width.
+    @discardableResult
+    private func layoutGlassBar(_ bar: NSView) -> CGFloat {
         let buttons = bar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-        guard !buttons.isEmpty else { return }
+        guard !buttons.isEmpty else { return 40 }
         let pad: CGFloat = 6
-        var x: CGFloat = 10
+        let side: CGFloat = 10
+        var x: CGFloat = side
         for b in buttons {
             let title = b.attributedTitle.string.uppercased()
             let w: CGFloat
@@ -725,6 +731,8 @@ final class PanelController: NSObject, NSWindowDelegate {
             b.frame = NSRect(x: x, y: 8, width: w, height: 28)
             x += w + pad
         }
+        // Trim trailing pad; keep symmetric side insets
+        return x - pad + side
     }
 
     // MARK: Navigation
