@@ -579,31 +579,46 @@ enum Workers {
         let tmuxIndex = (ws.compactMap { $0["tmux_index"] as? Int }.max() ?? 0) + 1
         let cmd = type.cmd.trimmingCharacters(in: .whitespacesAndNewlines)
         let launch = cmd.isEmpty ? "claude" : cmd
-        let pathExport = "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+        let pathExport = TerminalTheme.panePathExport()
         let safeCmd = launch.replacingOccurrences(of: "'", with: "'\\''")
         let sessionToken = Isolation.ensureToken(session: pair)
-        let tokenExport = sessionToken.isEmpty ? "" : " export PONG_TOKEN=\(sessionToken);"
         let seatExact = TerminalTheme.exactSeatTitle(pair: pair, seat: id)
+        let seatLabel = parentId != nil ? "\(type.label) sub" : type.label
+        let seatFriendly = TerminalTheme.friendlySeatTitle(pair: pair, seat: id, seatLabel: seatLabel)
 
         // Ensure base tmux session exists
         Pong.sh("tmux has-session -t \(pair) 2>/dev/null || tmux new-session -d -s \(pair) -n Conductor")
         TmuxScroll.apply(session: pair)
-        Pong.sh("tmux new-window -t \(pair) -n '\(seatExact.replacingOccurrences(of: "'", with: ""))'")
+        Pong.sh("tmux new-window -t \(pair) -n '\(seatLabel.replacingOccurrences(of: "'", with: ""))'")
         // attach window index: use last window
         let idxOut = Pong.sh("tmux display-message -p -t \(pair) '#{window_index}' 2>/dev/null || echo \(tmuxIndex)")
         let actualIdx = Int(idxOut.trimmingCharacters(in: .whitespacesAndNewlines)) ?? tmuxIndex
         let roleTag = parentId != nil ? "SUBAGENT" : "WORKER"
-        Pong.sh("tmux send-keys -t \(pair):\(actualIdx) -l '\(pathExport); export PONG_SESSION=\(pair) HERMES_PONG_SESSION=\(pair) PONG_SEAT=\(id);\(tokenExport) printf \"\\n  \(roleTag) · \(type.label) · \(pair):\(actualIdx)\\n\\n\"; \(safeCmd)'")
+        var wParts: [String] = [
+            pathExport,
+            "export PONG_SESSION=\(pair)",
+            "export HERMES_PONG_SESSION=\(pair)",
+            "export PONG_SEAT=\(id)",
+        ]
+        if !sessionToken.isEmpty {
+            wParts.append("export PONG_TOKEN=\(sessionToken)")
+        }
+        wParts.append("printf \"\\n  \(roleTag) · \(type.label) · \(pair):\(actualIdx)\\n\\n\"")
+        wParts.append("exec \(safeCmd)")
+        let wLaunch = TerminalTheme.joinShell(wParts)
+        let wQ = wLaunch.replacingOccurrences(of: "'", with: "'\\''")
+        Pong.sh("tmux send-keys -t \(pair):\(actualIdx) -l '\(wQ)'")
         usleep(80_000)
         Pong.sh("tmux send-keys -t \(pair):\(actualIdx) Enter")
-        TerminalTheme.tmuxTitle(baseSession: pair, tmuxIndex: actualIdx, displayTitle: seatExact)
+        TerminalTheme.tmuxTitle(baseSession: pair, tmuxIndex: actualIdx, displayTitle: seatLabel)
         let paneId = Isolation.registerPane(session: pair, workerId: id, tmuxTarget: "\(pair):\(actualIdx)", startCommand: launch)
+        _ = seatExact
 
         // Open Terminal attached to this window view (dedicated window — not a tab on Grok)
         let view = "\(pair)-w\(actualIdx - 1)"
         Pong.sh("tmux has-session -t \(view) 2>/dev/null || tmux new-session -d -s \(view) -t \(pair)")
         Pong.sh("tmux select-window -t \(view):\(actualIdx) 2>/dev/null || tmux select-window -t \(pair):\(actualIdx)")
-        let newId = Pairing.openAttachSession(view, displayTitle: seatExact)
+        let newId = Pairing.openAttachSession(view, displayTitle: seatFriendly)
 
         let rec = makeWorker(
             id: id,
@@ -1088,6 +1103,48 @@ enum TerminalTheme {
         "pong.\(pair).\(seat)"
     }
 
+    /// Human-facing Terminal title: `Team · Seat` (not the attach-session chrome).
+    static func friendlySeatTitle(pair: String, seat: String, seatLabel: String? = nil) -> String {
+        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
+        let team = (entry["display_name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let teamPart = (team?.isEmpty == false) ? team! : pair
+        if let lab = seatLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !lab.isEmpty {
+            return "\(teamPart) · \(lab)"
+        }
+        if seat == "c1" || seat == "hermes" {
+            let cond = entry["conductor"] as? [String: Any]
+            let cl = (cond?["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let cl, !cl.isEmpty { return "\(teamPart) · \(cl)" }
+            return "\(teamPart) · Orchestrator"
+        }
+        if let w = Workers.list(from: entry).first(where: { ($0["id"] as? String) == seat }) {
+            let lab = (w["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let lab, !lab.isEmpty { return "\(teamPart) · \(lab)" }
+        }
+        return "\(teamPart) · \(seat)"
+    }
+
+    /// PATH for agent panes — includes Grok Build (`~/.grok/bin`) and common install roots.
+    static func panePathExport() -> String {
+        "export PATH=\"$HOME/.grok/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$PATH\""
+    }
+
+    /// Join shell fragments with single `;` — never produces `;;` (broke conductor launch).
+    static func joinShell(_ parts: [String]) -> String {
+        parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { p in
+                var s = p
+                while s.hasSuffix(";") { s = String(s.dropLast()).trimmingCharacters(in: .whitespaces) }
+                while s.hasPrefix(";") { s = String(s.dropFirst()).trimmingCharacters(in: .whitespaces) }
+                return s
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "; ")
+    }
+
     /// True when title is exactly the isolation token (or equals it as custom title).
     static func isExactSeatTitle(_ title: String, pair: String, seat: String) -> Bool {
         let want = exactSeatTitle(pair: pair, seat: seat)
@@ -1128,18 +1185,27 @@ enum TerminalTheme {
         return true
     }
 
-    /// Strict recovery: exact `pong.<session>.<seat>` title OR attach-session -t <viewToken>.
-    /// Never fuzzy-match free Grok/Claude windows (V5).
+    /// Strict recovery: exact `pong.<session>.<seat>` title OR attach-session -t <viewToken>
+    /// OR a still-valid stored window id (friendly titles like "Team · Agent" no longer embed the token).
+    /// Never fuzzy-match free Grok/Claude app windows (V5).
     static func resolvePairWindow(stored: String?, viewToken: String, pair: String? = nil, seat: String? = nil) -> String? {
         let wins = listWindows()
         func matches(_ title: String) -> Bool {
             if isPairAttachTitle(title, viewToken: viewToken) { return true }
             if let pair, let seat, isExactSeatTitle(title, pair: pair, seat: seat) { return true }
+            // Friendly "Team · Label" titles after theming
+            if title.lowercased().contains(viewToken.lowercased()) { return true }
+            if let pair, title.lowercased().contains(pair.lowercased()) { return true }
             return false
         }
         if let s = stored, Int(s) != nil {
-            if let title = wins.first(where: { $0.id == s })?.title, matches(title) {
-                return s
+            if let title = wins.first(where: { $0.id == s })?.title {
+                if matches(title) { return s }
+                // Trust stored id if the window still exists and is not a free agent GUI
+                let t = title.lowercased()
+                if !t.contains("grok ▸") && !t.contains("hermes ▸") {
+                    return s
+                }
             }
         }
         for (id, title) in wins where matches(title) {
@@ -1248,6 +1314,10 @@ enum TerminalTheme {
             try
               set title displays settings name of T to false
             end try
+            -- Hide "tmux attach-session …" process name in the title bar
+            try
+              set title displays active process name of T to false
+            end try
             set custom title of T to "\(safeTitle)"
             \(colorLines)
             return "OK"
@@ -1266,8 +1336,8 @@ enum TerminalTheme {
             .replacingOccurrences(of: "\"", with: "")
         _ = Pong.sh("tmux set-option -t \(baseSession):\(tmuxIndex) automatic-rename off 2>/dev/null || true")
         _ = Pong.sh("tmux rename-window -t \(baseSession):\(tmuxIndex) '\(safe)' 2>/dev/null || true")
-        _ = Pong.sh("tmux set-option -t \(baseSession) set-titles on 2>/dev/null || true")
-        _ = Pong.sh("tmux set-option -t \(baseSession) set-titles-string '#W' 2>/dev/null || true")
+        // Don't push "tmux attach-session" into the Terminal title bar
+        _ = Pong.sh("tmux set-option -t \(baseSession) set-titles off 2>/dev/null || true")
     }
 
     static func applyPair(_ pair: String) {
@@ -1282,9 +1352,8 @@ enum TerminalTheme {
         let hid = resolvePairWindow(stored: storedH, viewToken: hToken, pair: pair, seat: "c1")
         let condType = (entry["conductor"] as? [String: Any])?["type"] as? String
         let condLabel = (entry["conductor"] as? [String: Any])?["label"] as? String
-        // V5: exact isolation token as primary title; human label secondary in custom title only
-        let hubExact = exactSeatTitle(pair: pair, seat: "c1")
-        let hubTitle = hubExact
+        // Friendly title for humans; isolation still uses attach-session / pong.session.seat match
+        let hubTitle = friendlySeatTitle(pair: pair, seat: "c1", seatLabel: condLabel)
         apply(windowId: hid, displayTitle: hubTitle, viewToken: hToken,
               colors: hColors, profile: profileName(pair: pair, role: "hermes"))
         tmuxTitle(baseSession: pair, tmuxIndex: 0, displayTitle: hubTitle)
@@ -1301,12 +1370,11 @@ enum TerminalTheme {
             let token = viewToken(pair: pair, role: id)
             let wid = resolvePairWindow(stored: storedOpt, viewToken: token, pair: pair, seat: id)
             let cols = Colors.from(ws[i]["colors"]) ?? .workerDefault
-            let seatExact = exactSeatTitle(pair: pair, seat: id)
-            apply(windowId: wid, displayTitle: seatExact, viewToken: token,
+            let seatTitle = friendlySeatTitle(pair: pair, seat: id, seatLabel: lab)
+            apply(windowId: wid, displayTitle: seatTitle, viewToken: token,
                   colors: cols, profile: profileName(pair: pair, role: id))
             let tmuxIdx = (ws[i]["tmux_index"] as? Int) ?? (i + 1)
-            tmuxTitle(baseSession: pair, tmuxIndex: tmuxIdx, displayTitle: seatExact)
-            _ = lab
+            tmuxTitle(baseSession: pair, tmuxIndex: tmuxIdx, displayTitle: seatTitle)
             if let wid, storedW != wid {
                 ws[i]["window_id"] = wid
                 changed = true
@@ -2086,7 +2154,7 @@ enum Pairing {
         var list = workers
         if list.isEmpty { list = [WorkerType.named("claude")] }
         let name = PairState.nextPairName()
-        let pathExport = "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+        let pathExport = TerminalTheme.panePathExport()
         let viewH = "\(name)-h"
         let cond = conductor
         let condLabel = cond.label.replacingOccurrences(of: " (recommended)", with: "")
@@ -2118,16 +2186,33 @@ enum Pairing {
         if !sessionToken.isEmpty {
             Pong.sh("tmux set-environment -t \(name) PONG_TOKEN \(sessionToken)")
         }
-        let tokenExport = sessionToken.isEmpty ? "" : " export PONG_TOKEN=\(sessionToken);"
-        let orchestraEnv = "export PONG_SESSION=\(name) HERMES_PONG_SESSION=\(name) PONG_ROLE=conductor HERMES_PONG_ROLE=orchestra;\(tokenExport)"
-        let writeBind = "python3 $HOME/bin/hermes_pong.py write-bind --session \(name) >/dev/null 2>&1 || PYTHONPATH=$HOME/.pong/lib${PYTHONPATH:+:$PYTHONPATH} python3 -m pong.cli status -s \(name) >/dev/null 2>&1 || true"
+        // Build launch with joinShell — never `;;` (that left conductor stuck in zsh)
+        let writeBind = "python3 \"$HOME/bin/hermes_pong.py\" write-bind --session \(name) >/dev/null 2>&1 || PYTHONPATH=\"$HOME/.pong/lib${PYTHONPATH:+:$PYTHONPATH}\" python3 -m pong.cli status -s \(name) >/dev/null 2>&1 || true"
         let banner = "CONDUCTOR · \(condLabel) · \(name):0"
+        var condParts: [String] = [
+            pathExport,
+            "export PONG_SESSION=\(name)",
+            "export HERMES_PONG_SESSION=\(name)",
+            "export PONG_ROLE=conductor",
+            "export HERMES_PONG_ROLE=orchestra",
+        ]
+        if !sessionToken.isEmpty {
+            condParts.append("export PONG_TOKEN=\(sessionToken)")
+        }
+        condParts.append(writeBind)
+        condParts.append("printf \"\\n  \(banner)\\n  skill: \(skillHint) · pong gate · pong job create\\n\\n\"")
+        condParts.append("exec \(safeCondCmd)")
+        let condLaunch = TerminalTheme.joinShell(condParts)
         let condExact = TerminalTheme.exactSeatTitle(pair: name, seat: "c1")
-        TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: 0, displayTitle: condExact)
-        Pong.sh("tmux send-keys -t \(name):0 -l '\(pathExport); \(orchestraEnv); \(writeBind); printf \"\\n  \(banner)\\n  skill: \(skillHint) · pong gate · pong job create\\n\\n\"; \(safeCondCmd)'")
+        let condFriendly = "\(condLabel)"
+        TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: 0, displayTitle: condFriendly)
+        // -l = literal keys; single Enter to run
+        let condQ = condLaunch.replacingOccurrences(of: "'", with: "'\\''")
+        Pong.sh("tmux send-keys -t \(name):0 -l '\(condQ)'")
         usleep(80_000)
         Pong.sh("tmux send-keys -t \(name):0 Enter")
         Isolation.registerPane(session: name, workerId: "c1", tmuxTarget: "\(name):0", startCommand: condCmd)
+        _ = condExact
 
         var workerRecords: [[String: Any]] = []
         for (idx, worker) in list.enumerated() {
@@ -2135,14 +2220,27 @@ enum Pairing {
             let launchCmd = wCmd.isEmpty ? "claude" : wCmd
             let seatId = "w\(idx + 1)"
             let seatExact = TerminalTheme.exactSeatTitle(pair: name, seat: seatId)
-            let winName = seatExact
-            Pong.sh("tmux new-window -t \(name) -n '\(winName.replacingOccurrences(of: "'", with: ""))'")
+            let winName = worker.label.replacingOccurrences(of: "'", with: "")
+            Pong.sh("tmux new-window -t \(name) -n '\(winName.isEmpty ? seatExact : winName)'")
             let safeCmd = launchCmd.replacingOccurrences(of: "'", with: "'\\''")
             let wbanner = "WORKER · \(worker.label) · \(name):\(idx + 1)"
-            Pong.sh("tmux send-keys -t \(name):\(idx + 1) -l '\(pathExport); export PONG_SESSION=\(name) HERMES_PONG_SESSION=\(name) PONG_SEAT=\(seatId);\(tokenExport) printf \"\\n  \(wbanner)\\n\\n\"; \(safeCmd)'")
+            var wParts: [String] = [
+                pathExport,
+                "export PONG_SESSION=\(name)",
+                "export HERMES_PONG_SESSION=\(name)",
+                "export PONG_SEAT=\(seatId)",
+            ]
+            if !sessionToken.isEmpty {
+                wParts.append("export PONG_TOKEN=\(sessionToken)")
+            }
+            wParts.append("printf \"\\n  \(wbanner)\\n\\n\"")
+            wParts.append("exec \(safeCmd)")
+            let wLaunch = TerminalTheme.joinShell(wParts)
+            let wQ = wLaunch.replacingOccurrences(of: "'", with: "'\\''")
+            Pong.sh("tmux send-keys -t \(name):\(idx + 1) -l '\(wQ)'")
             usleep(80_000)
             Pong.sh("tmux send-keys -t \(name):\(idx + 1) Enter")
-            TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: idx + 1, displayTitle: seatExact)
+            TerminalTheme.tmuxTitle(baseSession: name, tmuxIndex: idx + 1, displayTitle: worker.label)
             let paneId = Isolation.registerPane(session: name, workerId: seatId, tmuxTarget: "\(name):\(idx + 1)", startCommand: launchCmd)
             var rec: [String: Any] = [
                 "id": seatId,
@@ -2185,12 +2283,13 @@ enum Pairing {
             usedWindowIds.insert(id)
             return id
         }
-        let condExactTitle = TerminalTheme.exactSeatTitle(pair: name, seat: "c1")
-        let hid = openAttach(viewH, title: condExactTitle)
+        let condWinTitle = TerminalTheme.friendlySeatTitle(pair: name, seat: "c1", seatLabel: condLabel)
+        let hid = openAttach(viewH, title: condWinTitle)
         var windowIds: [String] = []
         for (idx, vn) in viewNames.enumerated() {
             let seatId = "w\(idx + 1)"
-            let seatTitle = TerminalTheme.exactSeatTitle(pair: name, seat: seatId)
+            let lab = idx < list.count ? list[idx].label : seatId
+            let seatTitle = TerminalTheme.friendlySeatTitle(pair: name, seat: seatId, seatLabel: lab)
             windowIds.append(openAttach(vn, title: seatTitle) ?? "")
         }
         // Close accidental blank / duplicate launch chrome windows (not our themed seats)
