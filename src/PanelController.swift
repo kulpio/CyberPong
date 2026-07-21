@@ -585,12 +585,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         canvasToolbar = glassBar()
         canvasPage.addSubview(canvasToolbar)
+        // One bar: Orbit/Move (left, with 2D) · zoom · Link terminals · Architecture · New team
+        canvasToolbar.addSubview(pillButton("Orbit", #selector(orbitModePressed)))
+        canvasToolbar.addSubview(pillButton("Move", #selector(moveModePressed)))
         canvasToolbar.addSubview(pillButton("3D", #selector(toggleMapMode)))
         canvasToolbar.addSubview(pillButton("−", #selector(zoomOutPressed)))
         canvasToolbar.addSubview(pillButton("+", #selector(zoomInPressed)))
-        canvasToolbar.addSubview(pillButton("Fit", #selector(fitPressed)))
-        // Terminal attach (not map topology — that mode is “Flow” on the 3D bar)
         canvasToolbar.addSubview(pillButton("Link terminals", #selector(linkPressed)))
+        canvasToolbar.addSubview(pillButton("Architecture", #selector(architecturePressed)))
         canvasToolbar.addSubview(accentButton("New team", #selector(newTeamPressed)))
 
         canvasEmpty = emptyState(
@@ -637,8 +639,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         canvasScroll.frame = mapFrame
         canvasScroll.frame.size.height = max(100, b.height - 24)
         map3D.frame = mapFrame
-        // Floating toolbar centered bottom
-        let tw: CGFloat = 440
+        // Floating toolbar centered bottom — wide enough for Orbit…New team
+        let tw: CGFloat = min(b.width - 24, 720)
         canvasToolbar.frame = NSRect(x: (b.width - tw) / 2, y: 20, width: tw, height: 44)
         layoutGlassBar(canvasToolbar)
         canvasEmpty.frame = NSRect(x: (b.width - 360) / 2, y: (b.height - 160) / 2, width: 360, height: 160)
@@ -647,11 +649,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func applyMapMode() {
         map3D?.isHidden = !use3DMap
         canvasScroll?.isHidden = use3DMap
-        // Update mode pill label
+        // Update mode pill label + Orbit/Move selection chrome
         if let canvasToolbar {
+            let moveOn = map3D?.isMoveMode == true
             for b in canvasToolbar.subviews.compactMap({ $0 as? NSButton }) {
-                let t = b.attributedTitle.string.uppercased()
-                if t == "3D" || t == "2D" || t == "FLAT" {
+                let t = b.attributedTitle.string
+                let u = t.uppercased()
+                if u == "3D" || u == "2D" || u == "FLAT" {
                     let label = use3DMap ? "2D" : "3D"
                     b.attributedTitle = NSAttributedString(string: label, attributes: [
                         .foregroundColor: PongTheme.textPrimary,
@@ -660,7 +664,19 @@ final class PanelController: NSObject, NSWindowDelegate {
                     ])
                     b.toolTip = use3DMap ? "Switch to flat map" : "Switch to 3D constellation"
                 }
+                // Orbit / Move only meaningful on 3D map
+                if u == "ORBIT" || u == "MOVE" {
+                    b.isHidden = !use3DMap
+                    let selected = (u == "MOVE" && moveOn) || (u == "ORBIT" && !moveOn && use3DMap)
+                    b.layer?.backgroundColor = (selected
+                        ? PongTheme.ink.withAlphaComponent(0.18)
+                        : NSColor.clear).cgColor
+                }
+                if u == "ARCHITECTURE" {
+                    b.isHidden = !use3DMap
+                }
             }
+            layoutGlassBar(canvasToolbar)
         }
     }
 
@@ -691,7 +707,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func layoutGlassBar(_ bar: NSView) {
-        let buttons = bar.subviews.compactMap { $0 as? NSButton }
+        let buttons = bar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
         guard !buttons.isEmpty else { return }
         let pad: CGFloat = 6
         var x: CGFloat = 10
@@ -700,9 +716,11 @@ final class PanelController: NSObject, NSWindowDelegate {
             let w: CGFloat
             switch title {
             case "−", "+", "–", "3D", "2D": w = 36
-            case "FIT", "LINK": w = 52
+            case "ORBIT", "MOVE": w = 56
+            case "LINK TERMINALS": w = 118
+            case "ARCHITECTURE": w = 100
             case "NEW TEAM": w = 96
-            default: w = max(48, CGFloat(title.count) * 8 + 16)
+            default: w = max(48, CGFloat(title.count) * 8 + 20)
             }
             b.frame = NSRect(x: x, y: 8, width: w, height: 28)
             x += w + pad
@@ -2249,19 +2267,42 @@ final class PanelController: NSObject, NSWindowDelegate {
         TeamsManagerPanel.shared.show { [weak self] in self?.reload() }
     }
 
+    @objc private func orbitModePressed() {
+        map3D?.setNavigateMode()
+        applyMapMode()
+    }
+
+    @objc private func moveModePressed() {
+        map3D?.setMoveMode()
+        applyMapMode()
+    }
+
+    @objc private func architecturePressed() {
+        map3D?.openArchitectureSheet()
+    }
+
     @objc private func zoomInPressed() {
+        if use3DMap {
+            // Mild dolly-in on 3D camera if available; otherwise ignore
+            map3D?.requestMapRender()
+            return
+        }
         guard let scroll = canvasScroll else { return }
         let next = min(scroll.maxMagnification, scroll.magnification * 1.15)
         scroll.animator().magnification = next
     }
 
     @objc private func zoomOutPressed() {
+        if use3DMap {
+            map3D?.requestMapRender()
+            return
+        }
         guard let scroll = canvasScroll else { return }
         let next = max(scroll.minMagnification, scroll.magnification / 1.15)
         scroll.animator().magnification = next
     }
 
-    /// Reset cluster layout, then zoom/pan so all seats fit in the viewport.
+    /// (Fit removed from toolbar — kept for any legacy callers.)
     @objc private func fitPressed() {
         if use3DMap {
             map3D.resetCamera()

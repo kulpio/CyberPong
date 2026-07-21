@@ -800,64 +800,36 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     }
 
     private func setupEditBar() {
-        // Sits above the panel’s bottom glass bar (≈44px + padding) so nothing is hidden.
-        editBar.wantsLayer = true
-        editBar.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 0.97).cgColor
-        editBar.layer?.cornerRadius = 8
-        editBar.layer?.borderWidth = 0
+        // Mode controls live on the panel canvas toolbar (Orbit / Move / Architecture).
+        // Keep a hidden bar only for internal modeButton bookkeeping if needed — no floating chips.
+        editBar.isHidden = true
         editBar.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(editBar)
-        let specs: [(String, String, CGFloat)] = [
-            ("Orbit", "navigate", 56),
-            ("Move", "move", 56),
-        ]
-        var x: CGFloat = 10
         modeButtons = []
-        for (title, mode, w) in specs {
-            let b = NSButton(frame: NSRect(x: x, y: 7, width: w, height: 26))
-            b.title = title
-            b.bezelStyle = .inline
-            b.isBordered = false
-            b.wantsLayer = true
-            b.layer?.cornerRadius = 5
-            b.font = PongTheme.labelFont(10)
-            b.target = self
-            b.action = #selector(modePressed(_:))
-            b.identifier = NSUserInterfaceItemIdentifier(mode)
-            b.toolTip = title == "Orbit" ? "Look around the map" : "Drag seats on their deck"
-            editBar.addSubview(b)
-            modeButtons.append(b)
-            x += w + 6
-        }
-        let flow = makeEditChip(title: "Architecture…", x: x, width: 108)
-        flow.toolTip = "ORCH / AGENTS / SUB · link seats · who does what (same as wizard)"
-        flow.action = #selector(openFlowDesign)
-        flow.layer?.backgroundColor = PongTheme.blue.withAlphaComponent(0.22).cgColor
-        editBar.addSubview(flow)
-        NSLayoutConstraint.activate([
-            editBar.centerXAnchor.constraint(equalTo: centerXAnchor),
-            editBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -78),
-            editBar.widthAnchor.constraint(equalToConstant: 250),
-            editBar.heightAnchor.constraint(equalToConstant: 40),
-        ])
-        styleModeButtons()
     }
 
-    private func makeEditChip(title: String, x: CGFloat, width: CGFloat) -> NSButton {
-        let b = NSButton(frame: NSRect(x: x, y: 7, width: width, height: 26))
-        b.title = title
-        b.bezelStyle = .inline
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 5
-        b.font = PongTheme.labelFont(10)
-        b.contentTintColor = .white
-        b.target = self
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: NSColor.white,
-            .font: PongTheme.labelFont(10),
-        ])
-        return b
+    /// Panel toolbar: Orbit (navigate).
+    func setNavigateMode() {
+        mapMode = .navigate
+        linkSourceGid = nil
+        isShiftPanning = false
+        applyCameraMode()
+        refreshOrbitHint()
+    }
+
+    /// Panel toolbar: Move seats on deck.
+    func setMoveMode() {
+        mapMode = .move
+        linkSourceGid = nil
+        isShiftPanning = false
+        applyCameraMode()
+        refreshOrbitHint()
+    }
+
+    var isMoveMode: Bool { mapMode == .move }
+
+    /// Panel toolbar: Architecture sheet (same as former map chip).
+    func openArchitectureSheet() {
+        openFlowDesign()
     }
 
     @objc private func openFlowDesign() {
@@ -874,12 +846,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     @objc private func modePressed(_ sender: NSButton) {
         let id = sender.identifier?.rawValue ?? "navigate"
-        mapMode = (id == "move") ? .move : .navigate
-        linkSourceGid = nil
-        isShiftPanning = false
-        applyCameraMode()
+        if id == "move" { setMoveMode() } else { setNavigateMode() }
         styleModeButtons()
-        refreshOrbitHint()
     }
 
     /// Orbit needs SceneKit camera control and no competing pan gesture.
