@@ -33,6 +33,18 @@ In plain language:
 
 ---
 
+## Screenshots
+
+| | |
+|--|--|
+| ![Cron timeline](docs/screens/map-cron.jpg) | **Cron timeline** — jobs on the future axis |
+| ![Live seats](docs/screens/map-active.jpg) | **Live seats** — active while work runs |
+| ![Orchestrator](docs/screens/map-orch.jpg) | **Orchestrator** — status and mission brief |
+| ![Architecture](docs/screens/architecture.png) | **Architecture** — link orch, agents, and subs |
+| ![Roles](docs/screens/roles.png) | **Roles** — coder, reviewer, task runner… |
+
+---
+
 ## Quick start
 
 ### Release zip

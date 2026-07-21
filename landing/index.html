@@ -550,6 +550,57 @@
     .price .hint { font-size: 0.75rem; opacity: 0.8; }
     .price:not(.primary):not(.accent) .hint { color: var(--muted); opacity: 1; }
 
+    /* Screenshots */
+    .shot-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 640px) {
+      .shot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .shot-grid figure {
+      margin: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+    }
+    .shot-grid img {
+      display: block;
+      width: 100%;
+      height: auto;
+      vertical-align: middle;
+    }
+    .shot-grid figcaption {
+      padding: 10px 12px 12px;
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .shot-grid figcaption strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .shot-grid figure.wide {
+      grid-column: 1 / -1;
+    }
+    /* Compact tip strip near top */
+    #support.tip-up {
+      margin-top: 8px;
+      margin-bottom: 8px;
+      padding: 20px 0 4px;
+    }
+    #support.tip-up h2 {
+      font-size: 1.25rem;
+      margin-bottom: 6px;
+    }
+    #support.tip-up > p {
+      margin-top: 0;
+      margin-bottom: 12px;
+      font-size: 0.95rem;
+    }
+
     footer {
       margin-top: 48px;
       padding-top: 20px;
@@ -586,8 +637,10 @@
         </div>
       </a>
       <nav aria-label="Primary">
+        <a href="#gallery">Screens</a>
         <a href="#whats-new">1.4</a>
         <a href="#can-do">What it does</a>
+        <a href="#support">Tip</a>
         <a href="#install">Install</a>
         <a href="#get">Download</a>
         <a class="primary" href="https://github.com/kulpio/hermes-pong">GitHub</a>
@@ -685,6 +738,60 @@
         <span class="pill">Cron timeline</span>
         <span class="pill">Save teams</span>
         <span class="pill">Local only</span>
+      </div>
+    </section>
+
+    <section class="section tip-up" id="support">
+      <h2>Free to use. Tip if it helps.</h2>
+      <p>Download and run on your machine either way. Tips are optional — same software.</p>
+      <div class="price-grid">
+        <a class="price primary" href="https://github.com/kulpio/hermes-pong/releases/latest">
+          <span class="amt">$0</span>
+          <span class="hint">Download free</span>
+        </a>
+        <a class="price" href="https://donate.stripe.com/7sYcN560Lb3acQX9xZ1B609">
+          <span class="amt">$10</span>
+          <span class="hint">Tip</span>
+        </a>
+        <a class="price accent" href="https://donate.stripe.com/fZufZhbl58V2cQX9xZ1B60a">
+          <span class="amt">$20</span>
+          <span class="hint">Tip</span>
+        </a>
+        <a class="price" href="https://donate.stripe.com/00wfZh3SD8V2g399xZ1B60b">
+          <span class="amt">$100</span>
+          <span class="hint">Tip</span>
+        </a>
+      </div>
+      <p class="fine" style="margin-top:14px">
+        Tips via Stripe (you can change the amount).
+        <a href="https://x.com/DDemnard" style="color:var(--cyan-dim)">@DDemnard</a>
+      </p>
+    </section>
+
+    <section class="section" id="gallery">
+      <h2>In the app</h2>
+      <p>Mission map, architecture, roles, and scheduled work.</p>
+      <div class="shot-grid">
+        <figure class="wide">
+          <img src="screens/map-cron.jpg" alt="CyberPong mission map with cron timeline" loading="lazy" width="1600" height="990" />
+          <figcaption><strong>Cron timeline</strong> — jobs on the future axis</figcaption>
+        </figure>
+        <figure>
+          <img src="screens/map-active.jpg" alt="Agents active on the mission map" loading="lazy" width="1600" height="990" />
+          <figcaption><strong>Live seats</strong> — active while work runs</figcaption>
+        </figure>
+        <figure>
+          <img src="screens/map-orch.jpg" alt="Orchestrator seat detail on the map" loading="lazy" width="1600" height="990" />
+          <figcaption><strong>Orchestrator</strong> — status and mission brief</figcaption>
+        </figure>
+        <figure>
+          <img src="screens/architecture.png" alt="Team architecture wizard" loading="lazy" width="1200" height="900" />
+          <figcaption><strong>Architecture</strong> — link orch, agents, and subs</figcaption>
+        </figure>
+        <figure>
+          <img src="screens/roles.png" alt="Role assignment in team setup wizard" loading="lazy" width="1200" height="900" />
+          <figcaption><strong>Roles</strong> — coder, reviewer, task runner…</figcaption>
+        </figure>
       </div>
     </section>
 
@@ -857,38 +964,12 @@
       </div>
     </section>
 
-    <section class="section" id="support">
-      <h2>Free to use. Tip if it helps.</h2>
-      <p>Download and run on your machine either way. Tips are optional — same software.</p>
-      <div class="price-grid">
-        <a class="price primary" href="https://github.com/kulpio/hermes-pong/releases/latest">
-          <span class="amt">$0</span>
-          <span class="hint">Download free</span>
-        </a>
-        <a class="price" href="https://donate.stripe.com/7sYcN560Lb3acQX9xZ1B609">
-          <span class="amt">$10</span>
-          <span class="hint">Tip</span>
-        </a>
-        <a class="price accent" href="https://donate.stripe.com/fZufZhbl58V2cQX9xZ1B60a">
-          <span class="amt">$20</span>
-          <span class="hint">Tip</span>
-        </a>
-        <a class="price" href="https://donate.stripe.com/00wfZh3SD8V2g399xZ1B60b">
-          <span class="amt">$100</span>
-          <span class="hint">Tip</span>
-        </a>
-      </div>
-      <p class="fine" style="margin-top:14px">
-        Tips via Stripe (you can change the amount).
-        <a href="https://x.com/DDemnard" style="color:var(--cyan-dim)">@DDemnard</a>
-      </p>
-    </section>
-
     <footer>
       <a href="https://github.com/kulpio/hermes-pong">GitHub</a>
       <a href="https://github.com/kulpio/hermes-pong/blob/main/README.md">Docs</a>
       <a href="https://github.com/kulpio/hermes-pong/releases">Releases</a>
       <a href="#can-do">What it does</a>
+      <a href="#support">Tip</a>
       <span>CyberPong 1.4 · Built by Dylan · Boreal</span>
     </footer>
   </div>
