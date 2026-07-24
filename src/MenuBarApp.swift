@@ -20,6 +20,9 @@ enum Pong {
         return primary
     }
     static var logPath: String { NSHomeDirectory() + "/Library/Logs/Pong.log" }
+    /// Rotate when larger than this (bytes).
+    private static let logMaxBytes: UInt64 = 2_000_000
+    private static let logKeepRotated = 3
     /// CLI tools for Guide headless + agent panes (Dock-launched apps get a bare PATH).
     static var extraPath: String {
         let home = NSHomeDirectory()
@@ -33,6 +36,7 @@ enum Pong {
     }
 
     static func log(_ msg: String) {
+        rotateLogIfNeeded()
         let line = msg.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
         let url = URL(fileURLWithPath: logPath)
         try? FileManager.default.createDirectory(
@@ -44,6 +48,26 @@ enum Pong {
         } else {
             try? Data(line.utf8).write(to: url)
         }
+    }
+
+    /// Keep ~/Library/Logs/Pong.log bounded (Pong.log → .1 → .2 → …).
+    private static func rotateLogIfNeeded() {
+        let path = logPath
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? UInt64,
+              size > logMaxBytes else { return }
+        for i in stride(from: logKeepRotated, through: 2, by: -1) {
+            let older = "\(path).\(i)"
+            let newer = "\(path).\(i - 1)"
+            try? fm.removeItem(atPath: older)
+            if fm.fileExists(atPath: newer) {
+                try? fm.moveItem(atPath: newer, toPath: older)
+            }
+        }
+        let first = "\(path).1"
+        try? fm.removeItem(atPath: first)
+        try? fm.moveItem(atPath: path, toPath: first)
     }
 
     /// Run a shell line with brew/user paths prepended (tmux lives there).
@@ -143,11 +167,13 @@ enum Isolation {
             Bundle.main.resourcePath.map { $0 + "/python" } ?? "",
             home + "/.pong/lib",
         ]
-        // Dev only — avoid baking Personal/Projects into release Mach-O
+        // Dev-tree literal must not appear in release Mach-O (sign-notarize hygiene).
+        #if DEBUG
         let dev = home + "/Personal/Projects/HermesPong/python"
         if FileManager.default.fileExists(atPath: dev + "/pong/__init__.py") {
             candidates.append(dev)
         }
+        #endif
         for c in candidates where !c.isEmpty {
             if FileManager.default.fileExists(atPath: c + "/pong")
                 || FileManager.default.fileExists(atPath: c + "/pong/__init__.py") {

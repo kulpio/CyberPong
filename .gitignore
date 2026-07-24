@@ -23,3 +23,11 @@ resources/brand/hermes-logo.png
 resources/brand/logo.png
 resources/brand/logo.svg
 resources/brand/favicon.ico
+
+# Internal review / handoff docs — local only (must not ship on public main)
+docs/REVIEW-2026-07-22-NOTARIZE-READINESS.md
+docs/REVIEWER-HANDOFF-NOTARIZE.md
+docs/REPORT-APP-STATE-2026-07-23.md
+docs/REPORT-2026-07-23-AUTH-GUIDE-COACH.md
+docs/REPORT-3D-TO-2D-MAP-PARITY.md
+docs/DESIGN-APP-AI-2D-OPENCLAW-TELEMETRY.md

@@ -10,6 +10,15 @@ PRIMARY = Path.home() / ".pong"
 LEGACY = Path.home() / ".hermes-pong"
 
 
+def _secure_dir(p: Path, mode: int = 0o700) -> None:
+    """mkdir parents + chmod (best-effort)."""
+    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(mode)
+    except Exception:
+        pass
+
+
 def state_dir() -> Path:
     """Resolve writable state directory.
 
@@ -20,13 +29,17 @@ def state_dir() -> Path:
     env = (os.environ.get("PONG_HOME") or "").strip()
     if env:
         p = Path(env).expanduser()
-        p.mkdir(parents=True, exist_ok=True)
+        _secure_dir(p)
         return p
     if PRIMARY.exists():
+        try:
+            PRIMARY.chmod(0o700)
+        except Exception:
+            pass
         return PRIMARY
     if LEGACY.exists() and any(LEGACY.iterdir()):
         return LEGACY
-    PRIMARY.mkdir(parents=True, exist_ok=True)
+    _secure_dir(PRIMARY)
     return PRIMARY
 
 
@@ -87,8 +100,30 @@ def briefs_dir() -> Path:
 
 def ensure_layout(session: str | None = None) -> None:
     root = state_dir()
+    try:
+        root.chmod(0o700)
+    except Exception:
+        pass
     for sub in ("jobs", "sessions", "ledger", "binds", "briefs", "templates"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
+        d = root / sub
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except Exception:
+            pass
     if session:
-        jobs_dir(session).mkdir(parents=True, exist_ok=True)
-        sessions_dir(session).mkdir(parents=True, exist_ok=True)
+        for d in (jobs_dir(session), sessions_dir(session)):
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                d.chmod(0o700)
+            except Exception:
+                pass
+
+
+def secure_file(path: Path, mode: int = 0o600) -> None:
+    """Best-effort chmod for prompt/session artifacts."""
+    try:
+        if path.exists():
+            path.chmod(mode)
+    except Exception:
+        pass

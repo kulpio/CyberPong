@@ -13,7 +13,7 @@ APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1
@@ -27,10 +27,16 @@ mkdir -p "$MACOS" "$RES"
 cd "$ROOT"
 # Compile all Swift sources in src/ (panel split out for maintainability)
 SWIFT_SRCS=(src/*.swift)
-swiftc -O -o "$MACOS/$APP_NAME-arm64" "${SWIFT_SRCS[@]}" \
+# --dev enables #if DEBUG (local checkout paths). Release builds omit -DDEBUG so
+# Personal/Projects/HermesPong never lands in the Mach-O.
+SWIFT_FLAGS=(-O)
+if [[ "$DEV" == "1" ]]; then
+  SWIFT_FLAGS+=(-DDEBUG)
+fi
+swiftc "${SWIFT_FLAGS[@]}" -o "$MACOS/$APP_NAME-arm64" "${SWIFT_SRCS[@]}" \
   -framework AppKit -framework Foundation -framework SceneKit -framework QuartzCore -framework Metal -framework MetalKit \
   -target arm64-apple-macosx13.0
-swiftc -O -o "$MACOS/$APP_NAME-x86_64" "${SWIFT_SRCS[@]}" \
+swiftc "${SWIFT_FLAGS[@]}" -o "$MACOS/$APP_NAME-x86_64" "${SWIFT_SRCS[@]}" \
   -framework AppKit -framework Foundation -framework SceneKit -framework QuartzCore -framework Metal -framework MetalKit \
   -target x86_64-apple-macosx13.0
 lipo -create -output "$MACOS/$APP_NAME" "$MACOS/$APP_NAME-arm64" "$MACOS/$APP_NAME-x86_64"

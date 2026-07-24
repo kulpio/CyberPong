@@ -149,11 +149,13 @@ enum TeamScaffold {
         }
         // Installed / dev checkouts — never stale ~/src/Agent-Pong
         let home = NSHomeDirectory()
-        let candidates = [
+        var candidates = [
             home + "/.pong/lib/team-scaffold/templates",
-            home + "/Personal/Projects/HermesPong/share/team-scaffold/templates",
             Bundle.main.bundlePath + "/../../../share/team-scaffold/templates",
         ]
+        #if DEBUG
+        candidates.insert(home + "/Personal/Projects/HermesPong/share/team-scaffold/templates", at: 1)
+        #endif
         for c in candidates where FileManager.default.fileExists(atPath: c) { return c }
         return home + "/.pong/lib/team-scaffold/templates"
     }
@@ -278,11 +280,13 @@ enum TeamScaffold {
         let script = Bundle.main.resourcePath.map { $0 + "/../.." } // unused
         _ = script
         let home = NSHomeDirectory()
-        let candidates = [
-            home + "/Personal/Projects/HermesPong/scripts/install-skills.sh",
+        var candidates = [
             Bundle.main.bundlePath + "/../../../scripts/install-skills.sh",
             home + "/.pong/lib/../scripts/install-skills.sh",
         ]
+        #if DEBUG
+        candidates.insert(home + "/Personal/Projects/HermesPong/scripts/install-skills.sh", at: 0)
+        #endif
         for c in candidates where FileManager.default.isExecutableFile(atPath: c)
             || FileManager.default.fileExists(atPath: c) {
             _ = Pong.sh("bash \"\(c)\" all 2>&1 | tail -20")
@@ -290,11 +294,13 @@ enum TeamScaffold {
             return
         }
         // Minimal inline copy into ~/.grok/skills and ~/.hermes
-        let shareRoots = [
-            home + "/Personal/Projects/HermesPong/share",
+        var shareRoots = [
             Bundle.main.resourcePath.map { $0 + "/share" } ?? "",
             Bundle.main.bundlePath + "/../../../share",
         ]
+        #if DEBUG
+        shareRoots.insert(home + "/Personal/Projects/HermesPong/share", at: 0)
+        #endif
         for share in shareRoots where FileManager.default.fileExists(atPath: share + "/pong-bridge") {
             let grok = home + "/.grok/skills"
             try? FileManager.default.createDirectory(atPath: grok, withIntermediateDirectories: true)

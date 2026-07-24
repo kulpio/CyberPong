@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import events
-from .paths import ensure_layout, sessions_dir, state_dir
+from .paths import ensure_layout, secure_file, sessions_dir, state_dir
 
 
 class RouteRefused(Exception):
@@ -296,6 +296,7 @@ def write_session_last(session: str, name: str, text: str) -> None:
     p = paths.get(key)
     if p:
         p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        secure_file(p, 0o600)
     # Do NOT write global root mirrors (V6 isolation)
 
 

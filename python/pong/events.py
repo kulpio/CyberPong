@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .paths import state_dir
+from .paths import secure_file, state_dir
 from .schema import EVENT_TYPES
 
 
@@ -32,6 +32,7 @@ def emit(event_type: str, *, session: str | None = None, **payload: Any) -> dict
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    secure_file(path, 0o600)
     return row
 
 
