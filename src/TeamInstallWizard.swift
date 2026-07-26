@@ -18,13 +18,35 @@ enum MissionRole: String, CaseIterable {
     static func parse(_ raw: String?) -> MissionRole? {
         guard let raw = raw?.lowercased().replacingOccurrences(of: "-", with: "_"),
               !raw.isEmpty else { return nil }
-        if raw == "actor" || raw == "ops" || raw == "runner" { return .operator }
+        if raw == "actor" || raw == "ops" || raw == "runner" || raw == "operator" { return .operator }
         if raw == "orch" || raw == "conductor" { return .orchestrator }
+        if raw == "checker" || raw == "review" { return .reviewer }
+        if raw == "builder" || raw == "coder" || raw == "code" { return .coder }
         if raw == "tasks" || raw == "task" || raw == "cron" || raw == "job"
             || raw == "jobs" || raw == "scheduled" || raw == "taskrunner" {
             return .taskRunner
         }
         return MissionRole(rawValue: raw)
+    }
+
+    /// Infer mission from seat label (Builder / Checker / Runner) when wire field missing.
+    static func parseLabel(_ label: String?) -> MissionRole? {
+        let t = (label ?? "").lowercased()
+        guard !t.isEmpty else { return nil }
+        if t.contains("check") || t.contains("review") { return .reviewer }
+        if t.contains("run") || t.contains("ops") || t.contains("operat") { return .operator }
+        if t.contains("build") || t.contains("coder") || t.contains("code") { return .coder }
+        if t.contains("research") || t.contains("scout") { return .researcher }
+        if t.contains("task") || t.contains("cron") { return .taskRunner }
+        if t.contains("orch") { return .orchestrator }
+        return nil
+    }
+
+    /// Resolve mission for a worker seat: wire `mission_role` → label → index default.
+    static func resolveWorker(missionRole: String?, label: String?, workerIndex: Int) -> MissionRole {
+        if let m = parse(missionRole) { return m }
+        if let m = parseLabel(label) { return m }
+        return defaultForWorker(index: workerIndex)
     }
 
     var title: String {
@@ -102,6 +124,45 @@ enum MissionRole: String, CaseIterable {
         case 2: return .operator
         case 3: return .taskRunner
         default: return .coder
+        }
+    }
+
+    /// Geometric map face / badge glyph kind (shared near full-card + far icon-only LOD).
+    /// Select via `mapGlyphKind` — never fall through workers to coder by structural role alone.
+    enum MapGlyphKind: String, CaseIterable, Equatable {
+        case human
+        case orchestrator
+        case researcher
+        case reviewer
+        case `operator`
+        case taskRunner
+        case coder
+    }
+
+    /// Face/map glyph from structural seat role + `mission_role` wire.
+    /// Conductor → always orchestrator. Human → human silhouette. Everyone else → parsed mission.
+    static func mapGlyphKind(structuralRole: String, missionRole: String?) -> MapGlyphKind {
+        if structuralRole == "human" { return .human }
+        if structuralRole == "conductor" { return .orchestrator }
+        switch MissionRole.parse(missionRole) ?? .coder {
+        case .orchestrator: return .orchestrator
+        case .researcher: return .researcher
+        case .reviewer: return .reviewer
+        case .operator: return .operator
+        case .taskRunner: return .taskRunner
+        case .coder: return .coder
+        }
+    }
+
+    /// MapGlyphKind for this mission (no structural human override).
+    var mapGlyphKind: MapGlyphKind {
+        switch self {
+        case .orchestrator: return .orchestrator
+        case .researcher: return .researcher
+        case .reviewer: return .reviewer
+        case .operator: return .operator
+        case .taskRunner: return .taskRunner
+        case .coder: return .coder
         }
     }
 }

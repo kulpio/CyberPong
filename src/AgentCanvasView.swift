@@ -838,7 +838,13 @@ final class AgentNodeView: NSView {
             ? "TEAM · \(teamShown)" : teamShown
         idField.stringValue = m.id.uppercased()
         layoutCardChrome()
-        iconLabel.stringValue = isCond ? "◎" : "{}"
+        // Mission-role glyph (same vocabulary as 3D near/far face LOD) — not worker→coder
+        let mission = isCond
+            ? MissionRole.orchestrator
+            : (MissionRole.parse(m.missionRole)
+                ?? MissionRole.parseLabel(m.title)
+                ?? .coder)
+        iconLabel.stringValue = mission.glyph
         iconLabel.textColor = role
         iconBadge.layer?.backgroundColor = role.withAlphaComponent(0.16).cgColor
         iconBadge.layer?.borderColor = role.withAlphaComponent(0.55).cgColor
@@ -846,10 +852,8 @@ final class AgentNodeView: NSView {
             for sub in iconBadge.subviews {
                 if sub.identifier?.rawValue == "sfIcon", let iv = sub as? NSImageView {
                     let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-                    let name = isCond
-                        ? "point.3.filled.connected.trianglepath.dotted"
-                        : "chevron.left.forwardslash.chevron.right"
-                    iv.image = NSImage(systemSymbolName: name, accessibilityDescription: m.role)?
+                    let name = mission.symbolName
+                    iv.image = NSImage(systemSymbolName: name, accessibilityDescription: mission.title)?
                         .withSymbolConfiguration(cfg)
                     iv.contentTintColor = role
                     iconLabel.isHidden = true

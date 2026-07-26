@@ -1234,6 +1234,13 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             }
         }
         _ = appendCard(session: session, kind: .fromYou, text: text, files: files)
+        // Immediate feedback — this panel is the window to the orchestrator
+        _ = appendCard(
+            session: session,
+            kind: .status,
+            text: "Sent to orchestrator · waiting for update…",
+            seatId: "c1"
+        )
 
         // Free-text log (agents / outbox)
         let path = logPath(session: session)
@@ -1281,7 +1288,450 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             """)
         try? FileManager.default.removeItem(at: tmp)
         Pong.log("human console deliver session=\(session) target=\(target) out=\(out.prefix(120))")
-        return out.contains("OK")
+        let ok = out.contains("OK")
+        if ok {
+            // Poll c1 pane for free-form TUI replies (claims alone never update last-reply)
+            startOrchCaptureWatch(session: session)
+        }
+        return ok
+    }
+
+    // MARK: Orch pane capture (free-form replies → last-reply + from_orch cards)
+
+    private static var captureWatchUntil: [String: TimeInterval] = [:]
+    private static var captureBaseline: [String: String] = [:]
+    private static var captureTimers: [String: DispatchSourceTimer] = [:]
+
+    /// After human send: capture conductor pane for ~75s and emit ORCH cards on new text.
+    static func startOrchCaptureWatch(session: String) {
+        guard !session.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        captureWatchUntil[session] = now + 75
+        // Baseline = current pane so we only surface *new* assistant output
+        if captureBaseline[session] == nil {
+            captureBaseline[session] = captureConductorPaneRaw(session: session) ?? ""
+        }
+        if captureTimers[session] != nil { return }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 2.5, repeating: 3.0, leeway: .milliseconds(400))
+        timer.setEventHandler {
+            tickOrchCapture(session: session)
+        }
+        captureTimers[session] = timer
+        timer.resume()
+        Pong.log("human orch capture watch start session=\(session)")
+    }
+
+    private static func tickOrchCapture(session: String) {
+        let now = Date().timeIntervalSince1970
+        let until = captureWatchUntil[session] ?? 0
+        if now > until {
+            captureTimers[session]?.cancel()
+            captureTimers[session] = nil
+            captureBaseline[session] = nil
+            captureWatchUntil[session] = nil
+            Pong.log("human orch capture watch end session=\(session)")
+            return
+        }
+        guard let raw = captureConductorPaneRaw(session: session) else { return }
+        let baseline = captureBaseline[session] ?? ""
+        let delta = paneDelta(old: baseline, new: raw)
+        guard delta.count >= 20 else { return }
+        // Advance baseline so we don't re-emit
+        captureBaseline[session] = raw
+        let digest = summarizePaneText(delta, maxChars: 600)
+        guard digest.count >= 16 else { return }
+        // Persist as last-reply so strip + sync also see it
+        writeLastReply(session: session, text: digest)
+        let sig = "pane-\(stableFingerprint(digest))"
+        var seen = loadFeedbackSigs(session: session)
+        guard !seen.contains(sig) else { return }
+        seen.insert(sig)
+        saveFeedbackSigs(session: session, seen: seen)
+        _ = appendCard(session: session, kind: .fromOrch, text: "Orch · \(digest)", seatId: "c1")
+        Pong.log("human orch capture card session=\(session) chars=\(digest.count) sig=\(sig)")
+    }
+
+    private static func captureConductorPaneRaw(session: String) -> String? {
+        let paneId = conductorPaneId(session: session)
+        let target = paneId.isEmpty ? "\(session):0" : paneId
+        let q = target.replacingOccurrences(of: "'", with: "'\\''")
+        let out = Pong.sh("""
+            tmux has-session -t '\(session)' 2>/dev/null || exit 1
+            tmux capture-pane -p -J -t '\(q)' -S -80 2>/dev/null
+            """)
+        let cleaned = stripAnsi(out).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func paneDelta(old: String, new: String) -> String {
+        if old.isEmpty { return new }
+        if new.hasPrefix(old) {
+            return String(new.dropFirst(old.count))
+        }
+        // Find longest common prefix line-wise
+        let oLines = old.components(separatedBy: "\n")
+        let nLines = new.components(separatedBy: "\n")
+        var i = 0
+        while i < oLines.count, i < nLines.count, oLines[i] == nLines[i] { i += 1 }
+        if i < nLines.count {
+            return nLines.suffix(from: i).joined(separator: "\n")
+        }
+        // Fallback: last ~40 lines if wholesale refresh
+        return nLines.suffix(40).joined(separator: "\n")
+    }
+
+    private static func summarizePaneText(_ raw: String, maxChars: Int) -> String {
+        var lines = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        // Drop chrome-ish lines
+        lines = lines.filter { line in
+            let l = line.lowercased()
+            if l.hasPrefix("──") || l.hasPrefix("——") { return false }
+            if l.hasPrefix("you ·") || l.hasPrefix("—— you") { return false }
+            if l.count < 3 { return false }
+            if l == "ok" || l == "%" || l.hasPrefix("tmux") { return false }
+            return true
+        }
+        let joined = lines.suffix(12).joined(separator: " ")
+            .replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        return String(joined.prefix(maxChars))
+    }
+
+    private static func writeLastReply(session: String, text: String) {
+        let dir = Pong.stateDir + "/sessions/\(session)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/last-reply.txt"
+        let body = text.hasSuffix("\n") ? text : text + "\n"
+        try? body.write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
+
+    /// Stable content fingerprint (not String.hashValue — that is process-unstable).
+    static func stableFingerprint(_ text: String) -> String {
+        let data = Data(text.utf8)
+        var hash: UInt64 = 5381
+        for b in data {
+            hash = ((hash << 5) &+ hash) &+ UInt64(b) // djb2
+        }
+        return String(hash, radix: 16)
+    }
+
+    // MARK: Orch → Human feedback (status strip + cards)
+
+    /// Plain-language stage + 2–4 strip lines for the docked YOU panel.
+    struct OrchStatusStrip: Equatable {
+        var stage: String
+        var lines: [String]
+        var displayText: String {
+            ([stage] + lines).filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+    }
+
+    /// Build live status strip (always; no side effects).
+    static func orchStatusStrip(session: String) -> OrchStatusStrip {
+        guard !session.isEmpty else {
+            return OrchStatusStrip(stage: "Stage: no team", lines: ["Pick a team to talk to its orchestrator."])
+        }
+        let snap = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        let team = ((snap["teams"] as? [[String: Any]]) ?? [])
+            .first { ($0["session"] as? String) == session }
+        let jobsBlob = team?["jobs"] as? [String: Any]
+        let open = (jobsBlob?["activity_open"] as? [[String: Any]])
+            ?? (jobsBlob?["open"] as? [[String: Any]])
+            ?? []
+        let allOpen = (jobsBlob?["open"] as? [[String: Any]]) ?? open
+        let workers = (team?["workers"] as? [[String: Any]]) ?? []
+        let ledger = (snap["ledger"] as? [String: Any]) ?? [:]
+        let now = Date().timeIntervalSince1970
+
+        var needsYou = false
+        var building = 0
+        var waitingClaim = 0
+        for j in allOpen {
+            let st = ((j["status"] as? String) ?? "").lowercased()
+            if st.contains("human") || st.contains("ask") || (j["human_takeover"] as? Bool) == true {
+                needsYou = true
+            } else if st == "running" || st.contains("working") {
+                building += 1
+            } else if st == "notified" || st == "queued" {
+                waitingClaim += 1
+            }
+        }
+        for w in workers {
+            let h = ((w["status_hint"] as? String) ?? "").lowercased()
+            if h.contains("human") || h.contains("takeover") { needsYou = true }
+            if h.contains("running") || h.contains("busy") { building += 1 }
+        }
+
+        let stage: String = {
+            if needsYou { return "Stage: needs you" }
+            if building > 0 { return "Stage: workers building" }
+            if waitingClaim > 0 { return "Stage: waiting on claims / workers" }
+            if !allOpen.isEmpty { return "Stage: planning / in flight" }
+            return "Stage: idle"
+        }()
+
+        var lines: [String] = []
+        lines.append("Open jobs: \(allOpen.count)" + (open.count != allOpen.count ? " (\(open.count) active)" : ""))
+        if let top = allOpen.first {
+            let w = (top["worker"] as? String) ?? "?"
+            let st = (top["status"] as? String) ?? "?"
+            let prev = (top["task_preview"] as? String) ?? (top["task"] as? String) ?? ""
+            let one = prev.isEmpty ? st : String(prev.prefix(48))
+            lines.append("Top: \(w) · \(st) · \(one)")
+        }
+        if let last = ledger["last"] as? [String: Any] {
+            let v = (last["verdict"] as? String) ?? (last["status"] as? String) ?? ""
+            let jid = (last["job_id"] as? String) ?? (last["id"] as? String) ?? ""
+            if !v.isEmpty {
+                lines.append("Last verdict: \(v)" + (jid.isEmpty ? "" : " · \(jid)"))
+            }
+        }
+        // last-reply digest
+        if let reply = readLastReplyDigest(session: session), !reply.isEmpty {
+            lines.append("Orch last said: \(reply)")
+        } else if let claim = latestClaimOneLiner(session: session, snap: snap) {
+            lines.append(claim)
+        }
+        // Cap strip
+        if lines.count > 3 { lines = Array(lines.prefix(3)) }
+        _ = now
+        return OrchStatusStrip(stage: stage, lines: lines)
+    }
+
+    /// Poll hook: emit concise from_orch / status cards when material state changes (deduped).
+    @discardableResult
+    static func syncOrchFeedback(session: String) -> OrchStatusStrip {
+        let strip = orchStatusStrip(session: session)
+        guard !session.isEmpty else { return strip }
+        Pong.log("human orch strip session=\(session) stage=\(strip.stage)")
+
+        var seen = loadFeedbackSigs(session: session)
+        var dirty = false
+        var emitted = 0
+
+        func emit(sig: String, kind: HumanChatMessage.Kind, text: String, jobId: String? = nil, seatId: String? = nil) {
+            guard !sig.isEmpty, !seen.contains(sig) else { return }
+            seen.insert(sig)
+            dirty = true
+            emitted += 1
+            _ = appendCard(session: session, kind: kind, text: text, jobId: jobId, seatId: seatId ?? "c1")
+            Pong.log("human orch card kind=\(kind.rawValue) sig=\(sig) session=\(session)")
+        }
+
+        let snap = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        let team = ((snap["teams"] as? [[String: Any]]) ?? [])
+            .first { ($0["session"] as? String) == session }
+        let jobsBlob = team?["jobs"] as? [String: Any]
+        let open = (jobsBlob?["open"] as? [[String: Any]]) ?? []
+        let recent = (jobsBlob?["recent"] as? [[String: Any]]) ?? []
+
+        let now = Date().timeIntervalSince1970
+        for j in open {
+            let jid = (j["id"] as? String) ?? ""
+            let st = ((j["status"] as? String) ?? "").lowercased()
+            let w = (j["worker"] as? String) ?? "?"
+            let prev = (j["task_preview"] as? String) ?? ""
+            guard !jid.isEmpty else { continue }
+            let updated = (j["updated_at"] as? Double) ?? (j["created_at"] as? Double) ?? 0
+            let age = updated > 0 ? now - updated : 0
+            let needsHuman = st.contains("human") || st.contains("ask") || (j["human_takeover"] as? Bool) == true
+            // Skip ancient open jobs for pipeline cards (strip still shows counts)
+            if !needsHuman, age > 30 * 60 { continue }
+            if needsHuman {
+                emit(
+                    sig: "job-\(jid)-human",
+                    kind: .status,
+                    text: "Job needs you · \(w) · \(String(prev.prefix(80)))",
+                    jobId: jid,
+                    seatId: w
+                )
+            } else if st == "running" || st == "notified" {
+                let tail = prev.isEmpty ? "" : " — \(String(prev.prefix(60)))"
+                emit(
+                    sig: "job-\(jid)-\(st)",
+                    kind: .status,
+                    text: "Orch pipeline · \(w) is \(st)\(tail)",
+                    jobId: jid,
+                    seatId: w
+                )
+            }
+        }
+
+        for j in recent.prefix(8) {
+            let jid = (j["id"] as? String) ?? ""
+            let st = ((j["status"] as? String) ?? "").lowercased()
+            let w = (j["worker"] as? String) ?? "?"
+            guard !jid.isEmpty else { continue }
+            if st == "done" || st == "accepted" {
+                emit(
+                    sig: "job-\(jid)-done",
+                    kind: .fromOrch,
+                    text: "Job finished · \(w) · \(jid)",
+                    jobId: jid,
+                    seatId: w
+                )
+            } else if st == "failed" || st == "rejected" || st == "cancelled" {
+                emit(
+                    sig: "job-\(jid)-\(st)",
+                    kind: .fromOrch,
+                    text: "Job \(st) · \(w) · \(jid)",
+                    jobId: jid,
+                    seatId: w
+                )
+            }
+        }
+
+        // Events: snapshot tail, then raw events.jsonl if empty
+        var events = (snap["events_tail"] as? [[String: Any]]) ?? []
+        if events.isEmpty {
+            events = loadEventsTail(limit: 50, session: session)
+        }
+        for e in events.suffix(40) {
+            let sess = (e["session"] as? String) ?? ""
+            guard sess.isEmpty || sess == session else { continue }
+            let typ = ((e["type"] as? String) ?? "").lowercased()
+            let jid = (e["job_id"] as? String) ?? ""
+            let ts = (e["ts"] as? Double) ?? 0
+            let sigBase = "ev-\(typ)-\(jid)-\(Int(ts))"
+            if typ.contains("claim") {
+                let sum = (e["summary"] as? String) ?? (e["task_preview"] as? String) ?? "claim filed"
+                emit(
+                    sig: sigBase,
+                    kind: .fromOrch,
+                    text: "Claim · \(String(sum.prefix(160)))",
+                    jobId: jid.isEmpty ? nil : jid
+                )
+            } else if typ.contains("verdict") {
+                let v = (e["verdict"] as? String) ?? (e["status"] as? String) ?? "verdict"
+                emit(
+                    sig: sigBase,
+                    kind: .fromOrch,
+                    text: "Verdict · \(v)" + (jid.isEmpty ? "" : " · \(jid)"),
+                    jobId: jid.isEmpty ? nil : jid
+                )
+            } else if typ == "job.status" {
+                let st = (e["status"] as? String) ?? ""
+                let from = (e["from"] as? String) ?? ""
+                if !st.isEmpty {
+                    emit(
+                        sig: sigBase,
+                        kind: .status,
+                        text: "Job status · \(from.isEmpty ? "" : "\(from) → ")\(st)" + (jid.isEmpty ? "" : " · \(jid)"),
+                        jobId: jid.isEmpty ? nil : jid
+                    )
+                }
+            }
+        }
+
+        // last-reply.txt — short orch digest when content changes (not full TUI)
+        if let digest = readLastReplyDigest(session: session), digest.count >= 12 {
+            let sig = "reply-\(stableFingerprint(digest))"
+            emit(
+                sig: sig,
+                kind: .fromOrch,
+                text: "Orch report · \(digest)",
+                seatId: "c1"
+            )
+        }
+
+        // While capture watch active, also try one pane sample on poll (UI thread path)
+        if let until = captureWatchUntil[session], Date().timeIntervalSince1970 < until {
+            // tick on utility queue without blocking poll
+            DispatchQueue.global(qos: .utility).async {
+                tickOrchCapture(session: session)
+            }
+        }
+
+        if dirty {
+            saveFeedbackSigs(session: session, seen: seen)
+            Pong.log("human orch sync emitted=\(emitted) session=\(session)")
+        }
+        return strip
+    }
+
+    private static func loadEventsTail(limit: Int, session: String) -> [[String: Any]] {
+        let path = Pong.stateDir + "/events.jsonl"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8), !raw.isEmpty else {
+            return []
+        }
+        var rows: [[String: Any]] = []
+        for line in raw.split(separator: "\n").suffix(200) {
+            guard let data = String(line).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let sess = (obj["session"] as? String) ?? ""
+            if !session.isEmpty, !sess.isEmpty, sess != session { continue }
+            rows.append(obj)
+        }
+        return Array(rows.suffix(limit))
+    }
+
+    private static func feedbackSigsPath(session: String) -> String {
+        humanDir(session: session) + "/feedback_sigs.json"
+    }
+
+    private static func loadFeedbackSigs(session: String) -> Set<String> {
+        let d = Pong.loadJSON(feedbackSigsPath(session: session))
+        if let arr = d["sigs"] as? [String] { return Set(arr) }
+        return []
+    }
+
+    private static func saveFeedbackSigs(session: String, seen: Set<String>) {
+        // Keep last ~100 sigs so the file stays small
+        let arr = Array(seen).suffix(100)
+        Pong.writeJSON(feedbackSigsPath(session: session), [
+            "sigs": Array(arr),
+            "updated": Date().timeIntervalSince1970,
+        ])
+    }
+
+    /// Short digest from sessions/<s>/last-reply.txt (strip ANSI, cap ~800 chars).
+    private static func readLastReplyDigest(session: String) -> String? {
+        let paths = [
+            Pong.stateDir + "/sessions/\(session)/last-reply.txt",
+            Pong.stateDir + "/sessions/\(session)/last-claude.txt",
+        ]
+        for path in paths {
+            guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let cleaned = stripAnsi(raw)
+                .replacingOccurrences(of: "\r", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleaned.count >= 12 else { continue }
+            // Prefer last non-empty paragraph
+            let paras = cleaned.components(separatedBy: "\n\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let body = paras.last ?? cleaned
+            let oneLine = body
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+            let capped = String(oneLine.prefix(220))
+            return capped
+        }
+        return nil
+    }
+
+    private static func stripAnsi(_ s: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: #"\u001B\[[0-9;]*[A-Za-z]"#, options: []) else {
+            return s
+        }
+        let range = NSRange(s.startIndex..., in: s)
+        return re.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "")
+    }
+
+    private static func latestClaimOneLiner(session: String, snap: [String: Any]) -> String? {
+        let events = (snap["events_tail"] as? [[String: Any]]) ?? []
+        for e in events.reversed() {
+            let sess = (e["session"] as? String) ?? ""
+            guard sess.isEmpty || sess == session else { continue }
+            let typ = ((e["type"] as? String) ?? "").lowercased()
+            guard typ.contains("claim") else { continue }
+            let sum = (e["summary"] as? String) ?? "claim received"
+            return "Last claim: \(String(sum.prefix(80)))"
+        }
+        return nil
     }
 
     /// Registered conductor pane_id (`c1` / hermes) or empty.

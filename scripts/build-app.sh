@@ -13,7 +13,7 @@ APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1

@@ -1353,12 +1353,15 @@ final class PanelController: NSObject, NSWindowDelegate {
                     }
                     return nil
                 }()
-                let missionRole = (w["mission_role"] as? String)
-                    ?? (w["role"] as? String)
-                    ?? "coder"
+                let resolved = MissionRole.resolveWorker(
+                    missionRole: (w["mission_role"] as? String) ?? (w["role"] as? String),
+                    label: lab,
+                    workerIndex: i
+                )
+                let missionRole = resolved.rawValue
                 models.append(AgentNodeModel(
                     session: session, id: wid, role: role3,
-                    title: lab, subtitle: "\(typ) · \(MissionRole.parse(missionRole)?.title ?? "Agent")",
+                    title: lab, subtitle: "\(typ) · \(resolved.title)",
                     detail: wdetail, status: status,
                     teamLabel: multi ? display : "",
                     accent: accent, origin: origin,
@@ -1367,7 +1370,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 ))
                 seats3D.append(Seat3D(
                     session: session, id: wid, role: role3,
-                    title: lab, subtitle: "\(typ) · \(MissionRole.parse(missionRole)?.title ?? "Agent")",
+                    title: lab, subtitle: "\(typ) · \(resolved.title)",
                     detail: wdetail, status: status, parentId: resolvedParent,
                     openJobs: openN, flowHint: flowHint,
                     missionRole: missionRole,

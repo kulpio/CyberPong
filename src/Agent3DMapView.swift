@@ -235,7 +235,11 @@ struct Seat3D {
 
     var resolvedMission: MissionRole {
         if role == "conductor" { return .orchestrator }
-        return MissionRole.parse(missionRole) ?? .coder
+        if role == "human" { return .coder } // unused for glyphs
+        // Wire → label → default coder (index applied at seat build)
+        return MissionRole.parse(missionRole)
+            ?? MissionRole.parseLabel(title)
+            ?? .coder
     }
 
     /// Lattice-style link label (named plotline)
@@ -309,6 +313,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     /// Active ground rings live on the deck plane (not parented to bobbing seat roots).
     private var planeRings: [String: SCNNode] = [:]
     private var seats: [Seat3D] = []
+    /// Immutable snapshot for the SceneKit render callback only.
+    /// Updated under `sceneLock` whenever `seats` changes — never read/write `seats` on the render queue.
+    private var renderSeats: [Seat3D] = []
     private var multiTeam = false
     private var themeObserver: NSObjectProtocol?
     /// Last camera XZ for billboard — skip yaw write when camera is static.
@@ -343,11 +350,17 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private let trackBody = NSTextField(wrappingLabelWithString: "")
     private let legendPanel = NSView(frame: .zero)
 
-    /// Docked YOU chat under TRACKING (same chrome). Collapse/expand only — never gone.
+    /// Docked YOU → orchestrator channel (same chrome). Collapse/expand only — never gone.
     private let humanPanel = PongFileDropView(frame: .zero)
-    private let humanTitle = NSTextField(labelWithString: "YOU · HUMAN")
+    private let humanTitle = NSTextField(labelWithString: "YOU → Orchestrator")
+    private let humanSubtitle = NSTextField(labelWithString: "Messages go to c1 · status & reports come back here")
+    /// Live orch status strip (2–4 lines); updated on poll.
+    private let humanStatusStrip = NSTextField(wrappingLabelWithString: "")
+    private var humanStatusStripHeight: NSLayoutConstraint?
     private let humanToggle = NSButton(frame: .zero)  // chevron ▾ / ▸ top-right
     private let humanOrchPop = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// Open c1 terminal escape hatch (not primary path).
+    private let humanOpenOrchBtn = NSButton(frame: .zero)
     /// Interactive card stream (replaces mono text dump).
     private let humanChatStream = HumanChatStreamView(frame: .zero)
     /// Legacy ask chrome kept hidden — ask cards live in the stream.
@@ -356,7 +369,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private let humanAcceptOnceBtn = NSButton(frame: .zero)
     private let humanAlwaysBtn = NSButton(frame: .zero)
     private let humanAskRow = NSView(frame: .zero)
-    private let humanInput = NSTextField(frame: .zero)
+    /// Multiline compose (NSTextView) — arrows/selection stay in-field; grows with content.
+    private let humanComposeScroll = NSScrollView(frame: .zero)
+    private let humanCompose = HumanComposeTextView(frame: .zero)
     private let humanSend = NSButton(frame: .zero)
     private let humanClear = NSButton(frame: .zero)
     private let humanGrow = NSButton(frame: .zero)
@@ -372,18 +387,22 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private var humanExpanded = true
     private var humanTall = false
     /// Preferred expanded height (persisted); continuous drag resize.
-    /// First-run default ~380 when prefs has no `human_panel_height` (never clobber saved, even tiny).
+    /// First-run default ~480 when prefs has no `human_panel_height` (never clobber saved, even tiny).
     private var humanPreferredHeight: CGFloat = {
         let prefs = Pong.loadJSON(Pong.stateDir + "/ui-prefs.json")
         if let v = prefs["human_panel_height"] as? Double {
+            // Pathologically tiny saved prefs only — otherwise keep user value
+            if v < 120 { return 480 }
             return CGFloat(min(700, max(160, v)))
         }
-        return 380
+        return 480
     }()
     private var humanPanelHeight: NSLayoutConstraint?
     private var humanAskRowHeight: NSLayoutConstraint?
     private var humanChatStreamHeight: NSLayoutConstraint?
     private var humanInputHeight: NSLayoutConstraint?
+    private var humanComposeMinH: CGFloat = 52
+    private var humanComposeMaxH: CGFloat = 190
     private var humanPanelBaseBorder: CGColor?
     private let humanVResizeGrip = NSView(frame: .zero)
     private var humanVResizeStartY: CGFloat = 0
@@ -609,8 +628,29 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
         trackTitle.textColor = muted
         trackBody.textColor = body
-        humanTitle.textColor = PongTheme.amber
+        // Human channel chrome — always readable in light (not stuck on white/pale)
+        humanTitle.textColor = mapIsDark ? PongTheme.blue : NSColor(calibratedRed: 0.12, green: 0.32, blue: 0.55, alpha: 1)
+        humanSubtitle.textColor = muted
+        humanStatusStrip.textColor = body
+        humanLockLabel.textColor = mapIsDark ? PongSheetChrome.lime : NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.12, alpha: 1)
+        humanAllBanner.textColor = mapIsDark ? PongTheme.amber : NSColor(calibratedRed: 0.50, green: 0.30, blue: 0.05, alpha: 1)
+        humanAttachLabel.textColor = mapIsDark ? PongTheme.amber : NSColor(calibratedRed: 0.50, green: 0.30, blue: 0.05, alpha: 1)
+        humanCompose.textColor = body
+        humanCompose.backgroundColor = mapIsDark
+            ? NSColor(calibratedWhite: 0.08, alpha: 1)
+            : NSColor(calibratedWhite: 0.99, alpha: 1)
+        humanCompose.insertionPointColor = body
+        humanComposeScroll.backgroundColor = humanCompose.backgroundColor
+        humanSend.contentTintColor = mapIsDark ? .white : NSColor(calibratedWhite: 0.08, alpha: 1)
+        humanSend.layer?.backgroundColor = (mapIsDark
+            ? NSColor(calibratedWhite: 0.15, alpha: 1)
+            : NSColor(calibratedWhite: 0.90, alpha: 1)).cgColor
+        humanClear.contentTintColor = muted
+        humanGrow.contentTintColor = muted
+        humanOpenOrchBtn.contentTintColor = mapIsDark ? PongTheme.blue : NSColor(calibratedRed: 0.12, green: 0.32, blue: 0.55, alpha: 1)
         humanToggle.contentTintColor = muted
+        // Force bubble rebuild so light/dark cards don't keep stale colors
+        reloadHumanInbox(forceStream: true)
         taskTitle.textColor = muted
         taskBody.textColor = body
         cronTitle.textColor = muted
@@ -1596,8 +1636,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanLockLabel.isHidden = !humanExpanded
             humanAllBanner.isHidden = true
             let name = teamDisplayName(for: s)
-            humanLockLabel.stringValue = "→ \(name)  (locked to focused team)"
-            humanTitle.stringValue = "YOU · \(name)"
+            humanLockLabel.stringValue = "Talk to orchestrator · \(name) (locked)"
+            humanTitle.stringValue = "YOU → Orchestrator · \(name)"
+            humanSubtitle.stringValue = "Messages go to c1 · status & reports come back here · Terminal optional"
         } else {
             humanOrchPop.isEnabled = true
             humanOrchPop.isHidden = !humanExpanded
@@ -1605,12 +1646,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             if allMode && humanExpanded {
                 let name = teamDisplayName(for: humanSession)
                 humanAllBanner.isHidden = false
-                humanAllBanner.stringValue = "⚠ All teams · Sending to: \(name.isEmpty ? "—" : name)"
+                humanAllBanner.stringValue = "⚠ All teams · Sending to orch: \(name.isEmpty ? "—" : name)"
             } else {
                 humanAllBanner.isHidden = true
             }
             let name = teamDisplayName(for: humanSession)
-            humanTitle.stringValue = name.isEmpty ? "YOU · HUMAN" : "YOU · \(name)"
+            humanTitle.stringValue = name.isEmpty
+                ? "YOU → Orchestrator"
+                : "YOU → Orchestrator · \(name)"
+            humanSubtitle.stringValue = "Messages go to c1 · status & reports come back here · Terminal optional"
         }
     }
 
@@ -1725,11 +1769,30 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         leftHUDStack.addSubview(humanPanel)
 
         humanTitle.font = PongTheme.labelFont(10)
-        humanTitle.textColor = PongTheme.amber
+        humanTitle.textColor = PongTheme.blue
         humanTitle.isBordered = false
         humanTitle.drawsBackground = false
         humanTitle.translatesAutoresizingMaskIntoConstraints = false
+        humanTitle.toolTip = "Channel to the team orchestrator (c1) — not Guide"
         humanPanel.addSubview(humanTitle)
+
+        humanSubtitle.font = PongTheme.labelFont(9)
+        humanSubtitle.textColor = PongTheme.textTertiary
+        humanSubtitle.isBordered = false
+        humanSubtitle.drawsBackground = false
+        humanSubtitle.lineBreakMode = .byTruncatingTail
+        humanSubtitle.translatesAutoresizingMaskIntoConstraints = false
+        humanPanel.addSubview(humanSubtitle)
+
+        humanStatusStrip.font = PongTheme.mono(9)
+        humanStatusStrip.textColor = PongTheme.textSecondary
+        humanStatusStrip.isBordered = false
+        humanStatusStrip.drawsBackground = false
+        humanStatusStrip.maximumNumberOfLines = 4
+        humanStatusStrip.lineBreakMode = .byWordWrapping
+        humanStatusStrip.translatesAutoresizingMaskIntoConstraints = false
+        humanStatusStrip.toolTip = "Live orchestrator / team status (updates ~4s)"
+        humanPanel.addSubview(humanStatusStrip)
 
         // Top-right chevron: expand / collapse (never removes the panel)
         humanToggle.title = "▾"
@@ -1771,7 +1834,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanChatStream.translatesAutoresizingMaskIntoConstraints = false
         humanChatStream.onDecision = { [weak self] d in self?.humanRespondAsk(d) }
         humanChatStream.onReplyFocus = { [weak self] in
-            self?.window?.makeFirstResponder(self?.humanInput)
+            self?.window?.makeFirstResponder(self?.humanCompose)
         }
         humanChatStream.onJobTap = { [weak self] jid in self?.humanTapJob(jid) }
         humanChatStream.onSeatTap = { [weak self] sid in self?.humanTapSeat(sid) }
@@ -1800,22 +1863,44 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanAttachLabel.toolTip = "Click to clear staged files"
         humanPanel.addSubview(humanAttachLabel)
 
-        humanInput.font = PongTheme.font(11)
-        humanInput.placeholderString = "Reply to orchestrator…"
-        humanInput.isBordered = true
-        humanInput.bezelStyle = .roundedBezel
-        humanInput.focusRingType = .none
-        humanInput.translatesAutoresizingMaskIntoConstraints = false
-        humanInput.target = self
-        humanInput.action = #selector(sendHumanChat)
-        if let cell = humanInput.cell as? NSTextFieldCell {
-            cell.wraps = true
-            cell.isScrollable = false
-            cell.usesSingleLineMode = false
-        }
-        humanInput.maximumNumberOfLines = 6
-        humanInput.lineBreakMode = .byWordWrapping
-        humanPanel.addSubview(humanInput)
+        // Multiline compose: NSTextView so arrows/selection work; Enter sends, Shift+Enter newline
+        humanComposeScroll.translatesAutoresizingMaskIntoConstraints = false
+        humanComposeScroll.hasVerticalScroller = true
+        humanComposeScroll.hasHorizontalScroller = false
+        humanComposeScroll.autohidesScrollers = true
+        humanComposeScroll.borderType = .bezelBorder
+        humanComposeScroll.drawsBackground = true
+        humanComposeScroll.focusRingType = .exterior
+        humanCompose.isRichText = false
+        humanCompose.allowsUndo = true
+        humanCompose.font = PongTheme.font(11)
+        humanCompose.isEditable = true
+        humanCompose.isSelectable = true
+        humanCompose.drawsBackground = true
+        humanCompose.textContainerInset = NSSize(width: 6, height: 6)
+        humanCompose.textContainer?.widthTracksTextView = true
+        humanCompose.textContainer?.lineFragmentPadding = 4
+        humanCompose.isVerticallyResizable = true
+        humanCompose.isHorizontallyResizable = false
+        humanCompose.autoresizingMask = [.width]
+        humanCompose.minSize = NSSize(width: 0, height: humanComposeMinH)
+        humanCompose.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        humanCompose.delegate = self
+        humanCompose.onSend = { [weak self] in self?.sendHumanChat() }
+        humanComposeScroll.documentView = humanCompose
+        humanPanel.addSubview(humanComposeScroll)
+        humanComposePlaceholderSync()
+
+        humanOpenOrchBtn.title = "Orch ⌘"
+        humanOpenOrchBtn.bezelStyle = .inline
+        humanOpenOrchBtn.isBordered = false
+        humanOpenOrchBtn.font = PongTheme.labelFont(9)
+        humanOpenOrchBtn.contentTintColor = PongTheme.blue
+        humanOpenOrchBtn.toolTip = "Open orchestrator terminal (optional escape hatch)"
+        humanOpenOrchBtn.target = self
+        humanOpenOrchBtn.action = #selector(openOrchTerminalFromHuman)
+        humanOpenOrchBtn.translatesAutoresizingMaskIntoConstraints = false
+        humanPanel.addSubview(humanOpenOrchBtn)
 
         // Vertical resize grip on **bottom** edge of human panel
         humanVResizeGrip.wantsLayer = true
@@ -1862,12 +1947,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanGrow.translatesAutoresizingMaskIntoConstraints = false
         humanPanel.addSubview(humanGrow)
 
-        humanInput.placeholderString = "Reply to orchestrator…"
-
         humanPanelHeight = humanPanel.heightAnchor.constraint(equalToConstant: humanPreferredHeight)
         humanAskRowHeight = humanAskRow.heightAnchor.constraint(equalToConstant: 0)
         humanChatStreamHeight = humanChatStream.heightAnchor.constraint(greaterThanOrEqualToConstant: 72)
-        humanInputHeight = humanInput.heightAnchor.constraint(equalToConstant: 48)
+        humanInputHeight = humanComposeScroll.heightAnchor.constraint(equalToConstant: humanComposeMinH)
+        humanStatusStripHeight = humanStatusStrip.heightAnchor.constraint(equalToConstant: 52)
         let humanW = humanPanel.widthAnchor.constraint(equalToConstant: leftHUDColW)
         leftHUDPanelWidthConstraints.append(humanW)
         NSLayoutConstraint.activate([
@@ -1877,7 +1961,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanPanelHeight!,
             // Title at top (grip is on bottom edge)
             humanTitle.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 12),
-            humanTitle.topAnchor.constraint(equalTo: humanPanel.topAnchor, constant: 10),
+            humanTitle.topAnchor.constraint(equalTo: humanPanel.topAnchor, constant: 8),
             humanTitle.trailingAnchor.constraint(lessThanOrEqualTo: humanGrow.leadingAnchor, constant: -4),
             humanGrow.trailingAnchor.constraint(equalTo: humanClear.leadingAnchor, constant: -2),
             humanGrow.centerYAnchor.constraint(equalTo: humanTitle.centerYAnchor),
@@ -1888,21 +1972,32 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanToggle.centerYAnchor.constraint(equalTo: humanTitle.centerYAnchor),
             humanToggle.widthAnchor.constraint(equalToConstant: 22),
             humanToggle.heightAnchor.constraint(equalToConstant: 20),
+            humanSubtitle.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 12),
+            humanSubtitle.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -12),
+            humanSubtitle.topAnchor.constraint(equalTo: humanTitle.bottomAnchor, constant: 2),
+            humanSubtitle.heightAnchor.constraint(equalToConstant: 14),
             humanLockLabel.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
-            humanLockLabel.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
-            humanLockLabel.topAnchor.constraint(equalTo: humanTitle.bottomAnchor, constant: 4),
+            humanLockLabel.trailingAnchor.constraint(equalTo: humanOpenOrchBtn.leadingAnchor, constant: -4),
+            humanLockLabel.topAnchor.constraint(equalTo: humanSubtitle.bottomAnchor, constant: 4),
             humanLockLabel.heightAnchor.constraint(equalToConstant: 16),
+            humanOpenOrchBtn.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -8),
+            humanOpenOrchBtn.centerYAnchor.constraint(equalTo: humanLockLabel.centerYAnchor),
+            humanOpenOrchBtn.widthAnchor.constraint(equalToConstant: 48),
             humanOrchPop.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
             humanOrchPop.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
-            humanOrchPop.topAnchor.constraint(equalTo: humanTitle.bottomAnchor, constant: 4),
+            humanOrchPop.topAnchor.constraint(equalTo: humanSubtitle.bottomAnchor, constant: 4),
             humanOrchPop.heightAnchor.constraint(equalToConstant: 24),
             humanAllBanner.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
             humanAllBanner.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
             humanAllBanner.topAnchor.constraint(equalTo: humanOrchPop.bottomAnchor, constant: 2),
             humanAllBanner.heightAnchor.constraint(equalToConstant: 16),
+            humanStatusStrip.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
+            humanStatusStrip.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
+            humanStatusStrip.topAnchor.constraint(equalTo: humanAllBanner.bottomAnchor, constant: 4),
+            humanStatusStripHeight!,
             humanChatStream.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 8),
             humanChatStream.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -8),
-            humanChatStream.topAnchor.constraint(equalTo: humanAllBanner.bottomAnchor, constant: 4),
+            humanChatStream.topAnchor.constraint(equalTo: humanStatusStrip.bottomAnchor, constant: 4),
             humanChatStreamHeight!,
             // Legacy ask row collapsed
             humanAskRow.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 8),
@@ -1913,17 +2008,17 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanAttachLabel.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 12),
             humanAttachLabel.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -12),
             humanAttachLabel.heightAnchor.constraint(equalToConstant: 14),
-            humanAttachLabel.bottomAnchor.constraint(equalTo: humanInput.topAnchor, constant: -4),
-            humanInput.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
-            // Input sits above bottom resize grip
-            humanInput.bottomAnchor.constraint(equalTo: humanVResizeGrip.topAnchor, constant: -6),
+            humanAttachLabel.bottomAnchor.constraint(equalTo: humanComposeScroll.topAnchor, constant: -4),
+            humanComposeScroll.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor, constant: 10),
+            // Compose sits above bottom resize grip
+            humanComposeScroll.bottomAnchor.constraint(equalTo: humanVResizeGrip.topAnchor, constant: -6),
             humanInputHeight!,
-            humanSend.leadingAnchor.constraint(equalTo: humanInput.trailingAnchor, constant: 6),
+            humanSend.leadingAnchor.constraint(equalTo: humanComposeScroll.trailingAnchor, constant: 6),
             humanSend.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor, constant: -10),
-            humanSend.bottomAnchor.constraint(equalTo: humanInput.bottomAnchor),
+            humanSend.bottomAnchor.constraint(equalTo: humanComposeScroll.bottomAnchor),
             humanSend.widthAnchor.constraint(equalToConstant: 44),
             humanSend.heightAnchor.constraint(equalToConstant: 28),
-            humanInput.trailingAnchor.constraint(equalTo: humanSend.leadingAnchor, constant: -6),
+            humanComposeScroll.trailingAnchor.constraint(equalTo: humanSend.leadingAnchor, constant: -6),
             // Bottom-edge height grip (standard resize chrome)
             humanVResizeGrip.leadingAnchor.constraint(equalTo: humanPanel.leadingAnchor),
             humanVResizeGrip.trailingAnchor.constraint(equalTo: humanPanel.trailingAnchor),
@@ -2017,14 +2112,63 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         h = min(maxH, max(160, h))
         humanPreferredHeight = h
         humanPanelHeight?.constant = h
-        // Input grows with panel (~18–28% of body)
-        let inputH = max(36, min(140, h * 0.22))
+        // Compose height from content (min/max); panel grows slightly if needed
+        let inputH = measureHumanComposeHeight()
         humanInputHeight?.constant = inputH
-        let chrome: CGFloat = 100 + (humanAllBanner.isHidden ? 0 : 18)
+        let chrome: CGFloat = 130 + (humanAllBanner.isHidden ? 0 : 18) + (humanStatusStrip.isHidden ? 0 : 52)
         humanChatStreamHeight?.constant = max(72, h - chrome - inputH)
         humanPanel.needsLayout = true
         leftHUDStack.layoutSubtreeIfNeeded()
         leftHUDScroll.reflectScrolledClipView(leftHUDScroll.contentView)
+    }
+
+    /// Fit compose NSTextView height to typed content (min 52, max ~190 → internal scroll).
+    @discardableResult
+    private func measureHumanComposeHeight() -> CGFloat {
+        humanCompose.layoutManager?.ensureLayout(for: humanCompose.textContainer!)
+        let used = humanCompose.layoutManager?.usedRect(for: humanCompose.textContainer!) ?? .zero
+        let inset = humanCompose.textContainerInset.height * 2
+        let contentH = ceil(used.height + inset + 8)
+        return min(humanComposeMaxH, max(humanComposeMinH, contentH))
+    }
+
+    private func relayoutHumanComposeGrowing() {
+        guard humanExpanded else { return }
+        let inputH = measureHumanComposeHeight()
+        let prev = humanInputHeight?.constant ?? humanComposeMinH
+        humanInputHeight?.constant = inputH
+        // Grow panel slightly when compose expands (keep stream usable)
+        if inputH > prev {
+            let maxH = max(200, bounds.height * 0.7)
+            let delta = inputH - prev
+            humanPreferredHeight = min(maxH, humanPreferredHeight + delta)
+            humanPanelHeight?.constant = humanPreferredHeight
+        }
+        let chrome: CGFloat = 130 + (humanAllBanner.isHidden ? 0 : 18) + (humanStatusStrip.isHidden ? 0 : 52)
+        humanChatStreamHeight?.constant = max(72, humanPreferredHeight - chrome - inputH)
+        humanPanel.needsLayout = true
+        // Keep text view width in sync with scroll content size
+        let w = max(80, humanComposeScroll.contentSize.width)
+        humanCompose.textContainer?.containerSize = NSSize(width: w, height: CGFloat.greatestFiniteMagnitude)
+        humanCompose.frame = NSRect(x: 0, y: 0, width: w, height: max(inputH, usedComposeDocHeight()))
+    }
+
+    private func usedComposeDocHeight() -> CGFloat {
+        humanCompose.layoutManager?.ensureLayout(for: humanCompose.textContainer!)
+        let used = humanCompose.layoutManager?.usedRect(for: humanCompose.textContainer!) ?? .zero
+        return ceil(used.height + humanCompose.textContainerInset.height * 2 + 8)
+    }
+
+    private func humanComposePlaceholderSync() {
+        // Lightweight placeholder via empty text + toolTip; full placeholder overlay optional
+        humanCompose.toolTip = "Message the orchestrator… (Enter send · Shift+Enter newline)"
+    }
+
+    /// True while user is typing in compose — poll must not steal focus.
+    private var isHumanComposeFocused: Bool {
+        window?.firstResponder === humanCompose
+            || (window?.firstResponder as? NSView)?.isDescendant(of: humanCompose) == true
+            || (window?.firstResponder as? NSText)?.delegate as? AnyObject === humanCompose
     }
 
     /// Per-agent work recap under YOU — not generic status events.
@@ -2088,7 +2232,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         refreshHumanDock()
         reloadHumanInbox()
         relayoutHumanToLinkedOrch()
-        window?.makeFirstResponder(humanInput)
+        window?.makeFirstResponder(humanCompose)
     }
 
     @objc private func toggleHumanExpand() {
@@ -2096,7 +2240,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         refreshHumanDock()
         if humanExpanded {
             reloadHumanInbox()
-            window?.makeFirstResponder(humanInput)
+            window?.makeFirstResponder(humanCompose)
         }
     }
 
@@ -2107,7 +2251,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         humanToggle.toolTip = humanExpanded ? "Collapse" : "Expand"
         humanChatStream.isHidden = !humanExpanded
         humanAskRow.isHidden = true
-        humanInput.isHidden = !humanExpanded
+        humanComposeScroll.isHidden = !humanExpanded
         humanSend.isHidden = !humanExpanded
         humanClear.isHidden = !humanExpanded
         humanGrow.isHidden = !humanExpanded
@@ -2186,13 +2330,25 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
     }
 
-    /// Lightweight poll from PanelController timer — refresh asks without Focus window.
+    /// Lightweight poll from PanelController timer — refresh asks + orch status/reports.
     func pollHumanConsole() {
         guard humanExpanded else { return }
         if let focus = focusedTeamSession, focus != "__all__", !focus.isEmpty {
             humanSession = focus
         }
+        if !humanSession.isEmpty {
+            _ = HumanConsoleController.syncOrchFeedback(session: humanSession)
+        }
         reloadHumanInbox()
+    }
+
+    @objc private func openOrchTerminalFromHuman() {
+        let session = resolvedSendSession() ?? humanSession
+        guard !session.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Escape hatch — primary path is this panel, not Terminal
+            Pairing.frontConductor(session)
+        }
     }
 
     /// Move the YOU blob and rewire YOU→orch to `humanSession` (console dropdown).
@@ -2392,7 +2548,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         return "working"
     }
 
-    private func reloadHumanInbox() {
+    private func reloadHumanInbox(forceStream: Bool = false) {
+        // Never steal first responder while user is composing (poll-safe)
+        let keepComposeFocus = isHumanComposeFocused
         // Keep picker in sync when teams change
         if humanOrchPop.numberOfItems == 0 || PairState.listPairs().count != humanOrchPop.numberOfItems {
             reloadHumanOrchPicker()
@@ -2404,33 +2562,45 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         applyHumanFocusLock()
         let teamName = teamDisplayName(for: humanSession)
         guard !humanSession.isEmpty else {
-            humanTitle.stringValue = "YOU · HUMAN"
+            humanTitle.stringValue = "YOU → Orchestrator"
+            humanSubtitle.stringValue = "Messages go to c1 · status & reports come back here"
+            humanStatusStrip.stringValue = "Stage: no team\nSelect a team to talk to its orchestrator."
             humanChatStream.reload(
                 messages: [],
                 pendingAsk: nil,
                 emptyHint: focusedTeamSession == "__all__"
-                    ? "Pick an orchestrator above (All teams mode)."
-                    : "Select a team in the top bar.",
+                    ? "Pick an orchestrator above (All teams mode).\nReplies and status appear here — Terminal is optional."
+                    : "Select a team in the top bar.\nThis panel is your window to the orchestrator.",
                 force: true
             )
             return
         }
+        // Status strip always; card sync is poll/send (cheap strip here)
+        let strip = HumanConsoleController.orchStatusStrip(session: humanSession)
+        humanStatusStrip.stringValue = strip.displayText
+        humanStatusStrip.isHidden = !humanExpanded
+        humanSubtitle.isHidden = !humanExpanded
+        humanOpenOrchBtn.isHidden = !humanExpanded
+
         let ask = HumanConsoleController.loadPendingAsk(session: humanSession)
         let cards = HumanConsoleController.loadCards(session: humanSession, limit: 60)
         if ask != nil {
-            humanTitle.stringValue = "YOU · \(teamName) · DECIDE"
+            humanTitle.stringValue = "YOU → Orchestrator · \(teamName) · DECIDE"
         } else {
-            humanTitle.stringValue = "YOU · \(teamName)"
+            humanTitle.stringValue = "YOU → Orchestrator · \(teamName)"
         }
         humanChatStream.reload(
             messages: cards,
             pendingAsk: ask,
-            emptyHint: "No messages · team locked to \(teamName)",
-            force: false
+            emptyHint: "No messages yet.\nTalk to the orchestrator here — status, claims, and reports show up as cards so you don’t need Terminal.",
+            force: forceStream
         )
         // Keep legacy ask row collapsed — interaction is on stream cards
         humanAskRow.isHidden = true
         humanAskRowHeight?.constant = 0
+        if keepComposeFocus {
+            window?.makeFirstResponder(humanCompose)
+        }
     }
 
     private func humanRespondAsk(_ decision: HumanAskDecision) {
@@ -2469,7 +2639,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     @objc private func sendHumanChat() {
         guard let session = resolvedSendSession() else { return }
-        let typed = humanInput.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = humanCompose.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let files = humanPendingFiles
         guard !typed.isEmpty || !files.isEmpty else { return }
         // Free-text reply to open ask (open-ended questions)
@@ -2479,7 +2649,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 text = "Reply to ask:\n\(ask.question)\n\n\(typed)"
             }
         }
-        humanInput.stringValue = ""
+        humanCompose.string = ""
+        relayoutHumanComposeGrowing()
         humanPendingFiles.removeAll()
         updateHumanAttachLabel()
         if !files.isEmpty {
@@ -2492,9 +2663,17 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             humanAllBanner.stringValue = "Sending to: \(teamDisplayName(for: session))"
         }
         pulseHumanOrchLink(session: session)
+        // Keep focus in compose after send so user can keep typing
+        window?.makeFirstResponder(humanCompose)
+        // Optimistic UI: show send immediately after deliver returns on bg thread
         DispatchQueue.global(qos: .userInitiated).async {
             _ = HumanConsoleController.deliver(session: session, text: text)
-            DispatchQueue.main.async { self.reloadHumanInbox() }
+            // One feedback sync shortly after send (jobs/claims may lag a beat)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                _ = HumanConsoleController.syncOrchFeedback(session: session)
+                self.reloadHumanInbox(forceStream: false)
+            }
+            DispatchQueue.main.async { self.reloadHumanInbox(forceStream: false) }
         }
     }
 
@@ -2832,23 +3011,31 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             let cronName = "cron:\(cronSession)|\(j.id)"
             let tipBase = "\(label)\n\(j.cadence) · next \(nf.string(from: j.nextRun()))"
 
-            // Subsequent occurrences: only when spacing is readable on the ruler; fainter + smaller.
-            let minDotSpacing = 0.55  // world units along Z
-            if step * uPerH / hour >= minDotSpacing {
+            // All occurrences across the visible window (including hourly).
+            // Old gate minDotSpacing=0.55 skipped hourly (step*uPerH/hour = 0.5).
+            // Only skip dots that would stack < ~0.12 wu; denser jobs still get fainter dots.
+            let spacingWu = step * uPerH / hour
+            let minDotSpacing = 0.12
+            if spacingWu >= minDotSpacing {
                 var t = ceil((startT - j.phaseSec) / step) * step + j.phaseSec
                 let nextT = j.nextRun().timeIntervalSince1970
+                var lastZ: Float = -9999
                 while t <= endT {
-                    if abs(t - nextT) > step * 0.25 {
-                        let z = zAt(t)
+                    let z = zAt(t)
+                    // Skip the pin that will get a full “next” label
+                    if abs(t - nextT) > step * 0.25, abs(z - lastZ) >= Float(minDotSpacing) {
+                        let alpha: CGFloat = spacingWu < 0.35 ? 0.40 : 0.55
+                        let rad: CGFloat = spacingWu < 0.35 ? 0.07 : 0.09
                         let dn = makeCronDot(
-                            radius: 0.09,
-                            color: col.withAlphaComponent(0.55),
+                            radius: rad,
+                            color: col.withAlphaComponent(alpha),
                             name: cronName,
-                            tooltip: tipBase,
+                            tooltip: "\(label)\n\(j.cadence) · \(nf.string(from: Date(timeIntervalSince1970: t)))",
                             interactive: true
                         )
                         dn.position = SCNVector3(rulerX, 0.06, z)
                         rulerDyn.addChildNode(dn)
+                        lastZ = z
                     }
                     t += step
                 }
@@ -3906,6 +4093,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             // Task detail lives in TASKS panel under YOU; keep full intel via menu only if needed
             menu.addItem(withTitle: "Team terminals…", action: #selector(ctxFocus(_:)), keyEquivalent: "")
             menu.addItem(withTitle: "Rename…", action: #selector(ctxRename(_:)), keyEquivalent: "")
+            if s.role == "conductor" {
+                menu.addItem(withTitle: "Rename team…", action: #selector(ctxRenameTeam(_:)), keyEquivalent: "")
+            }
             if s.role == "conductor" || s.role == "worker" {
                 menu.addItem(withTitle: "Add agent (same plane)…", action: #selector(ctxPlus(_:)), keyEquivalent: "")
             }
@@ -3959,6 +4149,36 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
               let s = seats.first(where: { $0.globalId == gid }) else { return }
         onRename?(s)
     }
+
+    /// Persist team display_name (map title + top-bar switcher) — separate from seat rename.
+    @objc private func ctxRenameTeam(_ item: NSMenuItem) {
+        guard let gid = item.representedObject as? String,
+              let s = seats.first(where: { $0.globalId == gid }),
+              s.role == "conductor" else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let entry = PairState.loadPairsDb()[s.session] as? [String: Any] ?? [:]
+        let current = (entry["display_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? teamDisplayName(for: s.session)
+        let a = NSAlert()
+        a.messageText = "Rename team"
+        a.informativeText = "Display name for this team (map title over the orchestrator + top-bar switcher)."
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = current
+        field.placeholderString = "e.g. CyberPong Pro"
+        a.accessoryView = field
+        a.window.initialFirstResponder = field
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let root = (entry["project_root"] as? String) ?? ""
+        let brief = (entry["team_brief"] as? String) ?? ""
+        Workers.setTeamOptions(s.session, displayName: name, projectRoot: root, teamBrief: brief)
+        Pong.log("rename team session=\(s.session) display=\(name)")
+        PanelController.shared.refreshUI()
+    }
+
     @objc private func ctxKill(_ item: NSMenuItem) {
         guard let gid = item.representedObject as? String,
               let s = seats.first(where: { $0.globalId == gid }) else { return }
@@ -3976,8 +4196,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     func reload(seats: [Seat3D], multiTeam: Bool) {
         // Include ephemeral ids so spawn/vanish always rebuilds layout
+        // missionRole + title must invalidate face cache when Architecture updates purpose
         var sig = seats.map {
-            "\($0.globalId)|\($0.status)|\($0.openJobs)|\($0.title)|\($0.flowHint.prefix(12))|\($0.ephemeral ? "E" : "P")"
+            "\($0.globalId)|\($0.status)|\($0.openJobs)|\($0.title)|\($0.missionRole)|\($0.flowHint.prefix(12))|\($0.ephemeral ? "E" : "P")"
         }.joined(separator: ";") + (multiTeam ? "|M" : "|S")
         // Edge identity is NOT captured by the seat fields above. Without this,
         // editing/adding/deleting a flow link leaves the seats unchanged, the
@@ -3998,6 +4219,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         syncModuleCard(with: seats)
         // Poll path: skip full graph rebuild when nothing meaningful changed
         sceneLock.lock()
+        // Publish snapshot for render thread before any layout (avoids Seat3D free race)
+        self.renderSeats = seats
         defer { sceneLock.unlock() }
         if sig == lastSeatsSig, !seatNodes.isEmpty {
             for s in seats {
@@ -4009,6 +4232,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             return
         }
         lastSeatsSig = sig
+        faceImageCache.removeAll(keepingCapacity: true)
         layoutSeats()
         requestMapRender()
         reevaluateMapPlaying()
@@ -4384,12 +4608,12 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     /// v23: **one** info path for every seat — SCNPlane card on +Z, upright bake, no geometry UV.
     private func placeBlob(_ s: Seat3D, at pos: SCNVector3) {
         let shapeKey: String = {
-            // v24: per-primitive info-card fit (hex/tri/cube face-inset, no bleed)
+            // v25: mission-role face glyphs (invalidate v24 all-coder caches)
             switch s.role {
-            case "conductor": return "hex-v24"
-            case "subagent": return s.ephemeral ? "tri-eph-v24" : "tri-v24"
-            case "human": return "octa-v24"
-            default: return "cube-v24"
+            case "conductor": return "hex-v25"
+            case "subagent": return s.ephemeral ? "tri-eph-v25" : "tri-v25"
+            case "human": return "octa-v25"
+            default: return "cube-v25"
             }
         }()
         if let existing = seatNodes[s.globalId] {
@@ -4757,13 +4981,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     }
 
     /// Elegant pill + kerned mono team name (dark/light readable).
-    /// Integer plane sizes + retina bitmap; hide when camera is far (see updateDecorLabelVisibility).
+    /// Integer plane sizes + retina bitmap; distance-scale + hide only when tiny
+    /// (see `updateDecorLabelVisibility` / `applyMapTextLOD`).
     private func makeTeamTitleNode(name: String, color: NSColor) -> SCNNode {
         let img = teamTitleImage(name: name, color: color)
         // Snap world size to 0.05 steps — avoid fractional shimmer
-        let rawW = min(3.0, max(1.55, CGFloat(name.count) * 0.105 + 0.55))
+        // Slightly larger base than pre-fix so names stay legible farther out
+        let rawW = min(3.4, max(1.7, CGFloat(name.count) * 0.115 + 0.60))
         let planeW = (rawW * 20).rounded() / 20
-        let planeH: CGFloat = 0.35
+        let planeH: CGFloat = 0.42
         let plane = SCNPlane(width: planeW, height: planeH)
         let m = SCNMaterial()
         m.diffuse.contents = img
@@ -4789,20 +5015,20 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     private func teamTitleImage(name: String, color: NSColor) -> NSImage {
         let attr: [NSAttributedString.Key: Any] = [
-            .font: PongTheme.mono(20, weight: .semibold),
+            .font: PongTheme.mono(22, weight: .semibold),
             .foregroundColor: color,
             .kern: 1.6,
         ]
         let text = name as NSString
         let textSz = text.size(withAttributes: attr)
-        let padX: CGFloat = 18
-        let w = max(120, ceil(textSz.width) + padX * 2)
-        let h: CGFloat = 44
+        let padX: CGFloat = 20
+        let w = max(128, ceil(textSz.width) + padX * 2)
+        let h: CGFloat = 48
         return rasterLabelImage(pointSize: NSSize(width: w, height: h)) { _ in
             NSColor.clear.setFill()
             NSRect(x: 0, y: 0, width: w, height: h).fill()
             let pill = NSRect(x: 2, y: 4, width: w - 4, height: h - 8)
-            let path = NSBezierPath(roundedRect: pill, xRadius: 10, yRadius: 10)
+            let path = NSBezierPath(roundedRect: pill, xRadius: 11, yRadius: 11)
             if mapIsDark {
                 NSColor(calibratedWhite: 0.04, alpha: 0.82).setFill()
             } else {
@@ -4935,9 +5161,77 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         return out
     }
 
-    /// Far-zoom face: big role icon only (no status/name text).
+    /// Stroke/draw a mission-role map glyph at (cx, cy). Shared by near card + far icon-only LOD.
+    /// `gScale` is the half-extent of the glyph (~0.11 * min(faceW,faceH) near; larger when far).
+    private func drawMissionMapGlyph(
+        kind: MissionRole.MapGlyphKind,
+        cx: CGFloat, cy: CGFloat, gScale: CGFloat,
+        ink: NSColor, lineWidth: CGFloat,
+        braceFontSize: CGFloat
+    ) {
+        ink.setStroke()
+        let gPath = NSBezierPath()
+        gPath.lineWidth = lineWidth
+        gPath.lineCapStyle = .round
+        gPath.lineJoinStyle = .round
+        switch kind {
+        case .human:
+            gPath.appendOval(in: NSRect(x: cx - gScale * 0.45, y: cy + gScale * 0.2,
+                                        width: gScale * 0.9, height: gScale * 0.9))
+            gPath.move(to: NSPoint(x: cx - gScale * 0.9, y: cy - gScale * 0.7))
+            gPath.curve(to: NSPoint(x: cx + gScale * 0.9, y: cy - gScale * 0.7),
+                        controlPoint1: NSPoint(x: cx - gScale * 0.6, y: cy + gScale * 0.1),
+                        controlPoint2: NSPoint(x: cx + gScale * 0.6, y: cy + gScale * 0.1))
+            gPath.stroke()
+        case .orchestrator:
+            gPath.appendOval(in: NSRect(x: cx - gScale, y: cy - gScale, width: gScale * 2, height: gScale * 2))
+            gPath.appendOval(in: NSRect(x: cx - gScale * 0.45, y: cy - gScale * 0.45,
+                                        width: gScale * 0.9, height: gScale * 0.9))
+            gPath.stroke()
+        case .researcher:
+            gPath.appendOval(in: NSRect(x: cx - gScale * 0.7, y: cy - gScale * 0.5,
+                                        width: gScale * 1.2, height: gScale * 1.2))
+            gPath.move(to: NSPoint(x: cx + gScale * 0.35, y: cy - gScale * 0.5))
+            gPath.line(to: NSPoint(x: cx + gScale * 0.9, y: cy - gScale))
+            gPath.stroke()
+        case .reviewer:
+            gPath.appendOval(in: NSRect(x: cx - gScale, y: cy - gScale, width: gScale * 2, height: gScale * 2))
+            gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy))
+            gPath.line(to: NSPoint(x: cx - gScale * 0.1, y: cy - gScale * 0.4))
+            gPath.line(to: NSPoint(x: cx + gScale * 0.55, y: cy + gScale * 0.35))
+            gPath.stroke()
+        case .operator:
+            // Play triangle (run / ops) — distinct from rings / check / braces
+            gPath.move(to: NSPoint(x: cx - gScale * 0.55, y: cy + gScale * 0.75))
+            gPath.line(to: NSPoint(x: cx + gScale * 0.75, y: cy))
+            gPath.line(to: NSPoint(x: cx - gScale * 0.55, y: cy - gScale * 0.75))
+            gPath.close()
+            gPath.stroke()
+        case .taskRunner:
+            gPath.appendRoundedRect(
+                NSRect(x: cx - gScale * 0.85, y: cy - gScale * 0.75,
+                       width: gScale * 1.7, height: gScale * 1.5),
+                xRadius: gScale * 0.15, yRadius: gScale * 0.15)
+            gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy + gScale * 0.25))
+            gPath.line(to: NSPoint(x: cx - gScale * 0.15, y: cy - gScale * 0.1))
+            gPath.line(to: NSPoint(x: cx + gScale * 0.5, y: cy + gScale * 0.45))
+            gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy - gScale * 0.35))
+            gPath.line(to: NSPoint(x: cx + gScale * 0.45, y: cy - gScale * 0.35))
+            gPath.stroke()
+        case .coder:
+            let brace = "{  }" as NSString
+            brace.draw(at: NSPoint(x: cx - gScale * 1.1, y: cy - gScale * 0.55), withAttributes: [
+                .font: PongTheme.mono(braceFontSize, weight: .bold),
+                .foregroundColor: ink,
+            ])
+        }
+    }
+
+    /// Far-zoom face: big **mission-role** icon only (no status/name text).
+    /// Must match near-card glyphs via `MissionRole.mapGlyphKind` — never structural worker→coder.
     private func faceIconOnlyImage(for s: Seat3D, size: CGFloat = 256) -> NSImage {
-        let key = "icon|\(seatFaceContentKey(s, size: size))"
+        // v25: thicker far glyphs + resolved mission_role (label/index fallback)
+        let key = "icon|v25|\(seatFaceContentKey(s, size: size))"
         if let c = faceImageCache[key] { return c }
         let w = size, h = size
         let img = NSImage(size: NSSize(width: w, height: h))
@@ -4947,38 +5241,18 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         let full = roleColor(s)
         full.setFill()
         NSRect(x: 0, y: 0, width: 6, height: h).fill()
-        // Large centered glyph
         let ink = NSColor(calibratedRed: 0.933, green: 0.957, blue: 0.969, alpha: 1)
-        ink.setStroke()
-        let gPath = NSBezierPath()
-        gPath.lineWidth = max(4, w * 0.03)
-        gPath.lineCapStyle = .round
-        gPath.lineJoinStyle = .round
+        let kind = MissionRole.mapGlyphKind(
+            structuralRole: s.role,
+            missionRole: s.resolvedMission.rawValue
+        )
+        // Larger + heavier strokes so roles stay distinct when zoomed out
+        let gScale = min(w, h) * 0.26
         let cx = w * 0.5, cy = h * 0.5
-        if s.role == "human" {
-            gPath.appendOval(in: NSRect(x: cx - 18, y: cy + 8, width: 36, height: 36))
-            gPath.move(to: NSPoint(x: cx - 36, y: cy - 28))
-            gPath.curve(to: NSPoint(x: cx + 36, y: cy - 28),
-                        controlPoint1: NSPoint(x: cx - 24, y: cy + 4),
-                        controlPoint2: NSPoint(x: cx + 24, y: cy + 4))
-            gPath.stroke()
-        } else if s.role == "conductor" {
-            gPath.appendOval(in: NSRect(x: cx - 40, y: cy - 40, width: 80, height: 80))
-            gPath.appendOval(in: NSRect(x: cx - 18, y: cy - 18, width: 36, height: 36))
-            gPath.stroke()
-        } else if s.role == "subagent" {
-            // small triangle
-            gPath.move(to: NSPoint(x: cx, y: cy + 42))
-            gPath.line(to: NSPoint(x: cx - 40, y: cy - 36))
-            gPath.line(to: NSPoint(x: cx + 40, y: cy - 36))
-            gPath.close()
-            gPath.stroke()
-        } else {
-            ("{  }" as NSString).draw(at: NSPoint(x: cx - 48, y: cy - 28), withAttributes: [
-                .font: PongTheme.mono(w * 0.22, weight: .bold),
-                .foregroundColor: ink,
-            ])
-        }
+        drawMissionMapGlyph(
+            kind: kind, cx: cx, cy: cy, gScale: gScale, ink: ink,
+            lineWidth: max(6, w * 0.045), braceFontSize: max(36, w * 0.26)
+        )
         img.unlockFocus()
         faceImageCache[key] = img
         return img
@@ -5442,8 +5716,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     private func cubeFaceImage(for s: Seat3D, pixelW: CGFloat, pixelH: CGFloat) -> NSImage {
         let active = isSeatActive(s)
-        // v23: Quartz Y-up bake for SCNPlane (identity UV)
-        let cacheKey = "v23|" + seatFaceContentKey(s, size: pixelW) + "|\(Int(pixelH))"
+        // v25: shared mission-role glyph drawer (same as far icon-only)
+        let cacheKey = "v25|" + seatFaceContentKey(s, size: pixelW) + "|\(Int(pixelH))"
         if let cached = faceImageCache[cacheKey] { return cached }
         let w = pixelW
         let h = pixelH
@@ -5460,6 +5734,10 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         NSRect(x: 0, y: 0, width: spineW, height: h).fill()
 
         let mission = s.role == "human" ? nil : Optional(s.resolvedMission)
+        let glyphKind = MissionRole.mapGlyphKind(
+            structuralRole: s.role,
+            missionRole: s.resolvedMission.rawValue
+        )
         let sk = PongTheme.statusKind(s.status)
         let statusLabel: String = {
             if s.role == "human" {
@@ -5493,57 +5771,10 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         let gScale = min(w, h) * 0.11
         let cx = pad + spineW + gScale * 1.6
         let cy = h - pad - gScale * 1.6
-        ink.setStroke()
-        let gPath = NSBezierPath()
-        gPath.lineWidth = max(2.5, w * 0.014)
-        gPath.lineCapStyle = .round
-        gPath.lineJoinStyle = .round
-        if s.role == "conductor" || mission == .orchestrator {
-            gPath.appendOval(in: NSRect(x: cx - gScale, y: cy - gScale, width: gScale * 2, height: gScale * 2))
-            gPath.appendOval(in: NSRect(x: cx - gScale * 0.45, y: cy - gScale * 0.45,
-                                        width: gScale * 0.9, height: gScale * 0.9))
-            gPath.stroke()
-        } else {
-            switch mission {
-            case .researcher:
-                gPath.appendOval(in: NSRect(x: cx - gScale * 0.7, y: cy - gScale * 0.5,
-                                            width: gScale * 1.2, height: gScale * 1.2))
-                gPath.move(to: NSPoint(x: cx + gScale * 0.35, y: cy - gScale * 0.5))
-                gPath.line(to: NSPoint(x: cx + gScale * 0.9, y: cy - gScale))
-                gPath.stroke()
-            case .reviewer:
-                gPath.appendOval(in: NSRect(x: cx - gScale, y: cy - gScale, width: gScale * 2, height: gScale * 2))
-                gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy))
-                gPath.line(to: NSPoint(x: cx - gScale * 0.1, y: cy - gScale * 0.4))
-                gPath.line(to: NSPoint(x: cx + gScale * 0.55, y: cy + gScale * 0.35))
-                gPath.stroke()
-            case .operator:
-                gPath.move(to: NSPoint(x: cx, y: cy + gScale * 0.7))
-                gPath.line(to: NSPoint(x: cx, y: cy))
-                gPath.line(to: NSPoint(x: cx - gScale * 0.65, y: cy - gScale * 0.7))
-                gPath.move(to: NSPoint(x: cx, y: cy))
-                gPath.line(to: NSPoint(x: cx + gScale * 0.65, y: cy - gScale * 0.7))
-                gPath.stroke()
-            case .taskRunner:
-                // Checklist / discrete job mark
-                gPath.appendRoundedRect(
-                    NSRect(x: cx - gScale * 0.85, y: cy - gScale * 0.75,
-                           width: gScale * 1.7, height: gScale * 1.5),
-                    xRadius: gScale * 0.15, yRadius: gScale * 0.15)
-                gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy + gScale * 0.25))
-                gPath.line(to: NSPoint(x: cx - gScale * 0.15, y: cy - gScale * 0.1))
-                gPath.line(to: NSPoint(x: cx + gScale * 0.5, y: cy + gScale * 0.45))
-                gPath.move(to: NSPoint(x: cx - gScale * 0.45, y: cy - gScale * 0.35))
-                gPath.line(to: NSPoint(x: cx + gScale * 0.45, y: cy - gScale * 0.35))
-                gPath.stroke()
-            default:
-                let brace = "{  }" as NSString
-                brace.draw(at: NSPoint(x: cx - gScale * 1.1, y: cy - gScale * 0.55), withAttributes: [
-                    .font: PongTheme.mono(max(14, w * 0.11), weight: .bold),
-                    .foregroundColor: ink,
-                ])
-            }
-        }
+        drawMissionMapGlyph(
+            kind: glyphKind, cx: cx, cy: cy, gScale: gScale, ink: ink,
+            lineWidth: max(2.5, w * 0.014), braceFontSize: max(14, w * 0.11)
+        )
 
         let left = pad + spineW + 6
         let roleLine = s.role == "conductor" ? "ORCHESTRATOR"
@@ -5611,7 +5842,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
 
         let far = (root.value(forKey: "faceLODFar") as? Bool) ?? false
-        let faceKey = "v23|" + contentKey + (far ? "|F" : "|N")
+        let faceKey = "v25|" + contentKey + (far ? "|F" : "|N")
         if (root.value(forKey: "lastFaceKey") as? String) == faceKey {
             syncPlaneRing(for: seat, at: pos, active: active, color: full)
             root.setValue(active, forKey: "pulsing")
@@ -5860,7 +6091,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             scnView.isPlaying = false
             return
         }
-        let anyActive = seats.contains { isSeatActive($0) }
+        // Prefer renderSeats snapshot if available (main-thread safe under lock)
+        sceneLock.lock()
+        let snap = renderSeats
+        sceneLock.unlock()
+        let anyActive = snap.contains { isSeatActive($0) }
         let animating = anyActive || mapNeedsRender || rulerDirty
         scnView.isPlaying = animating
         if !animating { mapNeedsRender = false }
@@ -5888,32 +6123,41 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         pulsePhase += CGFloat(dt * 1.7)
 
         // Never block the render queue on a main-thread rebuild — skip a frame instead.
+        // Copy seats under lock so main can free the previous array without EXC_BAD_ACCESS.
         guard sceneLock.try() else { return }
+        let seatSnap = renderSeats
         advancePulse(now: time)
         if let cam = scnView.pointOfView {
             updateDecorLabelVisibility(camera: cam)
         }
+        let anyActive = seatSnap.contains { isSeatActive($0) }
         sceneLock.unlock()
         // Always keep horizon level while user orbits/pans
         keepCameraHorizontal()
 
         // Drop to 0 fps when nothing animates (A1)
-        let anyActive = seats.contains { isSeatActive($0) }
         if !anyActive && !rulerDirty && !mapNeedsRender {
             // Keep a couple frames after gesture end, then sleep
             scnView.isPlaying = false
         }
     }
 
-    /// Hide team titles / link chips when projected height is below ~11–12 screen px
-    /// or camera is far — never show blurry subpixel mush.
+    /// Hide team titles / link chips only when projected height is subpixel even after
+    /// distance scale-up (see `applyMapTextLOD`). Prefer keeping orch names readable far out.
+    /// Visibility math is in **points** (bounds.height, no backingScaleFactor) — must match
+    /// team-title / edge-plate LOD scale in `applyMapTextLOD` (also points). Flow-line
+    /// thickening may stay in device pixels intentionally.
     private func updateDecorLabelVisibility(camera cam: SCNNode) {
         let camPos = SIMD3<Float>(Float(cam.position.x), Float(cam.position.y), Float(cam.position.z))
+        // Points (not device pixels) — paired with title LOD scale in applyMapTextLOD
         let viewH = max(1, scnView.bounds.height)
         let fovY = Float((cam.camera?.fieldOfView ?? 60) * .pi / 180)
         let tanHalf = tan(fovY * 0.5)
         let minScreenPx: Float = 11.5
-        let maxDist: Float = 28
+        // Soft far cut: was 28 (titles vanished too soon). Scale-up handles most range;
+        // only hard-hide past extreme distance.
+        let maxDistTeam: Float = 52
+        let maxDistPlate: Float = 48
 
         func screenHeight(worldH: Float, dist: Float) -> Float {
             guard dist > 0.05, tanHalf > 0.01 else { return 999 }
@@ -5925,17 +6169,20 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             let wp = title.worldPosition
             let p = SIMD3<Float>(Float(wp.x), Float(wp.y), Float(wp.z))
             let dist = simd_length(p - camPos)
-            let worldH = (title.value(forKey: "labelWorldH") as? Float) ?? 0.35
-            let px = screenHeight(worldH: worldH, dist: dist)
-            title.isHidden = dist > maxDist || px < minScreenPx
+            let worldH = (title.value(forKey: "labelWorldH") as? Float) ?? 0.42
+            // Account for LOD scale so we don't hide a still-readable scaled label
+            let scl = max(Float(title.scale.y), 0.01)
+            let px = screenHeight(worldH: worldH * scl, dist: dist)
+            title.isHidden = dist > maxDistTeam || px < minScreenPx
         }
         for (key, node) in edgeNodes where key.hasSuffix(":plate") {
             let wp = node.worldPosition
             let p = SIMD3<Float>(Float(wp.x), Float(wp.y), Float(wp.z))
             let dist = simd_length(p - camPos)
             let worldH = (node.value(forKey: "labelWorldH") as? Float) ?? 0.20
-            let px = screenHeight(worldH: worldH, dist: dist)
-            node.isHidden = dist > maxDist * 0.9 || px < minScreenPx
+            let scl = max(Float(node.scale.y), 0.01)
+            let px = screenHeight(worldH: worldH * scl, dist: dist)
+            node.isHidden = dist > maxDistPlate || px < minScreenPx
         }
     }
 
@@ -6060,11 +6307,14 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 self.sceneLock.lock()
                 defer { self.sceneLock.unlock() }
                 for (gid, far) in pending {
-                    guard let root = self.seatNodes[gid],
-                          let seat = self.seats.first(where: { $0.globalId == gid }) else { continue }
+                    guard let root = self.seatNodes[gid] else { continue }
+                    // Copy seat by value before material update (render race safety)
+                    guard let seat = self.renderSeats.first(where: { $0.globalId == gid })
+                            ?? self.seats.first(where: { $0.globalId == gid }) else { continue }
+                    let seatCopy = seat
                     root.setValue(far, forKey: "faceLODFar")
                     root.setValue("", forKey: "lastFaceKey")
-                    self.updateBlobMaterial(root, seat: seat)
+                    self.updateBlobMaterial(root, seat: seatCopy)
                 }
             }
         }
@@ -6074,15 +6324,17 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     /// - Far: info cards keep **natural size**, texture becomes **icon only** (no text, no grow).
     /// - Near: full card with names; optional mild min-size so text stays readable.
     /// - Cron job labels: hide when far, reappear when closer (dots stay).
+    /// Units: **visibility = points**; **title / edge-plate LOD scale = points** (same as
+    /// `updateDecorLabelVisibility`). Flow-line thickness may stay device px.
     private func applyMapTextLOD(cam: SCNNode?) {
         guard let cam else { return }
         let fovDeg = Float(cam.camera?.fieldOfView ?? 42)
         let fov = max(0.05, fovDeg * .pi / 180)
-        let scale = Float(scnView.window?.backingScaleFactor
-                          ?? scnView.layer?.contentsScale
-                          ?? 2)
-        let vh = Float(max(scnView.bounds.height, 1)) * max(scale, 1)
         let halfTan = tan(fov * 0.5)
+        // Points-only viewport (NO backingScaleFactor). Device-px `vh` made team-title
+        // target ~13 device px ≈ 6.5 pt on 2× retina, so scale never rose above 1.0 before
+        // hide at maxDistTeam — R2 fix pairs scale with points-based visibility.
+        let vhPt = Float(max(scnView.bounds.height, 1))
         let cwx = Float(cam.worldPosition.x)
         let cwy = Float(cam.worldPosition.y)
         let cwz = Float(cam.worldPosition.z)
@@ -6092,8 +6344,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             let dx = Float(wp.x) - cwx, dy = Float(wp.y) - cwy, dz = Float(wp.z) - cwz
             return max(0.2, sqrt(dx * dx + dy * dy + dz * dz))
         }
-        func pxWorld(at dist: Float) -> Float {
-            (2 * dist * halfTan) / vh
+        /// World size of one **point** at distance (matches visibility screenHeight units).
+        func pxWorldPt(at dist: Float) -> Float {
+            (2 * dist * halfTan) / vhPt
         }
 
         // Beyond this distance: icon-only face texture (text off).
@@ -6125,18 +6378,29 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             }
         }
 
-        // Deck labels + link chips: mild min size only (never huge)
+        // Deck labels + link chips + team titles: mild min size in **points** (never huge)
         for n in decorRoot.childNodes where (n.name ?? "").hasPrefix("deck-label-") {
             let d = distTo(n)
-            let needH = 12 * pxWorld(at: d)
+            let needH = 12 * pxWorldPt(at: d)
             let s = min(1.9, max(1.0, needH / 0.95))
             n.scale = SCNVector3(CGFloat(s), CGFloat(s), CGFloat(s))
         }
         for (key, n) in edgeNodes where key.hasSuffix(":plate") {
             let d = distTo(n)
-            let needH = 11 * pxWorld(at: d)
+            let needH = 11 * pxWorldPt(at: d)
             let s = min(2.0, max(1.0, needH / 0.22))
             n.scale = SCNVector3(CGFloat(s), CGFloat(s), CGFloat(s))
+        }
+        // Orchestrator team-title: scale up when far so projected height stays ~13 pt
+        // (prefer grow over early hide; hide only when truly tiny — see updateDecorLabelVisibility)
+        for root in seatNodes.values {
+            guard let title = root.childNode(withName: "team-title", recursively: false) else { continue }
+            let d = distTo(title)
+            let baseH = (title.value(forKey: "labelWorldH") as? Float) ?? 0.42
+            let needH = 13 * pxWorldPt(at: d)
+            // Cap so the pill doesn't hog the view or bury the seat face
+            let s = min(2.35, max(1.0, needH / max(baseH, 0.05)))
+            title.scale = SCNVector3(CGFloat(s), CGFloat(s), CGFloat(s))
         }
     }
 
@@ -6229,6 +6493,46 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             reevaluateMapPlaying()
         }
         layoutRightHUD()
+    }
+}
+
+// MARK: - Human compose (multiline NSTextView)
+
+/// Multiline compose field: Enter sends, Shift+Enter inserts newline.
+/// Arrow keys / selection stay in the field (do not scroll chat stream).
+final class HumanComposeTextView: NSTextView {
+    var onSend: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        // Return / keypad Enter
+        if event.keyCode == 36 || event.keyCode == 76 {
+            if event.modifierFlags.contains(.shift) {
+                // Shift+Enter → newline
+                super.insertNewline(nil)
+                return
+            }
+            // Enter or ⌘↩ → send
+            onSend?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌘↩ also sends
+        if event.modifierFlags.contains(.command),
+           event.keyCode == 36 || event.keyCode == 76 {
+            onSend?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+extension Agent3DMapView: NSTextViewDelegate {
+    func textDidChange(_ notification: Notification) {
+        guard notification.object as AnyObject? === humanCompose else { return }
+        relayoutHumanComposeGrowing()
     }
 }
 

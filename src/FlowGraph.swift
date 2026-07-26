@@ -619,6 +619,63 @@ final class FlowDesignSheetController: NSObject {
     private func persistFromCanvas() {
         guard !session.isEmpty else { return }
         FlowGraph.save(pair: session, edges: canvas.exportEdges())
+        persistWorkersFromCanvas()
+    }
+
+    /// Write Architecture node title + purpose back to pairs.json so the map
+    /// seat name and mission glyph update (live Design flow previously only saved edges).
+    private func persistWorkersFromCanvas() {
+        let exported = canvas.exportWorkers()
+        guard !exported.isEmpty else { return }
+        PairState.mutate(session) { entry in
+            var ws = Workers.list(from: entry)
+            for exp in exported {
+                guard let idx = ws.firstIndex(where: { ($0["id"] as? String) == exp.id }) else {
+                    continue
+                }
+                let oldLabel = ((ws[idx]["label"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let oldRole = (ws[idx]["mission_role"] as? String) ?? ""
+                var newLabel = exp.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let mr = MissionRole.parse(exp.mission) {
+                    let genericOld = Self.isGenericWorkerLabel(oldLabel)
+                    let genericNew = Self.isGenericWorkerLabel(newLabel) || newLabel.isEmpty
+                    let matchedOldRole =
+                        MissionRole.parse(oldRole)?.title.lowercased() == oldLabel.lowercased()
+                        || MissionRole.parseLabel(oldLabel)?.rawValue == oldRole
+                    if matchedOldRole || (genericOld && genericNew) {
+                        newLabel = mr.title
+                    }
+                }
+                if !newLabel.isEmpty {
+                    ws[idx]["label"] = newLabel
+                }
+                if !exp.mission.isEmpty {
+                    ws[idx]["mission_role"] = exp.mission
+                }
+                if let p = exp.parentId, !p.isEmpty {
+                    ws[idx]["parent_id"] = p
+                }
+                if !exp.modelId.isEmpty {
+                    ws[idx]["type"] = exp.modelId
+                }
+            }
+            entry["workers"] = ws
+        }
+        Pong.log("Architecture persist workers session=\(session) n=\(exported.count)")
+    }
+
+    /// Labels that should auto-rename when purpose changes (Builder→Researcher, etc.).
+    private static func isGenericWorkerLabel(_ s: String) -> Bool {
+        let t = s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return true }
+        let generics: Set<String> = [
+            "builder", "checker", "runner", "coder", "worker", "agent",
+            "reviewer", "researcher", "operator", "task runner", "taskrunner",
+            "w1", "w2", "w3", "w4",
+        ]
+        if generics.contains(t) { return true }
+        return MissionRole.allCases.contains { $0.title.lowercased() == t }
     }
 
     @objc private func toggleLinkMode() {

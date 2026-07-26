@@ -1181,7 +1181,19 @@ final class TeamArchCanvas: NSView {
         if let pop = purposePop,
            let raw = pop.selectedItem?.representedObject as? String,
            let mr = MissionRole.parse(raw) {
+            let oldMission = nodes[i].mission
+            let oldTitle = nodes[i].title
             nodes[i].mission = mr.rawValue
+            // Auto-rename when title still matches old role title or is a generic default
+            let oldRoleTitle = MissionRole.parse(oldMission)?.title.lowercased() ?? ""
+            let generics = Set([
+                "builder", "checker", "runner", "coder", "worker", "agent",
+                "reviewer", "researcher", "operator", "task runner",
+            ] + MissionRole.allCases.map { $0.title.lowercased() })
+            let titleLower = oldTitle.lowercased()
+            if titleLower == oldRoleTitle || generics.contains(titleLower) || oldTitle.isEmpty {
+                nodes[i].title = mr.title
+            }
         }
         selectedNodeId = id
         onChanged?()
