@@ -29,6 +29,8 @@ final class AppAIChatBubble: NSView {
     private var expanded = false
     private var hovering = false
     private var busy = false
+    /// Map/canvas host for collapsed FAB. Expanded panel reparents to window contentView.
+    private weak var mapHost: NSView?
     private var attachedTo: NSView?
     private var nudgeHideWork: DispatchWorkItem?
     /// reconnectIdle | awaitingSignIn | connecting
@@ -43,13 +45,15 @@ final class AppAIChatBubble: NSView {
         case connecting
     }
 
-    /// Collapsed FAB size · expanded panel
+    /// Collapsed FAB size · expanded panel (sizes fixed — job e83a7a)
     private let fabSize: CGFloat = 44
     private let panelW: CGFloat = 300
     private let panelH: CGFloat = 380
     private let pad: CGFloat = 16
     private let reconnectBarH: CGFloat = 80
     private let actionBarH: CGFloat = 72
+    /// Above stage + topBar siblings so close ✕ is never under status pill.
+    private let overlayZ: CGFloat = 50_000
 
     private override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -61,15 +65,16 @@ final class AppAIChatBubble: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func attachIfNeeded(to host: NSView? = nil) {
-        let target = host ?? PanelController.shared.mapHostView()
-        guard let target else { return }
-        if attachedTo === target, superview === target { layoutInHost(); return }
-        removeFromSuperview()
-        attachedTo = target
-        target.addSubview(self)
-        layoutInHost()
+        if let host {
+            mapHost = host
+        } else if mapHost == nil {
+            mapHost = PanelController.shared.mapHostView()
+        }
+        guard mapHost != nil || PanelController.shared.guideOverlayHost() != nil else { return }
         isHidden = false
-        target.addSubview(self, positioned: .above, relativeTo: nil)
+        reparentForCurrentMode()
+        layoutInHost()
+        ensureFrontmost()
         // If already offline from a prior session, offer reconnect when first attached
         if !AppAIRuntime.isHeadlessReady, AppAISettings.providerId != nil {
             showDisconnected(
@@ -79,19 +84,60 @@ final class AppAIChatBubble: NSView {
         }
     }
 
+    /// Raise Guide above map HUD and top-bar chrome (call after panel layout / expand).
+    func ensureFrontmost() {
+        guard let host = superview else { return }
+        host.addSubview(self, positioned: .above, relativeTo: nil)
+        layer?.zPosition = overlayZ
+        // Close control last among panel children so it wins hit-tests
+        if expanded, let close = panel.subviews.first(where: { $0.identifier?.rawValue == "close" }) {
+            panel.addSubview(close, positioned: .above, relativeTo: nil)
+            close.layer?.zPosition = 10
+        }
+    }
+
+    /// Collapsed → map host (FAB). Expanded → window contentView above topBar.
+    private func reparentForCurrentMode() {
+        let desired: NSView? = {
+            if expanded {
+                return PanelController.shared.guideOverlayHost() ?? mapHost ?? superview
+            }
+            return mapHost ?? PanelController.shared.mapHostView()
+        }()
+        guard let desired else { return }
+        if superview === desired {
+            attachedTo = desired
+            return
+        }
+        removeFromSuperview()
+        desired.addSubview(self, positioned: .above, relativeTo: nil)
+        attachedTo = desired
+    }
+
     func layoutInHost() {
+        // Ensure correct parent before measuring bounds
+        reparentForCurrentMode()
         guard let host = superview else { return }
         let w = host.bounds.width
+        let h = host.bounds.height
         if expanded {
+            // Bottom-right of usable stage; keep panel fully below top bar so ✕ is visible.
+            let topClear = PanelController.shared.guideTopBarClearance
+            let maxTopY = max(panelH + pad, h - topClear)
+            var y = pad + 36
+            if y + panelH > maxTopY {
+                y = max(pad, maxTopY - panelH)
+            }
             frame = NSRect(
                 x: w - panelW - pad,
-                y: pad + 36,
+                y: y,
                 width: panelW,
                 height: panelH
             )
             panel.isHidden = false
             fab.isHidden = true
             nudgeChip.isHidden = true
+            layer?.zPosition = overlayZ
         } else {
             let grow: CGFloat = (hovering ? 6 : 0)
             let s = fabSize + grow
@@ -105,8 +151,10 @@ final class AppAIChatBubble: NSView {
             fab.isHidden = false
             fab.frame = NSRect(x: frame.width - s, y: 0, width: s, height: s)
             fab.layer?.cornerRadius = s / 2
+            layer?.zPosition = 100
         }
         autoresizingMask = [.minXMargin, .maxYMargin]
+        ensureFrontmost()
     }
 
     private func build() {
@@ -162,10 +210,16 @@ final class AppAIChatBubble: NSView {
         let close = NSButton(title: "✕", target: self, action: #selector(collapse))
         close.bezelStyle = .inline
         close.isBordered = false
-        close.font = PongTheme.font(11)
-        close.contentTintColor = PongTheme.textTertiary
-        close.frame = NSRect(x: panelW - 28, y: panelH - 28, width: 20, height: 20)
+        close.wantsLayer = true
+        close.font = PongTheme.font(13, weight: .semibold)
+        close.contentTintColor = PongTheme.textPrimary
+        close.attributedTitle = NSAttributedString(string: "✕", attributes: [
+            .foregroundColor: PongTheme.textPrimary,
+            .font: PongTheme.font(13, weight: .semibold),
+        ])
+        close.frame = NSRect(x: panelW - 30, y: panelH - 30, width: 24, height: 24)
         close.identifier = NSUserInterfaceItemIdentifier("close")
+        close.toolTip = "Close Guide"
         panel.addSubview(close)
 
         scroll.hasVerticalScroller = true
@@ -330,7 +384,7 @@ final class AppAIChatBubble: NSView {
             input.frame = NSRect(x: 10, y: 10, width: panelW - 52, height: 30)
             sendBtn.frame = NSRect(x: panelW - 38, y: 10, width: 28, height: 30)
             if let close = panel.subviews.first(where: { $0.identifier?.rawValue == "close" }) {
-                close.frame = NSRect(x: panelW - 28, y: panelH - 28, width: 20, height: 20)
+                close.frame = NSRect(x: panelW - 30, y: panelH - 30, width: 24, height: 24)
             }
         } else if !nudgeChip.isHidden {
             let s = fab.frame.width
@@ -364,14 +418,19 @@ final class AppAIChatBubble: NSView {
 
     @objc private func toggleExpand() {
         expanded = true
+        // Reparent to contentView above topBar so close ✕ is never under status pill
+        reparentForCurrentMode()
         layoutInHost()
         needsLayout = true
         layout()
+        ensureFrontmost()
         window?.makeFirstResponder(input)
     }
 
     @objc private func collapse() {
         expanded = false
+        // Restore FAB on map host
+        reparentForCurrentMode()
         layoutInHost()
     }
 

@@ -122,9 +122,19 @@ final class PanelController: NSObject, NSWindowDelegate {
         AppAIOnboarding.present()
     }
 
-    /// Host for floating Guide bubble.
+    /// Host for floating Guide bubble (FAB on map page).
     func _mapHostForBubble() -> NSView? {
         canvasPage
+    }
+
+    /// Expanded Guide attaches here so it stacks above stage and top bar chrome.
+    func guideOverlayHost() -> NSView? {
+        root ?? window?.contentView
+    }
+
+    /// Distance from top of contentView down past top bar (keeps expanded Guide below chrome).
+    var guideTopBarClearance: CGFloat {
+        titlebarLift + topH
     }
 
     static func label(_ text: String, frame: NSRect, bold: Bool = false,
@@ -574,6 +584,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         canvas = AgentCanvasView(frame: NSRect(origin: .zero, size: CanvasLayout.minCanvas))
         canvas.onFront = { [weak self] m in self?.frontModel(m) }
         canvas.onKill = { [weak self] m in self?.killModel(m) }
+        canvas.onSaveSession = { m in
+            let name = m.title.isEmpty ? m.session : m.title
+            SessionContinuityUI.confirmSaveSession(session: m.session, displayName: name)
+        }
+        canvas.onNewSessionRecap = { m in
+            let name = m.title.isEmpty ? m.session : m.title
+            SessionContinuityUI.confirmNewSessionWithRecap(session: m.session, displayName: name) {
+                PanelController.shared.reload()
+            }
+        }
         canvas.onOptions = { [weak self] m in
             TeamOptionsSheetController.shared.show(for: m.session) { self?.reload() }
         }
@@ -649,6 +669,16 @@ final class PanelController: NSObject, NSWindowDelegate {
                 title: s.title, subtitle: s.subtitle, detail: s.detail, status: s.status,
                 teamLabel: "", accent: PongTheme.magenta, origin: .zero
             ))
+        }
+        map3D.onSaveSession = { s in
+            let name = s.title.isEmpty ? s.session : s.title
+            SessionContinuityUI.confirmSaveSession(session: s.session, displayName: name)
+        }
+        map3D.onNewSessionRecap = { s in
+            let name = s.title.isEmpty ? s.session : s.title
+            SessionContinuityUI.confirmNewSessionWithRecap(session: s.session, displayName: name) {
+                PanelController.shared.reload()
+            }
         }
         map3D.onOptions = { s in
             TeamOptionsSheetController.shared.show(for: s.session) { PanelController.shared.reload() }
@@ -1025,6 +1055,14 @@ final class PanelController: NSObject, NSWindowDelegate {
             if self.canvasDragging { return }
             // Skip heavy map rebuild while user is orbiting / moving seats
             if self.use3DMap, self.map3D?.isUserInteracting == true { return }
+            // Power: when panel is fully occluded / app inactive, only light status
+            let win = self.window
+            let fullyOccluded = win.map { !$0.occlusionState.contains(.visible) } ?? false
+            let appInactive = !NSApp.isActive
+            if fullyOccluded || appInactive {
+                self.updateStatus()
+                return
+            }
             // Window recovery OFF main (osascript freezes UI)
             let sess = self.selectedSession
             DispatchQueue.global(qos: .utility).async {
@@ -1049,6 +1087,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             let snap = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
             GuideCoach.tick(snapshot: snap.isEmpty ? nil : snap, pairs: pairs)
         }
+        t.tolerance = 0.8
         RunLoop.main.add(t, forMode: .default)
         poll = t
     }
@@ -2595,7 +2634,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             let card3 = actionCard(
                 frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
                 title: "Saved teams",
-                body: "\(n) saved layout\(n == 1 ? "" : "s"). Open, duplicate, or delete.",
+                body: "\(n) saved layout\(n == 1 ? "" : "s") (roster templates). Open, duplicate, or delete.",
                 button: "Manage",
                 action: #selector(showTeamsPressed),
                 accent: PongTheme.limeAction.withAlphaComponent(0.4)
@@ -2603,6 +2642,18 @@ final class PanelController: NSObject, NSWindowDelegate {
             setupBody.addSubview(card3)
             y -= 114
         }
+
+        let nSess = SessionArchive.loadAll().count
+        let cardSess = actionCard(
+            frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
+            title: "Saved sessions",
+            body: "\(nSess) continuity package\(nSess == 1 ? "" : "s") (story). Compress live work; attach to a team.",
+            button: "Manage",
+            action: #selector(showSessionsPressed),
+            accent: PongTheme.blue.withAlphaComponent(0.35)
+        )
+        setupBody.addSubview(cardSess)
+        y -= 114
 
         let note = tacticalCard(width: W - 20, height: 96, accent: PongTheme.limeAction.withAlphaComponent(0.35))
         note.setFrameOrigin(NSPoint(x: 0, y: y - 96))
@@ -2786,6 +2837,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     @objc private func showTeamsPressed() {
         TeamsManagerPanel.shared.show { [weak self] in self?.reload() }
+    }
+
+    @objc private func showSessionsPressed() {
+        SessionsManagerPanel.shared.show { [weak self] in self?.reload() }
     }
 
     @objc private func orbitModePressed() {

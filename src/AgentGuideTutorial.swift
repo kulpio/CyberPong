@@ -19,7 +19,7 @@ enum AgentGuideTutorial {
         (
             "Options & permissions",
             "Each agent can have its own rules.\n"
-                + "Open the seat → Opts or Policy.\n"
+                + "Open the seat → Options or Policy.\n"
                 + "You can ban MCP tools, network, or limit to the project folder."
         ),
         (

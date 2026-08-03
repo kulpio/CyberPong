@@ -555,11 +555,31 @@ enum QuickTeamBuilder {
             missionRoles: recipe.roles,
             workerLabels: recipe.labels
         )
-        Pong.log("QuickTeamBuilder.launch name=\(teamName) conductor=\(conductorType) workers=\(types.joined(separator: ","))")
+        // Optional continuity package (Saved session story)
+        let archivePick = SessionContinuityUI.pickArchive(
+            allowNone: true,
+            message: "Start with continuity?"
+        )
+        if archivePick == nil {
+            // User cancelled continuity picker — abort launch
+            step = 1
+            focusedNameOnStep1 = false
+            render()
+            return
+        }
+        let continuityId = (archivePick ?? "").isEmpty ? nil : archivePick
+        Pong.log("QuickTeamBuilder.launch name=\(teamName) conductor=\(conductorType) workers=\(types.joined(separator: ",")) continuity=\(continuityId ?? "-")")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = AppAIMutator.apply([.createFirstTeam(plan: plan)])
             if let sess = result.session {
                 TerminalTheme.applyPair(sess)
+                if let aid = continuityId {
+                    SessionContinuity.setPendingArchive(session: sess, archiveId: aid)
+                    // Kickoff already scheduled by mutator — re-schedule with recap if possible
+                    var ctx = ConductorKickoff.contextFromPairState(session: sess)
+                    ctx.continuityRecap = SessionArchive.loadRecap(id: aid)
+                    ConductorKickoff.scheduleInject(session: sess, context: ctx, initialDelay: 1.5)
+                }
             }
             DispatchQueue.main.async {
                 if result.failed.isEmpty {

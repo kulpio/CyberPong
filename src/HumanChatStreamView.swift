@@ -306,7 +306,7 @@ final class HumanChatStreamView: NSView {
         let who: String = {
             switch msg.kind {
             case .fromYou: return "YOU"
-            case .fromOrch: return "ORCH"
+            case .fromOrch: return "Orchestrator"
             case .ask: return "ASK"
             case .status: return "STATUS"
             }

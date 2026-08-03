@@ -255,13 +255,25 @@ final class CronManagerSheet: NSObject {
     private var onDone: (() -> Void)?
     private var listBox: NSView!
     private var scroll: NSScrollView!
+    private var themeObserver: NSObjectProtocol?
+    private weak var titleField: NSTextField?
+    private weak var subField: NSTextField?
 
     func show(session: String, seats: [Seat3D], preselectJobId: String? = nil, onDone: @escaping () -> Void) {
         self.session = session
         self.seats = seats.filter { $0.role != "human" }
         self.onDone = onDone
         self.jobs = CronSchedule.load(session: session)
+        if themeObserver == nil {
+            themeObserver = NotificationCenter.default.addObserver(
+                forName: PongTheme.appearanceDidChange, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.applyChrome()
+                self?.reloadList()
+            }
+        }
         build()
+        applyChrome()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         reloadList()
@@ -273,10 +285,61 @@ final class CronManagerSheet: NSObject {
         }
     }
 
+    /// Light/dark surfaces + button ink (avoids white-on-white in aqua).
+    private func applyChrome() {
+        guard let win = window, let root = win.contentView else { return }
+        let aqua = PongTheme.appearance == .dark
+            ? NSAppearance(named: .darkAqua)
+            : NSAppearance(named: .aqua)
+        win.appearance = aqua
+        win.backgroundColor = PongTheme.bg
+        root.appearance = aqua
+        root.wantsLayer = true
+        root.layer?.backgroundColor = PongTheme.bg.cgColor
+        titleField?.textColor = PongTheme.textPrimary
+        titleField?.font = PongTheme.font(16, weight: .semibold)
+        subField?.textColor = PongTheme.textSecondary
+        subField?.font = PongTheme.font(11)
+        for v in root.subviews {
+            if let b = v as? NSButton {
+                styleFooterButton(b)
+            }
+        }
+        scroll?.drawsBackground = false
+        scroll?.backgroundColor = .clear
+    }
+
+    private func styleFooterButton(_ b: NSButton) {
+        let title = b.attributedTitle.string.isEmpty ? b.title : b.attributedTitle.string
+        guard !title.isEmpty else { return }
+        b.bezelStyle = .rounded
+        b.isBordered = true
+        b.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
+        b.contentTintColor = PongTheme.textPrimary
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: PongTheme.textPrimary,
+            .font: PongTheme.font(12, weight: .medium),
+        ])
+    }
+
+    private func styleRowButton(_ b: NSButton, title: String) {
+        b.bezelStyle = .rounded
+        b.isBordered = true
+        b.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
+        b.contentTintColor = PongTheme.textPrimary
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: PongTheme.textPrimary,
+            .font: PongTheme.font(11, weight: .medium),
+        ])
+    }
+
     private func build() {
         let w: CGFloat = 520
         let h: CGFloat = 480
-        let win = NSWindow(
+        if let existing = window {
+            existing.contentView?.subviews.forEach { $0.removeFromSuperview() }
+        }
+        let win = window ?? NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false
@@ -285,10 +348,12 @@ final class CronManagerSheet: NSObject {
         win.center()
         win.isReleasedWhenClosed = false
         win.backgroundColor = PongTheme.bg
+        win.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
         root.wantsLayer = true
         root.layer?.backgroundColor = PongTheme.bg.cgColor
+        root.appearance = win.appearance
         win.contentView = root
 
         let title = NSTextField(labelWithString: "CRON MANAGER")
@@ -296,57 +361,65 @@ final class CronManagerSheet: NSObject {
         title.textColor = PongTheme.textPrimary
         title.frame = NSRect(x: 20, y: h - 40, width: 280, height: 22)
         root.addSubview(title)
+        titleField = title
 
         let sub = NSTextField(labelWithString: "Who runs what · cadence · timeline order")
         sub.font = PongTheme.font(11)
         sub.textColor = PongTheme.textSecondary
         sub.frame = NSRect(x: 20, y: h - 58, width: 360, height: 16)
         root.addSubview(sub)
+        subField = sub
 
         scroll = NSScrollView(frame: NSRect(x: 16, y: 56, width: w - 32, height: h - 120))
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
+        scroll.backgroundColor = .clear
         listBox = NSView(frame: .zero)
         scroll.documentView = listBox
         root.addSubview(scroll)
 
         let add = NSButton(title: "+ Describe in Guide", target: self, action: #selector(addJob))
-        add.bezelStyle = .rounded
         add.toolTip = "Create a schedule by chatting with Guide (recommended)"
         add.frame = NSRect(x: 16, y: 16, width: 140, height: 28)
+        styleFooterButton(add)
         root.addSubview(add)
 
         let manual = NSButton(title: "Manual form", target: self, action: #selector(addJobManual))
-        manual.bezelStyle = .rounded
         manual.toolTip = "Classic multi-field form"
         manual.frame = NSRect(x: 164, y: 16, width: 100, height: 28)
+        styleFooterButton(manual)
         root.addSubview(manual)
 
         let defaults = NSButton(title: "Suggested", target: self, action: #selector(restoreDefaults))
-        defaults.bezelStyle = .rounded
         defaults.frame = NSRect(x: 272, y: 16, width: 90, height: 28)
+        styleFooterButton(defaults)
         root.addSubview(defaults)
 
         let done = NSButton(title: "Done", target: self, action: #selector(donePressed))
-        done.bezelStyle = .rounded
         done.keyEquivalent = "\r"
         done.frame = NSRect(x: w - 100, y: 16, width: 80, height: 28)
+        styleFooterButton(done)
         root.addSubview(done)
 
         window = win
     }
 
     private func reloadList() {
+        guard listBox != nil, scroll != nil else { return }
         listBox.subviews.forEach { $0.removeFromSuperview() }
         let rowH: CGFloat = 64
         let W = max(scroll.contentSize.width - 8, 460)
         var y: CGFloat = 8
         let sorted = jobs.sorted { $0.nextRun() < $1.nextRun() }
+        // Light: solid elevated card (not translucent white-on-white)
+        let rowFill: NSColor = PongTheme.appearance == .dark
+            ? PongTheme.bgElevated
+            : NSColor(calibratedWhite: 0.94, alpha: 1)
         for (i, job) in sorted.enumerated() {
             let row = NSView(frame: NSRect(x: 0, y: 0, width: W, height: rowH - 6))
             row.wantsLayer = true
-            row.layer?.backgroundColor = PongTheme.bgElevated.cgColor
+            row.layer?.backgroundColor = rowFill.cgColor
             row.layer?.cornerRadius = 6
             row.layer?.borderWidth = 1
             row.layer?.borderColor = PongTheme.border.cgColor
@@ -375,26 +448,27 @@ final class CronManagerSheet: NSObject {
 
             let nf = DateFormatter()
             nf.dateFormat = "HH:mm"
+            // Light: dark ink for NEXT if accent is too pale; accents stay readable
             let next = NSTextField(labelWithString: "NEXT \(nf.string(from: job.nextRun()))")
             next.font = PongTheme.mono(10, weight: .semibold)
-            next.textColor = accent
+            next.textColor = PongTheme.appearance == .dark
+                ? accent
+                : accent.blended(withFraction: 0.35, of: .black) ?? PongTheme.textPrimary
             next.alignment = .right
             next.frame = NSRect(x: W - 200, y: 32, width: 100, height: 16)
             row.addSubview(next)
 
             let jobIdx = jobs.firstIndex(where: { $0.id == job.id }) ?? i
             let edit = NSButton(title: "Edit", target: self, action: #selector(editJob(_:)))
-            edit.bezelStyle = .rounded
-            edit.isBordered = true
             edit.tag = jobIdx
             edit.frame = NSRect(x: W - 100, y: 18, width: 48, height: 26)
+            styleRowButton(edit, title: "Edit")
             row.addSubview(edit)
 
             let del = NSButton(title: "✕", target: self, action: #selector(deleteJob(_:)))
-            del.bezelStyle = .rounded
-            del.isBordered = true
             del.tag = jobIdx
             del.frame = NSRect(x: W - 48, y: 18, width: 32, height: 26)
+            styleRowButton(del, title: "✕")
             row.addSubview(del)
 
             // Click row (outside buttons) to edit
@@ -495,23 +569,38 @@ final class CronManagerSheet: NSObject {
             "Owner: \(ownerName) (\(j.ownerId)) — change owner below if needed."
         a.addButton(withTitle: "Save")
         a.addButton(withTitle: "Cancel")
+        let alertAqua = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
+        a.window.appearance = alertAqua
+        a.icon = nil
 
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 210))
+        box.appearance = alertAqua
+        box.wantsLayer = true
+        box.layer?.backgroundColor = PongTheme.bg.cgColor
 
-        let nameL = NSTextField(labelWithString: "Name")
-        nameL.font = PongTheme.mono(10)
-        nameL.textColor = PongTheme.textTertiary
-        nameL.frame = NSRect(x: 0, y: 188, width: 120, height: 14)
+        func fieldLabel(_ text: String, frame: NSRect) -> NSTextField {
+            let l = NSTextField(labelWithString: text)
+            l.font = PongTheme.mono(10)
+            l.textColor = PongTheme.textSecondary
+            l.frame = frame
+            return l
+        }
+        func styleTextField(_ f: NSTextField) {
+            f.textColor = PongTheme.textPrimary
+            f.backgroundColor = PongTheme.bgInput
+            f.drawsBackground = true
+            f.font = PongTheme.font(12)
+        }
+
+        let nameL = fieldLabel("Name", frame: NSRect(x: 0, y: 188, width: 120, height: 14))
         box.addSubview(nameL)
         let nameF = NSTextField(frame: NSRect(x: 0, y: 162, width: 380, height: 24))
         nameF.stringValue = j.name
         nameF.placeholderString = "Short job name"
+        styleTextField(nameF)
         box.addSubview(nameF)
 
-        let taskL = NSTextField(labelWithString: "Task for the owner agent")
-        taskL.font = PongTheme.mono(10)
-        taskL.textColor = PongTheme.textTertiary
-        taskL.frame = NSRect(x: 0, y: 140, width: 280, height: 14)
+        let taskL = fieldLabel("Task for the owner agent", frame: NSRect(x: 0, y: 140, width: 280, height: 14))
         box.addSubview(taskL)
         let taskScroll = NSScrollView(frame: NSRect(x: 0, y: 72, width: 380, height: 64))
         taskScroll.hasVerticalScroller = true
@@ -524,25 +613,21 @@ final class CronManagerSheet: NSObject {
         taskF.drawsBackground = true
         taskF.backgroundColor = PongTheme.bgInput
         taskF.textColor = PongTheme.textPrimary
+        taskF.insertionPointColor = PongTheme.textPrimary
         taskF.isEditable = true
         taskF.isSelectable = true
         taskScroll.documentView = taskF
         box.addSubview(taskScroll)
 
-        let cadL = NSTextField(labelWithString: "Cadence")
-        cadL.font = PongTheme.mono(10)
-        cadL.textColor = PongTheme.textTertiary
-        cadL.frame = NSRect(x: 0, y: 50, width: 100, height: 14)
+        let cadL = fieldLabel("Cadence", frame: NSRect(x: 0, y: 50, width: 100, height: 14))
         box.addSubview(cadL)
         let cadF = NSTextField(frame: NSRect(x: 0, y: 26, width: 180, height: 24))
         cadF.stringValue = j.cadence
         cadF.placeholderString = "every 15m · daily 04:00"
+        styleTextField(cadF)
         box.addSubview(cadF)
 
-        let ownL = NSTextField(labelWithString: "Owner seat")
-        ownL.font = PongTheme.mono(10)
-        ownL.textColor = PongTheme.textTertiary
-        ownL.frame = NSRect(x: 190, y: 50, width: 100, height: 14)
+        let ownL = fieldLabel("Owner seat", frame: NSRect(x: 190, y: 50, width: 100, height: 14))
         box.addSubview(ownL)
         let ownPop = NSPopUpButton(frame: NSRect(x: 190, y: 26, width: 100, height: 24), pullsDown: false)
         let seatIds = seats.map(\.id)
@@ -558,16 +643,15 @@ final class CronManagerSheet: NSObject {
                 ownPop.selectItem(at: ix)
             }
         }
+        PongTheme.stylePopUp(ownPop)
         box.addSubview(ownPop)
 
-        let minL = NSTextField(labelWithString: "Every (min)")
-        minL.font = PongTheme.mono(10)
-        minL.textColor = PongTheme.textTertiary
-        minL.frame = NSRect(x: 300, y: 50, width: 80, height: 14)
+        let minL = fieldLabel("Every (min)", frame: NSRect(x: 300, y: 50, width: 80, height: 14))
         box.addSubview(minL)
         let minF = NSTextField(frame: NSRect(x: 300, y: 26, width: 80, height: 24))
         minF.stringValue = "\(max(1, Int(j.intervalSec / 60)))"
         minF.placeholderString = "min"
+        styleTextField(minF)
         box.addSubview(minF)
 
         a.accessoryView = box

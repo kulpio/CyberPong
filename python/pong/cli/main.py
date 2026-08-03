@@ -421,6 +421,93 @@ def _cmd_ledger(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cmd_continuity(args: argparse.Namespace) -> int:
+    """Session vault: save / list / show / delete / recap / rename."""
+    from pong.session_archive import (
+        build_recap_markdown,
+        delete_archive,
+        get_archive,
+        list_archives,
+        rename_archive,
+        save_archive,
+    )
+    from pong.state import detect_bound_session
+
+    sub = getattr(args, "continuity_cmd", None) or ""
+    if sub == "save":
+        sess = detect_bound_session(args.session)
+        if not sess:
+            print("error: no session (pass -s/--session)", file=sys.stderr)
+            return 2
+        out = save_archive(sess, title=args.title)
+        if args.json:
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"saved {out['id']}")
+            print(out["recap_path"])
+        return 0
+    if sub == "list":
+        rows = list_archives()
+        if args.json:
+            # strip private keys for JSON list
+            clean = []
+            for r in rows:
+                clean.append({k: v for k, v in r.items() if not str(k).startswith("_")})
+            print(json.dumps(clean, indent=2))
+        else:
+            if not rows:
+                print("(no saved sessions)")
+            for r in rows:
+                title = r.get("title") or r.get("id")
+                src = r.get("source_session") or "?"
+                print(f"{r.get('id')}\t{title}\tfrom={src}")
+        return 0
+    if sub == "show":
+        meta = get_archive(args.id)
+        if not meta:
+            print(f"error: archive not found: {args.id}", file=sys.stderr)
+            return 1
+        if args.recap_only:
+            print(meta.get("recap") or "", end="")
+            return 0
+        if args.json:
+            print(json.dumps({k: v for k, v in meta.items() if not str(k).startswith("_")}, indent=2))
+        else:
+            print(f"id: {meta.get('id')}")
+            print(f"title: {meta.get('title')}")
+            print(f"source: {meta.get('source_session')}")
+            print(f"display: {meta.get('display_name')}")
+            print("--- recap ---")
+            print(meta.get("recap") or "")
+        return 0
+    if sub == "recap":
+        sess = detect_bound_session(args.session)
+        if not sess:
+            print("error: no session (pass -s/--session)", file=sys.stderr)
+            return 2
+        print(build_recap_markdown(sess, title=args.title), end="")
+        return 0
+    if sub == "delete":
+        ok = delete_archive(args.id)
+        if not ok:
+            print(f"error: archive not found: {args.id}", file=sys.stderr)
+            return 1
+        print(f"deleted {args.id}")
+        return 0
+    if sub == "rename":
+        meta = rename_archive(args.id, args.title)
+        if not meta:
+            print(f"error: archive not found: {args.id}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({k: v for k, v in meta.items() if not str(k).startswith("_")}, indent=2))
+        else:
+            print(f"renamed {meta.get('id')} → {meta.get('title')}")
+        return 0
+    print(f"error: unknown continuity subcommand {sub!r}", file=sys.stderr)
+    return 2
+
+
 def _cmd_migrate(args: argparse.Namespace) -> int:
     from pong.paths import migrate_legacy_to_primary, state_dir
 
@@ -725,6 +812,36 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("migrate", help="copy ~/.hermes-pong → ~/.pong")
     m.add_argument("--force", action="store_true")
     m.set_defaults(func=_cmd_migrate)
+
+    # Session vault (smart-compress continuity packages)
+    cont = sub.add_parser(
+        "continuity",
+        help="session vault: smart-compress / list / show / delete archives",
+    )
+    csub = cont.add_subparsers(dest="continuity_cmd", required=True)
+    cs = csub.add_parser("save", help="compress live session into archive (does not kill)")
+    cs.add_argument("--title", default=None, help="archive title")
+    cs.add_argument("--json", action="store_true")
+    cs.set_defaults(func=_cmd_continuity)
+    cl = csub.add_parser("list", help="list archived sessions")
+    cl.add_argument("--json", action="store_true")
+    cl.set_defaults(func=_cmd_continuity)
+    csh = csub.add_parser("show", help="print archive meta + recap")
+    csh.add_argument("id", help="archive id sess_…")
+    csh.add_argument("--json", action="store_true")
+    csh.add_argument("--recap-only", action="store_true")
+    csh.set_defaults(func=_cmd_continuity)
+    cr = csub.add_parser("recap", help="print smart-compress markdown for a live session")
+    cr.add_argument("--title", default=None)
+    cr.set_defaults(func=_cmd_continuity)
+    cd = csub.add_parser("delete", help="delete an archive")
+    cd.add_argument("id")
+    cd.set_defaults(func=_cmd_continuity)
+    cn = csub.add_parser("rename", help="rename archive title")
+    cn.add_argument("id")
+    cn.add_argument("--title", required=True)
+    cn.add_argument("--json", action="store_true")
+    cn.set_defaults(func=_cmd_continuity)
 
     # Inter-team channel (file-based, never auto-pasted)
     br = sub.add_parser("brief", help="inter-team briefs (file channel only)")

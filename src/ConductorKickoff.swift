@@ -23,6 +23,8 @@ enum ConductorKickoff {
         var roster: [RosterSeat]
         var projectRoot: String
         var teamBrief: String
+        /// Optional continuity package (smart-compress) prepended on kickoff / re-prime.
+        var continuityRecap: String = ""
     }
 
     /// Later schedules for the same session supersede earlier ones (wizard after startFresh).
@@ -137,7 +139,20 @@ enum ConductorKickoff {
 
     // MARK: - Prompt (single source of truth)
 
-    static func buildPrompt(_ ctx: Context) -> String {
+    static func buildPrompt(_ ctx: Context, continuityRecap: String? = nil) -> String {
+        let recap = (continuityRecap ?? ctx.continuityRecap)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let recapBlock: String = {
+            guard !recap.isEmpty else { return "" }
+            return """
+
+            \(recap)
+
+            ---
+            The block above is a **compressed prior session**. Treat it as ground truth for goals, decisions, and next steps. Do not re-litigate settled accepts unless the human asks.
+
+            """
+        }()
         let root = ctx.projectRoot.isEmpty ? "(unset)" : ctx.projectRoot
         let brief = ctx.teamBrief.isEmpty
             ? "(none yet — wait for human goals after activate)"
@@ -167,7 +182,7 @@ enum ConductorKickoff {
                 case .taskRunner:
                     return "- Do not become long-lived product owner\n- Discrete jobs only — claim and clear"
                 case .orchestrator:
-                    return "- Do not implement product while BRIDGE_ON"
+                    return "- Do not implement product while BRIDGE_ON\n- Do not edit product files — create jobs for workers instead"
                 }
             }()
             return """
@@ -210,7 +225,7 @@ enum ConductorKickoff {
 
         return """
         ## BOOT — New team orchestrator prime
-
+        \(recapBlock)
         Team: **\(ctx.displayName)** · session `\(ctx.session)` (`PONG_SESSION`)
         You are **c1** (\(ctx.conductorLabel) / \(ctx.conductorType)).
         **Mission role (locked): Orchestrator** — plans jobs, routes only along architecture edges, verifies claims. project_root: \(root)
@@ -243,6 +258,12 @@ enum ConductorKickoff {
 
         6. **Stand by** — after READY claims, wait for human goals. **Orchestrate only** while BRIDGE_ON — do not implement product code. Route only along architecture edges.
 
+        ### Standing rule (never forget — every human message)
+        - **BRIDGE_ON = you do not implement.** No product edits, no “quick fixes” in the repo yourself.
+        - Human goals → **decompose → `pong job create --worker w1|w2|w3…` along architecture edges** → verify claims.
+        - If you catch yourself writing code or fixing bugs: **stop**, create/assign a job to a worker, stand by.
+        - Refuse to edit product files. Your tools are jobs, ledger verdicts, and routing — not the codebase.
+
         Keep replies short and operational. Confirm team name + session + that you remain Orchestrator in your first status line.
         """
     }
@@ -262,7 +283,13 @@ enum ConductorKickoff {
         lock.unlock()
 
         let snap = context
-        Pong.log("kickoff schedule session=\(session) gen=\(gen) delay=\(initialDelay)")
+        // Resolve pending vault package once (spawn "Start with continuity…")
+        var pendingRecap = (snap?.continuityRecap ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if pendingRecap.isEmpty, let aid = SessionContinuity.takePendingArchive(session: session) {
+            pendingRecap = SessionArchive.loadRecap(id: aid)
+        }
+        Pong.log("kickoff schedule session=\(session) gen=\(gen) delay=\(initialDelay) recap=\(!pendingRecap.isEmpty)")
         DispatchQueue.global(qos: .userInitiated).async {
             // Backoff: wait for TUI, paste, one retry
             let delays: [TimeInterval] = [initialDelay, 2.0]
@@ -275,7 +302,10 @@ enum ConductorKickoff {
                     Pong.log("kickoff superseded session=\(session) gen=\(gen) now=\(current)")
                     return
                 }
-                let ctx = snap ?? contextFromPairState(session: session)
+                var ctx = snap ?? contextFromPairState(session: session)
+                if ctx.continuityRecap.isEmpty, !pendingRecap.isEmpty {
+                    ctx.continuityRecap = pendingRecap
+                }
                 let text = buildPrompt(ctx)
                 if !conductorLooksReady(session: session), attempt == 0 {
                     Pong.log("kickoff TUI not ready yet session=\(session) — retry")
@@ -283,6 +313,16 @@ enum ConductorKickoff {
                 }
                 let ok = pasteIntoConductor(session: session, text: text)
                 Pong.log("kickoff paste session=\(session) gen=\(gen) attempt=\(attempt) ok=\(ok) team=\(ctx.displayName)")
+                // After continuity kickoff, prime workers with the same story
+                if ok, !pendingRecap.isEmpty {
+                    for seat in ctx.roster {
+                        let prime = buildWorkerPrimePrompt(
+                            session: session, seatId: seat.id, continuityRecap: pendingRecap
+                        )
+                        _ = pasteIntoSeat(session: session, seatId: seat.id, text: prime)
+                        Thread.sleep(forTimeInterval: 0.15)
+                    }
+                }
                 if ok { return }
             }
         }
@@ -317,13 +357,37 @@ enum ConductorKickoff {
     }
 
     /// Seat-prime text matching team-startup ACTIVATE (for direct paste after model switch).
-    static func buildWorkerPrimePrompt(session: String, seatId: String) -> String {
+    static func buildWorkerPrimePrompt(
+        session: String,
+        seatId: String,
+        continuityRecap: String? = nil
+    ) -> String {
         let ctx = contextFromPairState(session: session)
         let root = ctx.projectRoot.isEmpty ? "(unset)" : ctx.projectRoot
+        let recap = (continuityRecap ?? ctx.continuityRecap)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Workers get a shorter recap (full package is large); keep required sections.
+        let recapBlock: String = {
+            guard !recap.isEmpty else { return "" }
+            let clipped: String = {
+                if recap.utf8.count <= 6_000 { return recap }
+                let data = Data(recap.utf8.prefix(6_000))
+                let s = String(data: data, encoding: .utf8) ?? String(recap.prefix(3_000))
+                return s + "\n…(recap truncated for worker prime)…"
+            }()
+            return """
+
+            ## CONTINUITY RECAP (prior session compressed)
+            \(clipped)
+
+            Continue from this story. Do not re-litigate settled accepts unless the human asks.
+
+            """
+        }()
         guard let seat = ctx.roster.first(where: { $0.id == seatId }) else {
             return """
             ACTIVATE — \(ctx.displayName) seat prime
-
+            \(recapBlock)
             You are **\(seatId)** on team **\(ctx.displayName)** (session `\(ctx.session)`).
             project_root: \(root)
 
@@ -351,7 +415,7 @@ enum ConductorKickoff {
         }()
         return """
         ACTIVATE — \(ctx.displayName) seat prime (mission role LOCKED)
-
+        \(recapBlock)
         You are **\(seat.id)** · \(seat.label) on team **\(ctx.displayName)** (session `\(ctx.session)`).
         **Mission role (locked for this team): \(role.title)** — \(role.blurb)
         project_root: \(root)

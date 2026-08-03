@@ -104,7 +104,7 @@ def ensure_layout(session: str | None = None) -> None:
         root.chmod(0o700)
     except Exception:
         pass
-    for sub in ("jobs", "sessions", "ledger", "binds", "briefs", "templates"):
+    for sub in ("jobs", "sessions", "ledger", "binds", "briefs", "templates", "session-archive"):
         d = root / sub
         d.mkdir(parents=True, exist_ok=True)
         try:

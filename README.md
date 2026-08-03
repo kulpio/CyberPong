@@ -10,7 +10,7 @@ The menu-bar app shows as **CyberPong**. The binary and CLI still say `Pong` for
 |--|--|
 | **UI name** | CyberPong |
 | **Repo** | [kulpio/hermes-pong](https://github.com/kulpio/hermes-pong) |
-| **Version** | **1.4.0** |
+| **Version** | **1.4.3** |
 | **Conductors** | Grok Build, Claude Code, Hermes Agent, custom CLI |
 | **Workers** | Claude, Grok, Codex, Kimi, OpenCode, Hermes, custom |
 | **State** | `~/.pong/` (jobs, events, ledger, teams) |
@@ -49,7 +49,7 @@ In plain language:
 
 ### Release zip
 
-1. Download [CyberPong-macOS.zip](https://github.com/kulpio/hermes-pong/releases/latest/download/CyberPong-macOS.zip) from [Releases](https://github.com/kulpio/hermes-pong/releases/latest).
+1. Download [CyberPong-macOS.zip](https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip) from [Releases](https://github.com/kulpio/CyberPong/releases/latest).
 2. Open **CyberPong**. Allow Accessibility / Automation for Terminal when macOS asks.
 
 ### From source

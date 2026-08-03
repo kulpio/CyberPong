@@ -1,7 +1,7 @@
 import AppKit
 import QuartzCore
 
-/// Shared loading UX for slow sheet saves (Opts / Policy) and other blocking work.
+/// Shared loading UX for slow sheet saves (Options / Policy) and other blocking work.
 /// CyberPong logo + two dots that glow intermittently (alternating), not a system spinner.
 enum PongLoadingOverlay {
     private static var host: NSView?

@@ -439,6 +439,10 @@ final class AgentNodeView: NSView {
     var onMoved: ((AgentNodeModel, CGPoint) -> Void)?
     var onFront: ((AgentNodeModel) -> Void)?
     var onKill: ((AgentNodeModel) -> Void)?
+    /// Conductor only — save/compress continuity (does not kill).
+    var onSaveSession: ((AgentNodeModel) -> Void)?
+    /// Conductor only — new session + recap (fresh TUIs, same pair).
+    var onNewSessionRecap: ((AgentNodeModel) -> Void)?
     var onOptions: ((AgentNodeModel) -> Void)?
     var onPerms: ((AgentNodeModel) -> Void)?
     var onChangeModel: ((AgentNodeModel) -> Void)?
@@ -665,6 +669,19 @@ final class AgentNodeView: NSView {
                            frame: NSRect(x: 0, y: 4, width: 48, height: 22))
         actionBar.addSubview(kill)
         buttons.append(kill)
+        if model.role == "conductor" {
+            // Kill-adjacent continuity controls (right side, left of Kill)
+            let recap = makeBtn("Recap", #selector(newSessionRecapTap), style: .secondary,
+                                frame: NSRect(x: 0, y: 4, width: 48, height: 22))
+            recap.toolTip = "New session + recap — fresh agent context, keep team"
+            actionBar.addSubview(recap)
+            buttons.append(recap)
+            let saveS = makeBtn("Save…", #selector(saveSessionTap), style: .secondary,
+                                frame: NSRect(x: 0, y: 4, width: 48, height: 22))
+            saveS.toolTip = "Save session (compress) — does not kill"
+            actionBar.addSubview(saveS)
+            buttons.append(saveS)
+        }
 
         var x: CGFloat = 0
         func addLeft(_ t: String, _ sel: Selector, style: BtnStyle, w: CGFloat) {
@@ -739,11 +756,15 @@ final class AgentNodeView: NSView {
 
         let barW = w - 20
         actionBar.frame = NSRect(x: 10, y: 8, width: barW, height: 30)
-        // Kill stays right-aligned in the bar
+        // Kill right-aligned; Save… / Recap immediately left of Kill (conductor)
         for b in actionBar.subviews.compactMap({ $0 as? NSButton }) {
             let label = b.attributedTitle.string.isEmpty ? b.title : b.attributedTitle.string
             if label == "Kill" {
                 b.frame = NSRect(x: barW - 48, y: 4, width: 48, height: 22)
+            } else if label == "Recap" {
+                b.frame = NSRect(x: barW - 48 - 6 - 48, y: 4, width: 48, height: 22)
+            } else if label == "Save…" {
+                b.frame = NSRect(x: barW - 48 - 6 - 48 - 6 - 48, y: 4, width: 48, height: 22)
             }
         }
     }
@@ -793,6 +814,10 @@ final class AgentNodeView: NSView {
         b.action = sel
         if title == "Kill" {
             b.toolTip = model.role == "conductor" ? "Kill entire team" : "Remove this seat"
+        } else if title == "Recap" {
+            b.toolTip = "New session + recap — fresh agent context, keep team"
+        } else if title == "Save…" {
+            b.toolTip = "Save session (compress) — does not kill"
         } else if title == "Policy" {
             b.toolTip = "Session access policy for this seat"
         } else if title == "CLI" {
@@ -1096,6 +1121,9 @@ final class AgentNodeView: NSView {
             menu.addItem(withTitle: "Add worker…", action: #selector(addFromMenu), keyEquivalent: "")
             menu.addItem(withTitle: "Team options", action: #selector(optsTap), keyEquivalent: "")
             menu.addItem(NSMenuItem.separator())
+            menu.addItem(withTitle: "Save session (compress)…", action: #selector(saveSessionTap), keyEquivalent: "")
+            menu.addItem(withTitle: "New session + recap…", action: #selector(newSessionRecapTap), keyEquivalent: "")
+            menu.addItem(NSMenuItem.separator())
             menu.addItem(withTitle: "Kill team", action: #selector(killTap), keyEquivalent: "")
         } else {
             menu.addItem(withTitle: "Add subagent…", action: #selector(addFromMenu), keyEquivalent: "")
@@ -1109,6 +1137,8 @@ final class AgentNodeView: NSView {
     }
 
     @objc private func killTap() { onKill?(model) }
+    @objc private func saveSessionTap() { onSaveSession?(model) }
+    @objc private func newSessionRecapTap() { onNewSessionRecap?(model) }
     @objc private func renameTap() { onRename?(model) }
     @objc private func addFromMenu() {
         // Worker context → treat as subagent request; orchestrator → worker
@@ -1163,6 +1193,8 @@ final class AgentCanvasView: NSView {
 
     var onFront: ((AgentNodeModel) -> Void)?
     var onKill: ((AgentNodeModel) -> Void)?
+    var onSaveSession: ((AgentNodeModel) -> Void)?
+    var onNewSessionRecap: ((AgentNodeModel) -> Void)?
     var onOptions: ((AgentNodeModel) -> Void)?
     var onPerms: ((AgentNodeModel) -> Void)?
     var onChangeModel: ((AgentNodeModel) -> Void)?
@@ -1192,9 +1224,11 @@ final class AgentCanvasView: NSView {
 
     private func startFlowTimer() {
         flowTimer?.invalidate()
-        // 15fps is plenty for packets; only dirty the edge band, never the whole map
-        flowTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
+        // 12fps is plenty for packets; only dirty the edge band, never the whole map
+        let t = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
             guard let self else { return }
+            // Power: skip when not in a window, hidden, or app inactive
+            guard self.window != nil, !self.isHidden, NSApp.isActive else { return }
             let now = Date().timeIntervalSince1970
             let anyLive = self.edgeFlowExpire.values.contains(where: { $0 > now })
             guard anyLive || !self.edgeFlowExpire.isEmpty else { return }
@@ -1207,7 +1241,19 @@ final class AgentCanvasView: NSView {
                 self.needsDisplay = true
             }
         }
-        if let flowTimer { RunLoop.main.add(flowTimer, forMode: .common) }
+        t.tolerance = 0.04
+        RunLoop.main.add(t, forMode: .common)
+        flowTimer = t
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            flowTimer?.invalidate()
+            flowTimer = nil
+        } else if flowTimer == nil {
+            startFlowTimer()
+        }
     }
 
     func select(globalId: String?) {
@@ -1658,6 +1704,8 @@ final class AgentCanvasView: NSView {
         }
         v.onFront = { [weak self] m in self?.onFront?(m) }
         v.onKill = { [weak self] m in self?.onKill?(m) }
+        v.onSaveSession = { [weak self] m in self?.onSaveSession?(m) }
+        v.onNewSessionRecap = { [weak self] m in self?.onNewSessionRecap?(m) }
         v.onOptions = { [weak self] m in self?.onOptions?(m) }
         v.onPerms = { [weak self] m in self?.onPerms?(m) }
         v.onChangeModel = { [weak self] m in self?.onChangeModel?(m) }

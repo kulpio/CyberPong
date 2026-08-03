@@ -194,6 +194,7 @@ enum PongTheme {
     static let hairline: CGFloat = 1
 
     /// Style NSPopUpButton to match CyberPong chrome (not default aqua textured).
+    /// Light mode: dark text on light fill (never white-on-white).
     static func stylePopUp(_ pop: NSPopUpButton) {
         pop.bezelStyle = .rounded
         pop.isBordered = true
@@ -204,9 +205,32 @@ enum PongTheme {
         pop.layer?.borderColor = border.cgColor
         pop.font = labelFont(11)
         pop.contentTintColor = textPrimary
+        // Follow app appearance so system doesn't force white labels on light chrome
+        pop.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
         if let cell = pop.cell as? NSPopUpButtonCell {
             cell.arrowPosition = .arrowAtBottom
-            cell.backgroundStyle = .emphasized
+            // .emphasized often forces light labels — use normal in light mode
+            cell.backgroundStyle = appearance == .dark ? .emphasized : .normal
+        }
+        stylePopUpItemTitles(pop)
+    }
+
+    /// Attributed titles for every menu item + selected title (readable in light).
+    static func stylePopUpItemTitles(_ pop: NSPopUpButton) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .foregroundColor: textPrimary,
+            .font: labelFont(11),
+        ]
+        for item in pop.itemArray {
+            let t = item.title
+            guard !t.isEmpty else { continue }
+            item.attributedTitle = NSAttributedString(string: t, attributes: attrs)
+        }
+        if let sel = pop.selectedItem {
+            let t = sel.title
+            if !t.isEmpty {
+                pop.attributedTitle = NSAttributedString(string: t, attributes: attrs)
+            }
         }
     }
 

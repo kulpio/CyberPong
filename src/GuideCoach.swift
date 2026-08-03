@@ -146,7 +146,7 @@ enum GuideCoach {
         if orchBusy && withParent.isEmpty && eph.isEmpty && permanent.count <= 2 {
             return Finding(
                 key: "no-subs-\(session)",
-                message: "Orch is active · no sub-agents. Add a helper if the task needs parallel work.",
+                message: "Orchestrator is active · no sub-agents. Add a helper if the task needs parallel work.",
                 actionTitle: "Add Hermes sub",
                 action: {
                     let r = AppAIMutator.apply([

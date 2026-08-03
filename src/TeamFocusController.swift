@@ -1218,11 +1218,23 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         return loadCards(session: session, limit: 80)
     }
 
+    /// Hard BRIDGE_ON reminder prepended to every YOU paste into the conductor TUI.
+    /// Prevents long-session drift where orch starts implementing instead of job-routing.
+    static let orchPolicyBlock = """
+        [ORCH POLICY · BRIDGE_ON]
+        You are Orchestrator only. Plan jobs and `pong job create` along architecture edges.
+        Do NOT implement product code yourself. Do NOT edit product files.
+        Route work to w1/w2/w3 (or roster seats by mission role). Verify claims with evidence.
+        If the human asks for a feature: decompose → assign workers → wait for claims.
+        """
+
     /// Paste into conductor tmux pane + append human log (unified path).
     @discardableResult
     static func deliver(session: String, text: String) -> Bool {
         let header = "\n—— YOU · \(ISO8601DateFormatter().string(from: Date())) ——\n"
-        let body = header + text + "\n"
+        // Policy block goes to orch TUI; human stream keeps clean user text
+        let pasteBody = header + orchPolicyBlock + "\n\n" + text + "\n"
+        let logBody = header + text + "\n"
         // Structured card for interactive UI
         var files: [String] = []
         if text.contains("Attached files:") {
@@ -1242,29 +1254,29 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             seatId: "c1"
         )
 
-        // Free-text log (agents / outbox)
+        // Free-text log (agents / outbox) — log clean human text; paste includes policy
         let path = logPath(session: session)
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         if let h = FileHandle(forWritingAtPath: path) {
             h.seekToEndOfFile()
-            h.write(Data(body.utf8))
+            h.write(Data(logBody.utf8))
             try? h.close()
         } else {
-            try? body.write(toFile: path, atomically: true, encoding: .utf8)
+            try? logBody.write(toFile: path, atomically: true, encoding: .utf8)
         }
         // Also write outbox agents can read
         let outbox = Pong.stateDir + "/human/\(session)/outbox.md"
         try? FileManager.default.createDirectory(
             atPath: (outbox as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try? body.write(toFile: outbox, atomically: true, encoding: .utf8)
+        try? pasteBody.write(toFile: outbox, atomically: true, encoding: .utf8)
 
         // Deliver into orchestrator pane — prefer registered c1 pane_id (survives view sessions)
         TmuxScroll.apply(session: session)
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("pong-human-\(UUID().uuidString).txt")
         do {
-            try body.write(to: tmp, atomically: true, encoding: .utf8)
+            try pasteBody.write(to: tmp, atomically: true, encoding: .utf8)
         } catch {
             Pong.log("human console write tmp fail: \(error)")
             return false
@@ -1302,24 +1314,24 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
     private static var captureBaseline: [String: String] = [:]
     private static var captureTimers: [String: DispatchSourceTimer] = [:]
 
-    /// After human send: capture conductor pane for ~75s and emit ORCH cards on new text.
+    /// After human send: watch pane for **questions only** (not intermediate TUI spam).
+    /// Final recaps come from job done/claim events in `syncOrchFeedback`.
     static func startOrchCaptureWatch(session: String) {
         guard !session.isEmpty else { return }
         let now = Date().timeIntervalSince1970
-        captureWatchUntil[session] = now + 75
-        // Baseline = current pane so we only surface *new* assistant output
+        captureWatchUntil[session] = now + 90
         if captureBaseline[session] == nil {
             captureBaseline[session] = captureConductorPaneRaw(session: session) ?? ""
         }
         if captureTimers[session] != nil { return }
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 2.5, repeating: 3.0, leeway: .milliseconds(400))
+        timer.schedule(deadline: .now() + 3.0, repeating: 4.0, leeway: .milliseconds(500))
         timer.setEventHandler {
             tickOrchCapture(session: session)
         }
         captureTimers[session] = timer
         timer.resume()
-        Pong.log("human orch capture watch start session=\(session)")
+        Pong.log("human orch capture watch start session=\(session) (asks only)")
     }
 
     private static func tickOrchCapture(session: String) {
@@ -1336,20 +1348,44 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         guard let raw = captureConductorPaneRaw(session: session) else { return }
         let baseline = captureBaseline[session] ?? ""
         let delta = paneDelta(old: baseline, new: raw)
-        guard delta.count >= 20 else { return }
-        // Advance baseline so we don't re-emit
+        guard delta.count >= 24 else { return }
         captureBaseline[session] = raw
-        let digest = summarizePaneText(delta, maxChars: 600)
-        guard digest.count >= 16 else { return }
-        // Persist as last-reply so strip + sync also see it
+        let digest = summarizePaneText(delta, maxChars: 400)
+        guard digest.count >= 20 else { return }
+        // Only surface text that looks like a question for the human
+        guard paneTextLooksLikeQuestion(digest) else {
+            // Still refresh last-reply quietly for status strip — no stream card
+            writeLastReply(session: session, text: digest)
+            return
+        }
         writeLastReply(session: session, text: digest)
-        let sig = "pane-\(stableFingerprint(digest))"
+        let sig = "pane-ask-\(stableFingerprint(digest))"
         var seen = loadFeedbackSigs(session: session)
         guard !seen.contains(sig) else { return }
         seen.insert(sig)
         saveFeedbackSigs(session: session, seen: seen)
-        _ = appendCard(session: session, kind: .fromOrch, text: "Orch · \(digest)", seatId: "c1")
-        Pong.log("human orch capture card session=\(session) chars=\(digest.count) sig=\(sig)")
+        _ = appendCard(
+            session: session,
+            kind: .fromOrch,
+            text: "Orchestrator needs you · \(digest)",
+            seatId: "c1"
+        )
+        Pong.log("human orch capture ASK card session=\(session) chars=\(digest.count)")
+    }
+
+    /// Heuristic: only free-text pane deltas that look like questions for the human.
+    private static func paneTextLooksLikeQuestion(_ text: String) -> Bool {
+        let t = text.lowercased()
+        if t.contains("?") { return true }
+        if t.contains("need you") || t.contains("needs you") { return true }
+        if t.contains("human") && (t.contains("input") || t.contains("confirm") || t.contains("approve")) {
+            return true
+        }
+        if t.contains("should i") || t.contains("can you") || t.contains("please confirm") {
+            return true
+        }
+        if t.contains("waiting on you") || t.contains("your decision") { return true }
+        return false
     }
 
     private static func captureConductorPaneRaw(session: String) -> String? {
@@ -1491,9 +1527,26 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         }
         // last-reply digest
         if let reply = readLastReplyDigest(session: session), !reply.isEmpty {
-            lines.append("Orch last said: \(reply)")
+            lines.append("Orchestrator last said: \(reply)")
         } else if let claim = latestClaimOneLiner(session: session, snap: snap) {
             lines.append(claim)
+        }
+        // Cheap drift warning: orch busy but no worker jobs open
+        if building > 0 || stage.contains("planning") {
+            let workerOpen = allOpen.contains { j in
+                let w = ((j["worker"] as? String) ?? "").lowercased()
+                return w.hasPrefix("w") || (!w.hasPrefix("c") && w != "c1" && !w.isEmpty)
+            }
+            if !workerOpen, allOpen.isEmpty == false || building > 0 {
+                // only if open jobs are all orch-facing / none for workers
+                let onlyOrchOrNone = allOpen.allSatisfy { j in
+                    let w = ((j["worker"] as? String) ?? "").lowercased()
+                    return w.isEmpty || w == "c1" || w.hasPrefix("c")
+                }
+                if onlyOrchOrNone || allOpen.isEmpty {
+                    lines.insert("Orchestrator must job-route (BRIDGE_ON) — use workers", at: min(1, lines.count))
+                }
+            }
         }
         // Cap strip
         if lines.count > 3 { lines = Array(lines.prefix(3)) }
@@ -1528,48 +1581,43 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         let open = (jobsBlob?["open"] as? [[String: Any]]) ?? []
         let recent = (jobsBlob?["recent"] as? [[String: Any]]) ?? []
 
-        let now = Date().timeIntervalSince1970
+        // Stream stays quiet mid-flight — only final recaps + needs-you / asks.
+        // Status strip (above) still shows live stage + open job counts.
+
+        // Open jobs: only "needs human" → one clear card (not pipeline noise)
         for j in open {
             let jid = (j["id"] as? String) ?? ""
             let st = ((j["status"] as? String) ?? "").lowercased()
             let w = (j["worker"] as? String) ?? "?"
-            let prev = (j["task_preview"] as? String) ?? ""
+            let prev = (j["task_preview"] as? String) ?? (j["task"] as? String) ?? ""
             guard !jid.isEmpty else { continue }
-            let updated = (j["updated_at"] as? Double) ?? (j["created_at"] as? Double) ?? 0
-            let age = updated > 0 ? now - updated : 0
             let needsHuman = st.contains("human") || st.contains("ask") || (j["human_takeover"] as? Bool) == true
-            // Skip ancient open jobs for pipeline cards (strip still shows counts)
-            if !needsHuman, age > 30 * 60 { continue }
             if needsHuman {
+                let q = prev.isEmpty ? "needs your input" : String(prev.prefix(120))
                 emit(
                     sig: "job-\(jid)-human",
-                    kind: .status,
-                    text: "Job needs you · \(w) · \(String(prev.prefix(80)))",
-                    jobId: jid,
-                    seatId: w
-                )
-            } else if st == "running" || st == "notified" {
-                let tail = prev.isEmpty ? "" : " — \(String(prev.prefix(60)))"
-                emit(
-                    sig: "job-\(jid)-\(st)",
-                    kind: .status,
-                    text: "Orch pipeline · \(w) is \(st)\(tail)",
+                    kind: .fromOrch,
+                    text: "Question · \(w): \(q)",
                     jobId: jid,
                     seatId: w
                 )
             }
+            // intentionally no notified/running pipeline cards
         }
 
-        for j in recent.prefix(8) {
+        // Terminal jobs → one final recap each
+        for j in recent.prefix(12) {
             let jid = (j["id"] as? String) ?? ""
             let st = ((j["status"] as? String) ?? "").lowercased()
             let w = (j["worker"] as? String) ?? "?"
+            let prev = (j["task_preview"] as? String) ?? (j["task"] as? String) ?? ""
             guard !jid.isEmpty else { continue }
+            let oneLine = prev.isEmpty ? jid : String(prev.prefix(100))
             if st == "done" || st == "accepted" {
                 emit(
                     sig: "job-\(jid)-done",
                     kind: .fromOrch,
-                    text: "Job finished · \(w) · \(jid)",
+                    text: "Done · \(w) finished: \(oneLine)",
                     jobId: jid,
                     seatId: w
                 )
@@ -1577,14 +1625,16 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
                 emit(
                     sig: "job-\(jid)-\(st)",
                     kind: .fromOrch,
-                    text: "Job \(st) · \(w) · \(jid)",
+                    text: "\(st.capitalized) · \(w): \(oneLine)",
                     jobId: jid,
                     seatId: w
                 )
             }
         }
 
-        // Events: snapshot tail, then raw events.jsonl if empty
+        // Ledger verdicts: do **not** echo accept/verified into the human stream
+        // (user noise). Done/Failed already come from recent job status above.
+        // Hard rejects still surface once if not already covered as job failed.
         var events = (snap["events_tail"] as? [[String: Any]]) ?? []
         if events.isEmpty {
             events = loadEventsTail(limit: 50, session: session)
@@ -1595,51 +1645,37 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             let typ = ((e["type"] as? String) ?? "").lowercased()
             let jid = (e["job_id"] as? String) ?? ""
             let ts = (e["ts"] as? Double) ?? 0
-            let sigBase = "ev-\(typ)-\(jid)-\(Int(ts))"
-            if typ.contains("claim") {
-                let sum = (e["summary"] as? String) ?? (e["task_preview"] as? String) ?? "claim filed"
+            guard typ.contains("verdict") else { continue }
+            let v = ((e["verdict"] as? String) ?? (e["status"] as? String) ?? "verdict").lowercased()
+            // Skip accept / verify / done — strip may still show last verdict
+            if v.contains("accept") || v == "done" || v.contains("verify") {
+                continue
+            }
+            if v.contains("reject") {
+                let sum = (e["summary"] as? String) ?? "needs rework"
                 emit(
-                    sig: sigBase,
+                    sig: "ev-verdict-\(jid)-\(Int(ts))",
                     kind: .fromOrch,
-                    text: "Claim · \(String(sum.prefix(160)))",
+                    text: "Failed · \(String(sum.prefix(100)))",
                     jobId: jid.isEmpty ? nil : jid
                 )
-            } else if typ.contains("verdict") {
-                let v = (e["verdict"] as? String) ?? (e["status"] as? String) ?? "verdict"
-                emit(
-                    sig: sigBase,
-                    kind: .fromOrch,
-                    text: "Verdict · \(v)" + (jid.isEmpty ? "" : " · \(jid)"),
-                    jobId: jid.isEmpty ? nil : jid
-                )
-            } else if typ == "job.status" {
-                let st = (e["status"] as? String) ?? ""
-                let from = (e["from"] as? String) ?? ""
-                if !st.isEmpty {
-                    emit(
-                        sig: sigBase,
-                        kind: .status,
-                        text: "Job status · \(from.isEmpty ? "" : "\(from) → ")\(st)" + (jid.isEmpty ? "" : " · \(jid)"),
-                        jobId: jid.isEmpty ? nil : jid
-                    )
-                }
             }
         }
 
-        // last-reply.txt — short orch digest when content changes (not full TUI)
-        if let digest = readLastReplyDigest(session: session), digest.count >= 12 {
-            let sig = "reply-\(stableFingerprint(digest))"
+        // last-reply: only if it looks like a question (not intermediate chatter)
+        if let digest = readLastReplyDigest(session: session), digest.count >= 12,
+           paneTextLooksLikeQuestion(digest) {
+            let sig = "reply-ask-\(stableFingerprint(digest))"
             emit(
                 sig: sig,
                 kind: .fromOrch,
-                text: "Orch report · \(digest)",
+                text: "Orchestrator needs you · \(digest)",
                 seatId: "c1"
             )
         }
 
-        // While capture watch active, also try one pane sample on poll (UI thread path)
+        // Capture watch: ask-only cards (see tickOrchCapture)
         if let until = captureWatchUntil[session], Date().timeIntervalSince1970 < until {
-            // tick on utility queue without blocking poll
             DispatchQueue.global(qos: .utility).async {
                 tickOrchCapture(session: session)
             }

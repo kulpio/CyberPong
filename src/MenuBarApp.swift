@@ -2163,8 +2163,9 @@ enum SavedTeams {
     }
 
     /// Spawn a saved team as a new live pair (fresh Terminals).
+    /// Optional `continuityArchiveId` injects a Saved session story into kickoff primes.
     @discardableResult
-    static func spawn(_ team: Team) -> String {
+    static func spawn(_ team: Team, continuityArchiveId: String? = nil) -> String {
         var types: [WorkerType] = []
         for w in team.workers {
             let typeId = (w["type"] as? String) ?? "claude"
@@ -2226,11 +2227,18 @@ enum SavedTeams {
         // live entry — the first card (written at pair start) predates them.
         Pong.sh("python3 $HOME/bin/hermes_pong.py write-bind --session \(pair) >/dev/null 2>&1 || true")
         // Kickoff with final display name / brief / roster (supersedes startFresh schedule).
-        ConductorKickoff.scheduleInject(
-            session: pair,
-            context: ConductorKickoff.contextFromPairState(session: pair)
-        )
-        Pong.log("spawned team \(team.name) → \(pair) cron=\(team.cronJobs.count)")
+        var ctx = ConductorKickoff.contextFromPairState(session: pair)
+        if let aid = continuityArchiveId?.trimmingCharacters(in: .whitespacesAndNewlines), !aid.isEmpty {
+            let recap = SessionArchive.loadRecap(id: aid)
+            ctx.continuityRecap = recap
+            SessionContinuity.setPendingArchive(session: pair, archiveId: aid)
+            PairState.mutate(pair) { entry in
+                entry["continuity_archive_id"] = aid
+                entry["updated"] = Date().timeIntervalSince1970
+            }
+        }
+        ConductorKickoff.scheduleInject(session: pair, context: ctx)
+        Pong.log("spawned team \(team.name) → \(pair) cron=\(team.cronJobs.count) continuity=\(continuityArchiveId ?? "-")")
         return pair
     }
 }
@@ -3553,11 +3561,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.isVisible = true
         rebuildMenu()
 
-        // 0.5s menu icon pulse is enough — 0.1s was main-thread noise
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // Menu icon: 1s base; idle skips phase animation (power). Was 0.5s always.
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
+        t.tolerance = 0.25
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
 
         // Always open the control panel on 3D first — show the product promise.
         // App AI onboarding (provider + first team) layers on top when needed.
@@ -3838,24 +3848,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hasActivePair = active
             rebuildMenu()
         }
-        // Refresh signal ~every 1s (not every 0.1s) for snapshot I/O
-        if Int(glowPhase * 10) % 10 == 0 {
-            menuSignal = PongTheme.signalFromState()
-        }
-        glowPhase += 0.1
-        if glowPhase > .pi * 2 { glowPhase -= .pi * 2 }
-        let phase = CGFloat((sin(Double(glowPhase)) + 1) / 2)
+        let prevSignal = menuSignal
+        menuSignal = PongTheme.signalFromState()
         guard let button = statusItem?.button else { return }
-        button.image = PongTheme.menuIcon(signal: menuSignal, phase: phase)
-        button.image?.isTemplate = false
-        button.title = ""
+
+        // Idle: static icon — no continuous alpha pulse / image rewrite every tick
         switch menuSignal {
         case .idle:
-            button.toolTip = "\(PongTheme.productName) — idle"
-        case .orchestratorWorking:
-            button.toolTip = "\(PongTheme.productName) — orchestrator working"
-        case .humanNeeded:
-            button.toolTip = "\(PongTheme.productName) — human input needed"
+            if prevSignal != .idle {
+                button.image = PongTheme.menuIcon(signal: .idle, phase: 0.35)
+                button.image?.isTemplate = false
+                button.title = ""
+                button.toolTip = "\(PongTheme.productName) — idle"
+            }
+            return
+        case .orchestratorWorking, .humanNeeded:
+            glowPhase += 0.2
+            if glowPhase > .pi * 2 { glowPhase -= .pi * 2 }
+            let phase = CGFloat((sin(Double(glowPhase)) + 1) / 2)
+            button.image = PongTheme.menuIcon(signal: menuSignal, phase: phase)
+            button.image?.isTemplate = false
+            button.title = ""
+            button.toolTip = menuSignal == .humanNeeded
+                ? "\(PongTheme.productName) — human input needed"
+                : "\(PongTheme.productName) — orchestrator working"
         }
     }
 
@@ -4091,7 +4107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Vertical list via TeamBuilder-style alert isn't needed — use NSAlert with one button per line (vertical stack on macOS)
         let alert = NSAlert()
         alert.messageText = "Saved teams"
-        alert.informativeText = "Each launches Hermes + workers (names, colors, perms)."
+        alert.informativeText =
+            "Roster templates (who sits where).\n" +
+            "You can attach a **Saved session** (story/continuity) after you pick."
         for t in teams {
             alert.addButton(withTitle: "\(t.name)  ·  \(t.workers.count) workers")
         }
@@ -4100,7 +4118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         let idx = resp.rawValue - first
         guard idx >= 0 && idx < teams.count else { return false }
-        _ = SavedTeams.spawn(teams[idx])
+        let archiveId = SessionContinuityUI.pickArchive(
+            allowNone: true,
+            message: "Start with continuity?"
+        )
+        if archiveId == nil { return false }
+        let aid = (archiveId ?? "").isEmpty ? nil : archiveId
+        _ = SavedTeams.spawn(teams[idx], continuityArchiveId: aid)
         return true
     }
 
@@ -4921,9 +4945,15 @@ final class TeamsManagerPanel: NSObject {
     @objc private func openPressed(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue,
               let team = SavedTeams.loadAll().first(where: { $0.id == id }) else { return }
+        let archiveId = SessionContinuityUI.pickArchive(
+            allowNone: true,
+            message: "Start with continuity?"
+        )
+        if archiveId == nil { return }
+        let aid = (archiveId ?? "").isEmpty ? nil : archiveId
         window?.orderOut(nil)
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = SavedTeams.spawn(team)
+            _ = SavedTeams.spawn(team, continuityArchiveId: aid)
             DispatchQueue.main.async {
                 self.onChange?()
                 PanelController.shared.refreshUI()
@@ -5494,7 +5524,9 @@ final class TeamOptionsSheetController: NSObject, NSWindowDelegate {
         content.addSubview(winHelp)
 
         content.addSubview(makeButton("Save team…", #selector(saveTeamPressed),
-            NSRect(x: PAD, y: 18, width: 108, height: 32)))
+            NSRect(x: PAD, y: 18, width: 100, height: 32)))
+        content.addSubview(makeButton("Save session…", #selector(saveSessionPressed),
+            NSRect(x: PAD + 108, y: 18, width: 118, height: 32)))
         let cancel = makeButton("Cancel", #selector(cancelPressed),
             NSRect(x: W - PAD - 196, y: 18, width: 92, height: 32))
         cancel.keyEquivalent = "\u{1b}"
@@ -5562,6 +5594,16 @@ final class TeamOptionsSheetController: NSObject, NSWindowDelegate {
         if panel.runModal() == .OK, let url = panel.url {
             rootField.stringValue = url.path
         }
+    }
+
+    @objc private func saveSessionPressed() {
+        persistFields(applyTheme: false)
+        let snap = captureFields()
+        let name = snap.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        SessionContinuityUI.confirmSaveSession(
+            session: pairName,
+            displayName: name.isEmpty ? pairName : name
+        )
     }
 
     @objc private func saveTeamPressed() {

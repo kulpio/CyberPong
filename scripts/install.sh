@@ -9,6 +9,12 @@ APP_NAME="${BUNDLE_NAME}.app"
 SRC_APP="$ROOT/dist/$APP_NAME"
 DEST="/Applications/$APP_NAME"
 
+# Keep control-plane CLI in sync with this checkout (Save session / continuity vault).
+# App binary alone is not enough — SessionArchive shells out to ~/bin/pong → ~/.pong/lib.
+if [[ -f "$ROOT/scripts/install-control-plane.sh" ]]; then
+  bash "$ROOT/scripts/install-control-plane.sh"
+fi
+
 # Quit any running copy (including legacy names) so we never leave an old binary alive.
 # Without this, `open` can attach to the already-running process and the install
 # appears to “do nothing” until you quit by hand.

@@ -421,6 +421,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private var pulseTimer: Timer?
     /// True while the user is live-resizing the window — pause SceneKit + pulse.
     private var isLiveResizing = false
+    /// AppKit observers: resign active / window occlusion → drop continuous SceneKit work.
+    private var powerObservers: [NSObjectProtocol] = []
+    /// Cap SceneKit FPS (setup uses 24 — never restore to 60 after live resize).
+    private let mapActiveFPS = 24
+    private let mapIdleFPS = 12
     /// True during orbit/pan/move — poll skips full map reload (beachball fix).
     private(set) var isUserInteracting = false
     private var interactionIdleWork: DispatchWorkItem?
@@ -448,6 +453,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     var onFocus: ((Seat3D) -> Void)?
     var onRename: ((Seat3D) -> Void)?
     var onKill: ((Seat3D) -> Void)?
+    /// Conductor: save/compress session (no kill) / new session + recap.
+    var onSaveSession: ((Seat3D) -> Void)?
+    var onNewSessionRecap: ((Seat3D) -> Void)?
     var onOptions: ((Seat3D) -> Void)?
     var onPerms: ((Seat3D) -> Void)?
     /// Switch live seat CLI / model (workers).
@@ -461,13 +469,19 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     /// You / human console (prompt + answers without Terminal)
     var onHuman: ((Seat3D) -> Void)?
 
-    // Hierarchy heights — redesign: 24×24 planes, gap 10
+    // Hierarchy heights — redesign: 24×24 planes (grow with multi-team count)
     private let yConductor: Float = 10.0
     private let yHuman: Float = 17.0
     private let yWorker: Float = 0.0
     private let ySub: Float = -10.0
-    private let planeSize: Float = 24
-    private let shellRadius: Float = 28
+    /// Default deck for 1–3 teams; grows so multi-team clusters stay inside the rim.
+    private let planeSizeBase: Float = 24
+    private let planeSizeMax: Float = 72
+    /// X spacing between team cluster origins in multi-team mode.
+    private let multiTeamPitch: Float = 10.0
+    /// Live deck edge length (XZ). Updated by `ensurePlaneSize(teamCount:)`.
+    private var planeSize: Float = 24
+    private var shellRadius: Float = 28
 
     /// Scrollable left HUD: TRACKING → YOU → CRON → TASKS (short windows still see all panels)
     private let leftHUDScroll = NSScrollView(frame: .zero)
@@ -501,7 +515,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private var rulerOffsetH: Double = 0
     private var rulerDirty = true
     private var rulerDragLastZ: Float?
-    private let rulerX: Float = 15.5
+    /// Cron strip sits just outside the live deck half-width.
+    private var rulerX: Float { planeSize * 0.5 + 3.5 }
     private let rulerHalf: Float = 18
     private let rulerW: Float = 2.8
 
@@ -537,6 +552,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     deinit {
         stopPulse()
+        removePowerObservers()
         if let hoverMonitor { NSEvent.removeMonitor(hoverMonitor) }
         if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
         if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
@@ -690,7 +706,13 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             NSEvent.removeMonitor(flagsMonitor)
             self.flagsMonitor = nil
         }
-        guard window != nil else { return }
+        removePowerObservers()
+        // Detached → full SceneKit pause (power)
+        guard let window else {
+            stopPulse()
+            return
+        }
+        installPowerObservers(for: window)
         // Fires even while SCNView owns the cursor for orbit
         hoverMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
             self?.processHover(with: event)
@@ -729,6 +751,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
         updateTrackingAreas()
         refreshOrbitHint()
+        applyPowerState()
     }
 
     /// Bottom chrome for current map mode (orbit pan hint included).
@@ -1153,7 +1176,30 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
     }
 
-    /// Redesign planes: 24×24, accent rim/brackets/grid, faint fill, range ring.
+    /// Deck size so multi-team clusters stay inside the rim.
+    /// - 1–3 teams: base 24 (unchanged look)
+    /// - ≥4 teams: `max(24, pitch*(n−1) + 2*clusterPad)` capped at `planeSizeMax`
+    ///   with pitch=10 and clusterPad≈8 (worker ring beyond team origin).
+    private func planeSizeForTeamCount(_ nTeams: Int) -> Float {
+        let n = max(1, nTeams)
+        if n <= 3 { return planeSizeBase }
+        let clusterPad: Float = 8.0
+        let need = multiTeamPitch * Float(n - 1) + 2 * clusterPad
+        return min(planeSizeMax, max(planeSizeBase, need))
+    }
+
+    /// Grow/shrink decks when team count changes; rebuilds rim/grid/brackets/shell.
+    private func ensurePlaneSize(teamCount: Int) {
+        let want = multiTeam ? planeSizeForTeamCount(teamCount) : planeSizeBase
+        guard abs(want - planeSize) > 0.05 else { return }
+        planeSize = want
+        // Atmosphere shell slightly outside the deck half-diagonal
+        shellRadius = max(28, planeSize * 0.55 + 6)
+        rebuildDecor()
+    }
+
+    /// Redesign planes: accent rim/brackets/grid, faint fill, range ring.
+    /// Size follows `planeSize` (auto-expands for multi-team).
     private func buildDotSphere() {
         let decks: [(y: Float, label: String, idx: String, accent: NSColor)] = [
             (yConductor, "ORCHESTRATOR", "01", PongTheme.blue),
@@ -1188,8 +1234,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             addCornerBrackets(y: d.y, half: half, accent: d.accent.withAlphaComponent(0.55))
             // Center cross-hair
             addCrossHair(y: d.y, accent: d.accent.withAlphaComponent(0.1))
-            // Range ring r=7.5
-            addRangeRing(y: d.y, radius: 7.5, accent: d.accent.withAlphaComponent(0.07))
+            // Range ring scales with deck (was fixed r=7.5 on 24×24)
+            let ringR = min(7.5, max(4.5, half * 0.55))
+            addRangeRing(y: d.y, radius: ringR, accent: d.accent.withAlphaComponent(0.07))
 
             // 13×13 dotted grid as ONE point-cloud geometry (not 169 SCNSphere nodes).
             let n = 13
@@ -3459,15 +3506,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         layoutRightHUD()
     }
 
-    /// Pause expensive SceneKit while Mission/Setup are up.
+    /// Pause expensive SceneKit while Mission/Setup are up (power: full stop).
     func setMapPlaying(_ on: Bool) {
         scnView.isHidden = !on
         if on {
             requestMapRender()
             reevaluateMapPlaying()
+            applyPowerState()
         } else {
-            scnView.isPlaying = false
-            mapNeedsRender = false
+            stopPulse()
         }
     }
 
@@ -4013,6 +4060,14 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             self.dismissModuleCard()
             self.onKill?(seat)
         }
+        card.onSaveSession = { [weak self] _ in
+            guard let self, let seat = self.moduleSeat else { return }
+            self.onSaveSession?(seat)
+        }
+        card.onNewSessionRecap = { [weak self] _ in
+            guard let self, let seat = self.moduleSeat else { return }
+            self.onNewSessionRecap?(seat)
+        }
         card.onOptions = { [weak self] _ in
             guard let self, let seat = self.moduleSeat else { return }
             self.onOptions?(seat)
@@ -4106,6 +4161,13 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 menu.addItem(withTitle: "Add subagent (under)…", action: #selector(ctxAddSub(_:)), keyEquivalent: "")
             }
             menu.addItem(NSMenuItem.separator())
+            if s.role == "conductor" {
+                menu.addItem(withTitle: "Save session (compress)…",
+                             action: #selector(ctxSaveSession(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: "New session + recap…",
+                             action: #selector(ctxNewSessionRecap(_:)), keyEquivalent: "")
+                menu.addItem(NSMenuItem.separator())
+            }
             menu.addItem(withTitle: s.role == "conductor" ? "Kill team" : "Remove seat",
                          action: #selector(ctxKill(_:)), keyEquivalent: "")
         }
@@ -4185,6 +4247,18 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         onKill?(s)
     }
 
+    @objc private func ctxSaveSession(_ item: NSMenuItem) {
+        guard let gid = item.representedObject as? String,
+              let s = seats.first(where: { $0.globalId == gid }) else { return }
+        onSaveSession?(s)
+    }
+
+    @objc private func ctxNewSessionRecap(_ item: NSMenuItem) {
+        guard let gid = item.representedObject as? String,
+              let s = seats.first(where: { $0.globalId == gid }) else { return }
+        onNewSessionRecap?(s)
+    }
+
     private func flashSelect(_ gid: String) {
         guard let n = seatNodes[gid] else { return }
         let up = SCNAction.scale(to: 1.35, duration: 0.08)
@@ -4197,9 +4271,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     func reload(seats: [Seat3D], multiTeam: Bool) {
         // Include ephemeral ids so spawn/vanish always rebuilds layout
         // missionRole + title must invalidate face cache when Architecture updates purpose
+        let teamN = Set(seats.filter { $0.role != "human" }.map(\.session)).count
+        let wantPlane = multiTeam ? planeSizeForTeamCount(teamN) : planeSizeBase
         var sig = seats.map {
             "\($0.globalId)|\($0.status)|\($0.openJobs)|\($0.title)|\($0.missionRole)|\($0.flowHint.prefix(12))|\($0.ephemeral ? "E" : "P")"
-        }.joined(separator: ";") + (multiTeam ? "|M" : "|S")
+        }.joined(separator: ";") + (multiTeam ? "|M" : "|S") + "|p\(Int(wantPlane))"
         // Edge identity is NOT captured by the seat fields above. Without this,
         // editing/adding/deleting a flow link leaves the seats unchanged, the
         // signature matches, and the early-out below skips layoutSeats() so the
@@ -4323,9 +4399,14 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         /// Pending connect jobs after all seats are placed (so positions are final).
         var pendingEdges: [(from: SCNNode, to: SCNNode, link: FlowLink3D, pi: Int, pc: Int, sig: String)] = []
 
+        // Grow decks so multi-team clusters stay inside rims (1–3 stay 24×24)
+        ensurePlaneSize(teamCount: sessions.count)
+
         for (ti, session) in sessions.enumerated() {
             let team = teamSeats.filter { $0.session == session }
-            let ox = multiTeam ? Float(ti) * 10.0 - Float(max(0, sessions.count - 1)) * 5.0 : 0
+            let ox = multiTeam
+                ? Float(ti) * multiTeamPitch - Float(max(0, sessions.count - 1)) * (multiTeamPitch * 0.5)
+                : 0
             let conds = team.filter { $0.role == "conductor" }
             let workers = team.filter { $0.role == "worker" }
             let subs = team.filter { $0.role == "subagent" }
@@ -6073,21 +6154,67 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     }
 
     // MARK: - Pulse / render-on-demand (designer A1 + A2)
+    // POWER: continuous SceneKit only while map visible + app active + window not occluded.
 
     private var lastPulseTime: TimeInterval = 0
     private var mapNeedsRender = false
     private var lastCronHUDAt: TimeInterval = 0
 
+    /// True when continuous map animation/render is allowed (power gate).
+    private var mapPowerAllowsContinuousWork: Bool {
+        guard window != nil, !isHidden, !scnView.isHidden else { return false }
+        guard !isLiveResizing, window?.inLiveResize != true else { return false }
+        guard NSApp.isActive else { return false }
+        if let w = window, !w.occlusionState.contains(.visible) { return false }
+        return true
+    }
+
+    private func installPowerObservers(for window: NSWindow) {
+        removePowerObservers()
+        let nc = NotificationCenter.default
+        let resign = nc.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.applyPowerState() }
+        let active = nc.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.applyPowerState() }
+        let occlude = nc.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] _ in self?.applyPowerState() }
+        powerObservers = [resign, active, occlude]
+    }
+
+    private func removePowerObservers() {
+        let nc = NotificationCenter.default
+        for o in powerObservers { nc.removeObserver(o) }
+        powerObservers.removeAll()
+    }
+
+    /// Pause/resume SceneKit based on focus, occlusion, and tab visibility.
+    private func applyPowerState() {
+        if !mapPowerAllowsContinuousWork {
+            scnView.isPlaying = false
+            if #available(macOS 10.13, *) {
+                scnView.preferredFramesPerSecond = mapIdleFPS
+            }
+            return
+        }
+        reevaluateMapPlaying()
+    }
+
     /// Call when animation or interaction starts — keeps SceneKit rendering.
     func requestMapRender() {
         mapNeedsRender = true
-        if !scnView.isHidden, !isLiveResizing {
+        if mapPowerAllowsContinuousWork {
             scnView.isPlaying = true
+            if #available(macOS 10.13, *) {
+                scnView.preferredFramesPerSecond = mapActiveFPS
+            }
         }
     }
 
     private func reevaluateMapPlaying() {
-        if isLiveResizing || scnView.isHidden {
+        if !mapPowerAllowsContinuousWork {
             scnView.isPlaying = false
             return
         }
@@ -6095,9 +6222,13 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         sceneLock.lock()
         let snap = renderSeats
         sceneLock.unlock()
+        // Only real handoff work — idle seats must not hold the display link
         let anyActive = snap.contains { isSeatActive($0) }
         let animating = anyActive || mapNeedsRender || rulerDirty
         scnView.isPlaying = animating
+        if #available(macOS 10.13, *) {
+            scnView.preferredFramesPerSecond = animating ? mapActiveFPS : mapIdleFPS
+        }
         if !animating { mapNeedsRender = false }
     }
 
@@ -6113,8 +6244,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     }
 
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
-        guard window != nil, !scnView.isHidden else { return }
-        if isLiveResizing || window?.inLiveResize == true { return }
+        // Power gate first — no pulse work when unfocused / occluded / Mission tab
+        guard mapPowerAllowsContinuousWork else {
+            if scnView.isPlaying { scnView.isPlaying = false }
+            return
+        }
 
         if lastPulseTime <= 0 { lastPulseTime = time }
         let dt = min(0.05, max(0, time - lastPulseTime))
@@ -6137,8 +6271,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
         // Drop to 0 fps when nothing animates (A1)
         if !anyActive && !rulerDirty && !mapNeedsRender {
-            // Keep a couple frames after gesture end, then sleep
             scnView.isPlaying = false
+        } else if #available(macOS 10.13, *) {
+            scnView.preferredFramesPerSecond = mapActiveFPS
         }
     }
 
@@ -6478,20 +6613,18 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         isLiveResizing = true
         scnView.isPlaying = false
         if #available(macOS 10.13, *) {
-            scnView.preferredFramesPerSecond = 15
+            scnView.preferredFramesPerSecond = mapIdleFPS
         }
     }
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         isLiveResizing = false
+        // Restore active cap (24), never 60 — post-resize power spike fix
         if #available(macOS 10.13, *) {
-            scnView.preferredFramesPerSecond = 60
+            scnView.preferredFramesPerSecond = mapActiveFPS
         }
-        // Resume only if map canvas is the visible page
-        if !scnView.isHidden {
-            reevaluateMapPlaying()
-        }
+        applyPowerState()
         layoutRightHUD()
     }
 }

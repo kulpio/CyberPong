@@ -13,7 +13,7 @@ APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1
@@ -93,7 +93,15 @@ if [[ -d "$ROOT/python/pong" ]]; then
   # Belt-and-suspenders in case a stale cache slipped in before --exclude ran.
   find "$RES/python" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
   find "$RES/python" -name '*.pyc' -delete 2>/dev/null || true
+  if [[ ! -f "$RES/python/pong/session_archive.py" ]]; then
+    echo "error: bundle missing session_archive.py (vault)" >&2
+    exit 2
+  fi
   echo "→ Bundled python/pong into Resources (source only, no bytecode)"
+  # Also refresh ~/.pong/lib so live `pong` CLI matches this build (app Save session uses it).
+  if [[ -f "$ROOT/scripts/install-control-plane.sh" ]]; then
+    bash "$ROOT/scripts/install-control-plane.sh" || echo "  (warn: control-plane install failed — app still built)"
+  fi
 fi
 # Abstract tactical module textures (Imagine — conductor / worker / canvas void)
 cp "$ROOT/resources/tex-conductor.png" "$RES/" 2>/dev/null || true
