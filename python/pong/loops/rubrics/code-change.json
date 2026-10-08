@@ -1,0 +1,42 @@
+{
+ "title": "code change rubric (CyberPong, shipped)",
+ "version": 2,
+ "notes": "For build steps, after the engine's tests have passed (a check node decides what code can decide: exit codes, lint, a grep gate). Jev grades what tests cannot: that the change is the one asked for and that it can be reviewed. Use with \"diff\": true so Jev reads the change itself, not whole files.",
+ "questions": {
+  "does_the_goal": {
+   "type": "noul",
+   "instructions": "The change does what the goal in the state asks for.",
+   "criteria": {
+    "true": "The requested behaviour is implemented",
+    "false": "It is missing, partial, or a different behaviour"
+   }
+  },
+  "nothing_unrelated": {
+   "type": "noul",
+   "instructions": "The change touches only what the goal needs: every edited line serves the goal, while tests and fixtures stay as strict as before.",
+   "criteria": {
+    "true": "Only what the goal needs is changed",
+    "false": "Unrelated changes, or tests weakened"
+   }
+  },
+  "tested": {
+   "type": "noul",
+   "instructions": "New or changed behaviour has a test that would fail without the change.",
+   "criteria": {
+    "true": "Such a test is in the change",
+    "false": "No test covers the new behaviour"
+   }
+  },
+  "reviewable": {
+   "type": "score",
+   "instructions": "A reviewer reads the change: how easily can they tell it is right?",
+   "criteria": [
+    "They cannot: the change is too large, tangled or unexplained to judge",
+    "With effort: it can be judged, but the reasons for key choices are missing",
+    "Readily: small enough to hold in mind, names and comments say why",
+    "At a glance: small, well named, and each non-obvious choice explained where it is made"
+   ],
+   "floor": 2
+  }
+ }
+}

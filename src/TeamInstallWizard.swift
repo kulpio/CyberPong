@@ -215,7 +215,7 @@ enum TeamScaffold {
             Bundle.main.bundlePath + "/../../../share/team-scaffold/templates",
         ]
         #if DEBUG
-        candidates.insert(home + "/Personal/Projects/HermesPong/share/team-scaffold/templates", at: 1)
+        if let root = DevCheckout.root { candidates.insert(root + "/share/team-scaffold/templates", at: 1) }
         #endif
         for c in candidates where FileManager.default.fileExists(atPath: c) { return c }
         return home + "/.pong/lib/team-scaffold/templates"
@@ -346,7 +346,7 @@ enum TeamScaffold {
             home + "/.pong/lib/../scripts/install-skills.sh",
         ]
         #if DEBUG
-        candidates.insert(home + "/Personal/Projects/HermesPong/scripts/install-skills.sh", at: 0)
+        if let root = DevCheckout.root { candidates.insert(root + "/scripts/install-skills.sh", at: 0) }
         #endif
         for c in candidates where FileManager.default.isExecutableFile(atPath: c)
             || FileManager.default.fileExists(atPath: c) {
@@ -360,7 +360,7 @@ enum TeamScaffold {
             Bundle.main.bundlePath + "/../../../share",
         ]
         #if DEBUG
-        shareRoots.insert(home + "/Personal/Projects/HermesPong/share", at: 0)
+        if let root = DevCheckout.root { shareRoots.insert(root + "/share", at: 0) }
         #endif
         for share in shareRoots where FileManager.default.fileExists(atPath: share + "/pong-bridge") {
             let grok = home + "/.grok/skills"
@@ -465,13 +465,14 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
             backing: .buffered, defer: false)
         win.title = "Team setup wizard"
         win.isReleasedWhenClosed = false
-        win.backgroundColor = PongTheme.bg
+        // Always dark — do not follow app light mode (white-on-white bug)
+        PongTheme.Launch.styleWindow(win)
         win.delegate = self
         win.center()
 
         content = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
         content.wantsLayer = true
-        content.layer?.backgroundColor = PongTheme.bg.cgColor
+        content.layer?.backgroundColor = PongTheme.Launch.bg.cgColor
         win.contentView = content
         window = win
     }
@@ -487,21 +488,25 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
     private func showStep() {
         clearBody()
         // Header
+        // Re-assert dark chrome each step (main app may be light)
+        if let win = window { PongTheme.Launch.styleWindow(win) }
+        content.layer?.backgroundColor = PongTheme.Launch.bg.cgColor
+
         let title = NSTextField(labelWithString: steps[step])
         title.font = PongTheme.font(20, weight: .semibold)
-        title.textColor = PongTheme.textPrimary
+        title.textColor = PongTheme.Launch.textPrimary
         title.frame = NSRect(x: 28, y: H - 56, width: 300, height: 28)
         content.addSubview(title)
 
         let prog = NSTextField(labelWithString: "Step \(step + 1) of \(steps.count)  ·  optional guided setup")
         prog.font = PongTheme.labelFont(11)
-        prog.textColor = PongTheme.textTertiary
+        prog.textColor = PongTheme.Launch.textTertiary
         prog.frame = NSRect(x: 28, y: H - 76, width: 400, height: 16)
         content.addSubview(prog)
 
         let rule = NSView(frame: NSRect(x: 28, y: H - 90, width: W - 56, height: 1))
         rule.wantsLayer = true
-        rule.layer?.backgroundColor = PongTheme.lineSoft.cgColor
+        rule.layer?.backgroundColor = PongTheme.Launch.lineSoft.cgColor
         content.addSubview(rule)
 
         switch step {
@@ -548,7 +553,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
 
         let note = NSTextField(labelWithString: "Conductor: \(plan.conductor.label)  ·  \(plan.workers.count) worker seat(s)")
         note.font = PongTheme.labelFont(12)
-        note.textColor = PongTheme.blue
+        note.textColor = PongTheme.Launch.blue
         note.frame = NSRect(x: 28, y: 70, width: W - 56, height: 18)
         content.addSubview(note)
     }
@@ -609,7 +614,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
             "These choices are written into TEAM.md / SOUL files automatically — you don’t type policy prose.",
             frame: NSRect(x: 28, y: y - 40, width: W - 56, height: 40)
         )
-        tip.textColor = PongTheme.textTertiary
+        tip.textColor = PongTheme.Launch.textTertiary
         content.addSubview(tip)
     }
 
@@ -643,7 +648,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
             y -= 30
             let tag = NSTextField(labelWithString: "w\(i + 1)")
             tag.font = PongTheme.mono(11, weight: .medium)
-            tag.textColor = PongTheme.magenta
+            tag.textColor = PongTheme.Launch.magenta
             tag.frame = NSRect(x: 28, y: y, width: 36, height: 22)
             content.addSubview(tag)
             let f = field(placeholder: w.type.label, value: w.label)
@@ -709,7 +714,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         var y = H - 120
         let intro = wrap(
             "Quick check — you already set these on Architecture by clicking each agent.\n"
-                + "Change anything here if needed, or go Back to the map.",
+                + "Change anything here if needed, or go Back to Architecture.",
             frame: NSRect(x: 28, y: y - 44, width: W - 56, height: 44)
         )
         content.addSubview(intro)
@@ -717,7 +722,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
 
         let orch = NSTextField(labelWithString: "Boss  \(plan.conductorLabel)  →  plans & gives work (fixed)")
         orch.font = PongTheme.font(12, weight: .medium)
-        orch.textColor = PongTheme.blue
+        orch.textColor = PongTheme.Launch.blue
         orch.frame = NSRect(x: 28, y: y, width: W - 56, height: 20)
         content.addSubview(orch)
         y -= 36
@@ -726,7 +731,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         for (i, w) in plan.workers.enumerated() {
             let row = NSTextField(labelWithString: "\(w.label.isEmpty ? "Agent \(i + 1)" : w.label)")
             row.font = PongTheme.font(12, weight: .medium)
-            row.textColor = PongTheme.textPrimary
+            row.textColor = PongTheme.Launch.textPrimary
             row.frame = NSRect(x: 28, y: y, width: 180, height: 22)
             content.addSubview(row)
 
@@ -743,7 +748,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
 
             let blurb = NSTextField(labelWithString: w.role.blurb)
             blurb.font = PongTheme.font(10)
-            blurb.textColor = PongTheme.textTertiary
+            blurb.textColor = PongTheme.Launch.textTertiary
             blurb.frame = NSRect(x: 28, y: y - 18, width: W - 56, height: 14)
             content.addSubview(blurb)
             y -= 52
@@ -802,7 +807,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         let intro = wrap(
             "New teams start with no schedule. Turn on only the ticks you want — " +
             "each job is delivered to the owner agent when it fires. " +
-            "You can add or edit more later from the map Cron panel.",
+            "You can add or edit more later from the Cron panel on the Team page.",
             frame: NSRect(x: 28, y: y - 52, width: W - 56, height: 52)
         )
         content.addSubview(intro)
@@ -812,7 +817,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
             "Leave all unchecked for a clean launch (recommended unless you need scheduled work).",
             frame: NSRect(x: 28, y: y - 28, width: W - 56, height: 28)
         )
-        none.textColor = PongTheme.textTertiary
+        none.textColor = PongTheme.Launch.textTertiary
         content.addSubview(none)
         y -= 36
 
@@ -1039,7 +1044,7 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
     private func label(_ t: String, x: CGFloat, y: CGFloat) -> NSTextField {
         let f = NSTextField(labelWithString: t)
         f.font = PongTheme.labelFont(11)
-        f.textColor = PongTheme.textSecondary
+        f.textColor = PongTheme.Launch.textSecondary
         f.frame = NSRect(x: x, y: y, width: W - 56, height: 16)
         return f
     }
@@ -1052,15 +1057,16 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         f.isBordered = true
         f.isBezeled = true
         f.bezelStyle = .roundedBezel
-        f.backgroundColor = PongTheme.bgInput
-        f.textColor = PongTheme.textPrimary
+        f.backgroundColor = PongTheme.Launch.bgInput
+        f.textColor = PongTheme.Launch.textPrimary
+        f.appearance = PongTheme.Launch.appearance
         return f
     }
 
     private func wrap(_ t: String, frame: NSRect) -> NSTextField {
         let f = NSTextField(wrappingLabelWithString: t)
         f.font = PongTheme.font(12)
-        f.textColor = PongTheme.textSecondary
+        f.textColor = PongTheme.Launch.textSecondary
         f.frame = frame
         f.maximumNumberOfLines = 20
         return f
@@ -1073,9 +1079,10 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         b.wantsLayer = true
         b.layer?.cornerRadius = 4
         b.layer?.borderWidth = 1
-        b.layer?.borderColor = PongTheme.line.cgColor
+        b.layer?.borderColor = PongTheme.Launch.line.cgColor
+        b.appearance = PongTheme.Launch.appearance
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.textPrimary,
+            .foregroundColor: PongTheme.Launch.textPrimary,
             .font: PongTheme.labelFont(11),
         ])
         b.target = self
@@ -1089,9 +1096,11 @@ final class TeamInstallWizard: NSObject, NSWindowDelegate {
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.cornerRadius = 4
-        b.layer?.backgroundColor = PongTheme.ink.cgColor
+        // White fill on void → high contrast CTA
+        b.layer?.backgroundColor = PongTheme.Launch.ink.cgColor
+        b.appearance = PongTheme.Launch.appearance
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.bg,
+            .foregroundColor: PongTheme.Launch.bg,
             .font: PongTheme.labelFont(11),
         ])
         b.target = self

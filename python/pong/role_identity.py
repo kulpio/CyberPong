@@ -17,15 +17,17 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
             "Does not implement product code while BRIDGE_ON."
         ),
         "playbook": (
-            "- Decompose the mission into jobs\n"
-            "- Assign only along architecture edges (no hop-skipping)\n"
-            "- Run acceptance and ledger verdicts\n"
+            "- Decompose the mission into jobs for the seats under you\n"
+            "- Fire each piece with `pong job create --worker <id>` along your edges\n"
+            "- Run acceptance and ledger verdicts on their claims\n"
+            "- Close your own job with `pong job claim` — that is what fills the waitroom\n"
             "- Stay conductor — never implement product yourself under BRIDGE_ON"
         ),
         "never": (
             "- Do not write product code or fix bugs yourself while BRIDGE_ON\n"
             "- Do not assign jobs that skip architecture hops\n"
-            "- Do not invent workers not on the roster"
+            "- Do not invent workers not on the roster\n"
+            "- Do not use in-CLI /agents as a substitute for rostered children"
         ),
     },
     "coder": {
@@ -35,7 +37,8 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
             "- Read the job task + acceptance\n"
             "- Edit only what is required\n"
             "- Run tests listed in acceptance\n"
-            "- Claim with evidence along the architecture claim path"
+            "- Claim with evidence: last action is `pong job claim` "
+            "(that queues the waitroom; Recap / CLAIM text is not enough)"
         ),
         "never": (
             "- Do not act as orchestrator (no freelancing jobs to arbitrary seats)\n"
@@ -45,17 +48,22 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
     },
     "reviewer": {
         "title": "Reviewer",
-        "blurb": "Reviews diffs and claims; rejects weak evidence.",
+        "blurb": "Holds a published bar; scores work against it and says what would clear it.",
         "playbook": (
-            "- Diff against acceptance\n"
-            "- Flag security, tests, and scope creep\n"
-            "- Prefer reject with concrete notes over soft accept\n"
-            "- You review — you do not implement product features"
+            "- Score EVERY dimension of the review bar in the job, on its scale\n"
+            "- Anchor each score to one of the scored reference outputs, and name it\n"
+            "- Say what specifically falls short and what change would clear the bar\n"
+            "- Re-run the claim's own evidence; a claim you cannot reproduce fails\n"
+            "- Review only the seats your bar covers — scope is configured, not chosen\n"
+            "- Close with `pong job claim` so the score lands in the waitroom"
         ),
         "never": (
-            "- Do not implement the feature you are reviewing\n"
-            "- Do not rubber-stamp claims without evidence\n"
-            "- Do not switch into Coder mode without a new job that says so"
+            "- Do not write, edit, create or delete ANY file — your output is judgment\n"
+            "- Do not run commands that mutate the repo or the machine\n"
+            "- Do not implement, patch or 'just fix' the thing you are reviewing\n"
+            "- Do not pass work because it sounds right — unsupported means fail\n"
+            "- Do not invent criteria: the bar in the job is the whole standard\n"
+            "- Do not review seats outside your configured scope"
         ),
     },
     "operator": {
@@ -65,7 +73,7 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
             "- Prefer scripted, reversible actions\n"
             "- Log every external side effect\n"
             "- Stop on policy bans\n"
-            "- Claim with evidence when the ops job is done"
+            "- Claim with evidence when the ops job is done — `pong job claim` (waitroom)"
         ),
         "never": (
             "- Do not freestyle large product refactors (that is Coder)\n"
@@ -80,11 +88,27 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
             "- Map the codebase first\n"
             "- Cite paths and symbols\n"
             "- Do not invent APIs\n"
-            "- Return findings as claim/evidence for the next seat"
+            "- Return findings as claim/evidence: last action is `pong job claim` (waitroom)"
         ),
         "never": (
             "- Do not implement production changes unless the job explicitly requires a tiny fix\n"
             "- Do not claim certainty without citations"
+        ),
+    },
+    "writer": {
+        "title": "Writer",
+        "blurb": "Drafts prose a person will read, against a voice and a bar. Never publishes.",
+        "playbook": (
+            "- Read the job, the bar and any examples before writing a word\n"
+            "- Say one thing, say it first, carry the evidence for every claim\n"
+            "- Put the draft where the job says; name the file in your claim\n"
+            "- Claim with `pong job claim` — the draft is the artifact"
+        ),
+        "never": (
+            "- Do not publish, post, send or schedule anything\n"
+            "- Do not invent a fact, a name, a number or a quote\n"
+            "- Do not touch code or config — that is a Coder\n"
+            "- Do not grade your own draft; the critic does"
         ),
     },
     "task_runner": {
@@ -93,7 +117,7 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
         "playbook": (
             "- Read the job task only — no freelancing beyond scope\n"
             "- Prefer scripted, idempotent steps\n"
-            "- Claim with evidence when done\n"
+            "- Claim with evidence when done — last action is `pong job claim` (waitroom)\n"
             "- Ready for the next tick — do not hold long product context"
         ),
         "never": (
@@ -102,6 +126,54 @@ ROLE_CATALOG: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+# Overlay used when the seat has rostered children. Catalog orchestrator text
+# is written for c1; group leads need the fire-the-team version or they implement.
+LEAD_BLURB = (
+    "Group lead — plans, splits work, fires pong jobs to rostered children, "
+    "verifies their claims. Does not implement while you have a team."
+)
+LEAD_PLAYBOOK = (
+    "- Plan and split the job for the children listed below\n"
+    "- Fire each piece with `pong job create --worker <child-id> --task '…'` "
+    "and explicit acceptance\n"
+    "- Verify their claims yourself; ledger accept/reject before you claim to c1\n"
+    "- Close to c1 with `pong job claim` after children finish — that fills the waitroom\n"
+    "- In-CLI /agents and Grok in-seat tasks are not your team — the rostered "
+    "children are"
+)
+LEAD_NEVER = (
+    "- Do not implement, patch, or write product files when a child can\n"
+    "- Do not substitute Claude /agents or an in-seat subagent for "
+    "`pong job create`\n"
+    "- Do not skip a child because doing it yourself would be faster\n"
+    "- Do not assign seats you have no forward edge to\n"
+    "- Do not claim done to c1 until children have finished or you have a "
+    "real blocker"
+)
+
+
+def is_group_lead(state: dict[str, Any], seat_id: str) -> bool:
+    """True when this worker has at least one rostered child. c1 is not a group lead."""
+    from .flow import conductor_id
+    from .state import workers_from_state
+
+    sid = str(seat_id or "").strip()
+    if not sid or sid == conductor_id(state) or sid in ("c1", "hermes"):
+        return False
+    return any(str(w.get("parent_id") or "") == sid for w in workers_from_state(state))
+
+
+def group_children(state: dict[str, Any], seat_id: str) -> list[dict[str, Any]]:
+    from .state import workers_from_state
+
+    sid = str(seat_id or "").strip()
+    kids = [
+        w
+        for w in workers_from_state(state)
+        if str(w.get("parent_id") or "") == sid
+    ]
+    return sorted(kids, key=lambda w: str(w.get("id") or ""))
 
 
 def normalize_role(raw: str | None) -> str:
@@ -114,6 +186,8 @@ def normalize_role(raw: str | None) -> str:
         return "orchestrator"
     if r in ("tasks", "task", "cron", "job", "jobs", "scheduled", "taskrunner"):
         return "task_runner"
+    if r in ("write", "drafter", "copywriter"):
+        return "writer"
     if r in ROLE_CATALOG:
         return r
     return "coder"
@@ -133,9 +207,14 @@ def seat_mission_role(state: dict[str, Any], seat_id: str) -> str:
         return "orchestrator"
     for w in workers_from_state(state):
         if str(w.get("id")) == sid:
-            return normalize_role(
+            role = normalize_role(
                 str(w.get("mission_role") or w.get("role") or "coder")
             )
+            # A coding-group lead left labeled "coder" is still the orchestrator
+            # of its children — that label is how they end up implementing.
+            if role == "coder" and is_group_lead(state, sid):
+                return "orchestrator"
+            return role
     return "coder"
 
 
@@ -157,18 +236,72 @@ def format_team_roster_roles(state: dict[str, Any]) -> str:
         lab = str(w.get("label") or wid)
         typ = str(w.get("type") or "worker")
         role = normalize_role(str(w.get("mission_role") or w.get("role") or "coder"))
+        if role == "coder" and is_group_lead(state, wid):
+            role = "orchestrator"
         meta = role_meta(role)
         parent = str(w.get("parent_id") or "").strip()
         parent_s = f", parent={parent}" if parent else ""
+        lead_s = (
+            " — **group lead**: fire `pong job create` to children; do not implement"
+            if is_group_lead(state, wid)
+            else ""
+        )
         lines.append(
             f"- **{wid}** {lab} ({typ}) — mission role: **{meta['title']}** "
-            f"({role}){parent_s} — {meta['blurb']}"
+            f"({role}){parent_s} — {meta['blurb']}{lead_s}"
         )
     return "\n".join(lines)
 
 
-def format_seat_identity(state: dict[str, Any], seat_id: str) -> str:
-    """Hard identity block for one seat — stays true for the life of the team."""
+def format_listen_list(state: dict[str, Any], seat_id: str) -> str:
+    """Who this seat is bound to, beyond the orchestrator.
+
+    A top-level seat otherwise treats only c1 as binding, so a reviewer's verdict
+    would land as noise and be ignored — which is the obstacle that stops the
+    review loop from closing. Two authorities over one seat, cleanly separated:
+    c1 decides what gets built, the bar-setter decides whether it is good enough.
+    """
+    lines: list[str] = ["### WHO YOU LISTEN TO"]
+    try:
+        from .review_bar import listens_to, seats_covered_by
+
+        binding = listens_to(state, seat_id)
+        covers = seats_covered_by(state, seat_id)
+    except Exception:
+        binding, covers = [], []
+
+    lines.append(
+        "- **c1 (Chief)** — assignment authority. What you work on comes from here."
+    )
+    if binding:
+        who = ", ".join(f"**{b}**" for b in binding)
+        lines.append(
+            f"- {who} — **quality authority** over your work. Within the review bar "
+            "carried in your job, their instruction is **binding, not advisory**: "
+            "act on it the way you would act on a job. They cannot assign you new "
+            "work, only require that this work clears the bar."
+        )
+        lines.append(
+            "- If you disagree with a score, argue it on the evidence — re-run it, "
+            "show the output. Disagreement is allowed; ignoring it is not."
+        )
+    else:
+        lines.append("- No bar-setter is assigned to you. c1 is your only binding seat.")
+    if covers:
+        lines.append(
+            f"- You hold quality authority over: {', '.join(covers)}. "
+            "Judgment and instruction only — you never edit their files."
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_seat_identity(state: dict[str, Any], seat_id: str, role: str | None = None) -> str:
+    """Hard identity block for one seat — stays true for the life of the team.
+
+    *role* is the job's own mission role for a seat that is not on the roster
+    (a graph node's disposable seat): without it every such seat read "Coder",
+    writers and scouts included."""
     from .flow import conductor_id
     from .state import conductor_from_state, workers_from_state
 
@@ -176,8 +309,16 @@ def format_seat_identity(state: dict[str, Any], seat_id: str) -> str:
     if not sid:
         return ""
 
-    role = seat_mission_role(state, sid)
+    role = normalize_role(role) if role else seat_mission_role(state, sid)
     meta = role_meta(role)
+    if is_group_lead(state, sid):
+        meta = {
+            **meta,
+            "title": f"{meta['title']} (group lead)",
+            "blurb": LEAD_BLURB,
+            "playbook": LEAD_PLAYBOOK,
+            "never": LEAD_NEVER,
+        }
     label = sid
     runtime = ""
     if sid == conductor_id(state) or sid in ("c1", "hermes"):
@@ -206,24 +347,52 @@ def format_seat_identity(state: dict[str, Any], seat_id: str) -> str:
         "### Role lock (never leave this seat's job)",
         meta["never"],
         "- Do **not** re-interpret yourself as a different mission role mid-team.",
-        "- If work needs another role, the **orchestrator** creates a job for that seat.",
-        "",
-        "### Team who-is-who",
-        format_team_roster_roles(state),
-        "",
-        "This identity is permanent for this team until architecture/roles are edited "
-        "in CyberPong. Re-read it on every job — do not wait for a human to re-explain.",
+        (
+            "- Implementation belongs to the children below. You create those jobs."
+            if is_group_lead(state, sid)
+            else "- If work needs another role, the **orchestrator** creates a job for that seat."
+        ),
         "",
     ]
+    kids = group_children(state, sid)
+    if kids:
+        lines.extend(
+            [
+                "### Your team (fire jobs here — this is the work)",
+                "```bash",
+                "pong job create --worker <child-id> --task '…'",
+                "```",
+            ]
+        )
+        for w in kids:
+            kid_role = normalize_role(
+                str(w.get("mission_role") or w.get("role") or "coder")
+            )
+            lines.append(
+                f"- **{w.get('id')}** {w.get('label') or w.get('id')} "
+                f"({kid_role})"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "### Team who-is-who",
+            format_team_roster_roles(state),
+            "",
+            format_listen_list(state, sid),
+            "This identity is permanent for this team until architecture/roles are edited "
+            "in CyberPong. Re-read it on every job — do not wait for a human to re-explain.",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
-def format_architecture_guardrails(state: dict[str, Any], seat_id: str) -> str:
+def format_architecture_guardrails(state: dict[str, Any], seat_id: str, *, role: str | None = None) -> str:
     """Hard road language on top of hop recap."""
     from .flow import CLAIM_KINDS, effective_edges
     from .handoff_recap import architecture_recap_for_seat
 
-    recap = architecture_recap_for_seat(state, seat_id).rstrip()
+    recap = architecture_recap_for_seat(state, seat_id, role=role).rstrip()
     edges = effective_edges(state)
     outs = sorted(
         {

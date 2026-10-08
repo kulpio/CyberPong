@@ -1,0 +1,84 @@
+{
+  "name": "fanout-synthesize",
+  "notes": "Orchestrator → parallel workers → barrier join → synthesizer (T2; Anthropic's research system shape). Workers are read-only. A second round only when the synthesizer finds a critical gap.",
+  "start": "plan",
+  "max_rounds": 2,
+  "boundaries": {
+    "max_wall_min": 90,
+    "max_jobs": 14
+  },
+  "nodes": [
+    {
+      "id": "plan",
+      "role": "researcher",
+      "task": "{goal}\n\nSplit this into exactly 4 independent sub-questions and write them, numbered 1-4, at the top of the shared notes file. Keep them independent: each worker sees only its own number. Then claim."
+    },
+    {
+      "id": "work",
+      "role": "scout",
+      "count": 4,
+      "task": "{goal}\n\nYou are worker {copy}. Answer sub-question number {copy} from the shared notes. Cite every claim with a URL or a file path. Read-only: do not edit the repository. Write your findings to a file and list it in your claim."
+    },
+    {
+      "id": "gather",
+      "role": "join",
+      "wait": "all",
+      "timeout_min": 30
+    },
+    {
+      "id": "synth",
+      "role": "writer",
+      "task": "Synthesize every branch:\n{prev_summary}\n\nArtifacts: {prev_artifacts}\n\nWrite one brief. List the gaps. If a gap is critical, claim `route:more` and name it; otherwise claim done."
+    },
+    {
+      "id": "ok",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan",
+      "to": "work",
+      "on": "done"
+    },
+    {
+      "from": "work",
+      "to": "gather",
+      "on": "*"
+    },
+    {
+      "from": "gather",
+      "to": "synth",
+      "on": "*"
+    },
+    {
+      "from": "synth",
+      "to": "plan",
+      "on": "route:more"
+    },
+    {
+      "from": "synth",
+      "to": "ok",
+      "on": "done"
+    },
+    {
+      "from": "synth",
+      "to": "ok",
+      "on": "bounded"
+    },
+    {
+      "from": "ok",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "ok",
+      "to": "synth",
+      "on": "rejected"
+    }
+  ]
+}

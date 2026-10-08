@@ -693,6 +693,7 @@ final class AgentNodeView: NSView {
         addLeft("Open", #selector(frontTap), style: .primary, w: 48)
         if model.role == "conductor" {
             addLeft("Opts", #selector(optsTap), style: .secondary, w: 44)
+            addLeft("CLI", #selector(modelTap), style: .secondary, w: 36)
             addLeft("You", #selector(humanTap), style: .secondary, w: 36)
         } else {
             addLeft("Policy", #selector(permsTap), style: .secondary, w: 48)
@@ -753,6 +754,9 @@ final class AgentNodeView: NSView {
         let detailTop = titleY - 28
         let detailH = max(28, detailTop - 42)
         detailField.frame = NSRect(x: 14, y: 42, width: max(60, w - 28), height: detailH)
+        // Canvas cards stay at two lines; the taller map module card spends the
+        // room it already has, so wiring notes (why / rejected / round) read whole.
+        detailField.maximumNumberOfLines = max(2, Int(detailH / 14))
 
         let barW = w - 20
         actionBar.frame = NSRect(x: 10, y: 8, width: barW, height: 30)
@@ -821,7 +825,9 @@ final class AgentNodeView: NSView {
         } else if title == "Policy" {
             b.toolTip = "Session access policy for this seat"
         } else if title == "CLI" {
-            b.toolTip = "Switch this seat’s AI / CLI model"
+            b.toolTip = model.role == "conductor"
+                ? "Switch orchestrator harness (Grok / Claude / Hermes) — workers stay up"
+                : "Switch this seat’s AI / CLI model"
         } else {
             b.toolTip = title
         }
@@ -1120,6 +1126,7 @@ final class AgentNodeView: NSView {
             // Team activity recap is on the map TASKS panel (under YOU).
             menu.addItem(withTitle: "Add worker…", action: #selector(addFromMenu), keyEquivalent: "")
             menu.addItem(withTitle: "Team options", action: #selector(optsTap), keyEquivalent: "")
+            menu.addItem(withTitle: "Switch harness / CLI…", action: #selector(modelTap), keyEquivalent: "")
             menu.addItem(NSMenuItem.separator())
             menu.addItem(withTitle: "Save session (compress)…", action: #selector(saveSessionTap), keyEquivalent: "")
             menu.addItem(withTitle: "New session + recap…", action: #selector(newSessionRecapTap), keyEquivalent: "")

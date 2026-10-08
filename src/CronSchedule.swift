@@ -19,12 +19,19 @@ enum CronSchedule {
         /// Seat id on the team (c1, w1, …) — owner that fires the job
         var ownerId: String
         var enabled: Bool
+        /// When this last fired, epoch seconds; 0 = never seen by the runner.
+        ///
+        /// Lives beside the schedule so it survives a restart. Without it the
+        /// runner has no memory and every tick after a due time fires again —
+        /// a burst, not a cron.
+        var lastFired: TimeInterval = 0
 
         func asDict() -> [String: Any] {
             [
                 "id": id, "name": name, "task": task, "cadence": cadence,
                 "interval_sec": intervalSec, "phase_sec": phaseSec,
                 "owner_id": ownerId, "enabled": enabled,
+                "last_fired": lastFired,
             ]
         }
 
@@ -46,14 +53,16 @@ enum CronSchedule {
                 phaseSec: (d["phase_sec"] as? Double)
                     ?? Double("\(d["phase_sec"] ?? 0)") ?? 0,
                 ownerId: (d["owner_id"] as? String) ?? "c1",
-                enabled: (d["enabled"] as? Bool) ?? true
+                enabled: (d["enabled"] as? Bool) ?? true,
+                lastFired: (d["last_fired"] as? Double) ?? 0
             )
         }
 
         /// Next fire date after `from`.
         func nextRun(after from: Date = Date()) -> Date {
             guard enabled else { return from.addingTimeInterval(365 * 86400) }
-            if intervalSec >= 86400 - 1 {
+            // daily only when the interval IS a day: "every 168h" is weekly, not daily
+            if abs(intervalSec - 86400) < 2 {
                 // Daily (or longer): next day at phaseSec from midnight local
                 let cal = Calendar.current
                 var comps = cal.dateComponents([.year, .month, .day], from: from)
@@ -119,6 +128,323 @@ enum CronSchedule {
         save(session: session, jobs: jobs)
         Pong.log("CronSchedule.upsert session=\(session) id=\(j.id) name=\(j.name) owner=\(j.ownerId) cadence=\(j.cadence)")
         return j
+    }
+
+    // MARK: - Running them
+
+    /// What a tick decided about one job. Returned so the runner is testable
+    /// without a control plane, and logged so a missed cron is diagnosable.
+    enum Outcome: Equatable {
+        case seeded            // first sight: clock started, deliberately not fired
+        case dispatched
+        case gated             // would send/spend/publish — a draft job was filed instead
+        case notDue
+        case disabled
+        case failed(String)
+    }
+
+    /// Verbs that mean the task reaches outside this machine.
+    ///
+    /// Deliberately generous: a false positive costs a draft job that a person
+    /// approves, a false negative sends mail or moves money on a timer with
+    /// nobody's name on it. The gate is the whole reason a cron runner is
+    /// allowed to exist here at all.
+    private static let outwardVerbs = [
+        "send", "email", "e-mail", "reply", "publish", "post ", "tweet", "dm ",
+        "spend", "pay ", "invoice", "charge", "refund", "purchase", "buy ",
+        "deploy", "release", "ship to", "merge to main", "grant", "scope",
+    ]
+
+    static func reachesOutside(_ task: String) -> Bool {
+        let t = task.lowercased()
+        return outwardVerbs.contains { t.contains($0) }
+    }
+
+    /// Is this job due, given when it last fired?
+    ///
+    /// Anchored on lastFired rather than on the clock alone, so a machine that
+    /// was asleep for a week fires once on wake instead of replaying every
+    /// missed slot.
+    static func isDue(_ job: Job, now: Date) -> Bool {
+        guard job.enabled, job.lastFired > 0 else { return false }
+        return job.nextRun(after: Date(timeIntervalSince1970: job.lastFired)) <= now
+    }
+
+    /// A due job, stamped and waiting to be filed.
+    struct Claim {
+        let job: Job
+        let body: String
+        let outward: Bool
+        /// lastFired before the stamp, to roll back to if the filing is refused.
+        let before: TimeInterval
+        let stamp: TimeInterval
+    }
+
+    /// The deciding half of a tick: seed first sights, stamp what is due, save.
+    /// Nothing is filed here, so this is quick and safe on the main thread.
+    /// `justStarted`: the team was stopped at the last pass. What it missed while
+    /// stopped is not owed, so its due jobs start their clocks from now instead of
+    /// all firing the moment it comes back.
+    static func claimDue(session: String, now: Date, justStarted: Bool = false) -> (claims: [Claim], results: [(String, Outcome)]) {
+        var jobs = load(session: session)
+        guard !jobs.isEmpty else { return ([], []) }
+        var claims: [Claim] = []
+        var results: [(String, Outcome)] = []
+        var changed = false
+
+        for i in jobs.indices {
+            let job = jobs[i]
+            guard job.enabled else {
+                results.append((job.id, .disabled))
+                continue
+            }
+            // First sight starts the clock instead of firing. Otherwise every
+            // cron on a freshly installed team goes off at once, which is a
+            // thundering herd rather than a schedule.
+            if job.lastFired <= 0 {
+                jobs[i].lastFired = now.timeIntervalSince1970
+                changed = true
+                results.append((job.id, .seeded))
+                continue
+            }
+            guard isDue(job, now: now) else {
+                results.append((job.id, .notDue))
+                continue
+            }
+            if justStarted {
+                jobs[i].lastFired = now.timeIntervalSince1970
+                changed = true
+                results.append((job.id, .seeded))
+                continue
+            }
+            // Stamp BEFORE dispatching. A dispatch that takes longer than the
+            // tick interval must not let the next tick see the same job as due.
+            jobs[i].lastFired = now.timeIntervalSince1970
+            changed = true
+            let outward = reachesOutside(job.task)
+            claims.append(Claim(job: job, body: outward ? draftOnlyTask(job) : job.task, outward: outward,
+                                before: job.lastFired, stamp: now.timeIntervalSince1970))
+        }
+        if changed { save(session: session, jobs: jobs) }
+        return (claims, results)
+    }
+
+    /// Nothing was filed, so the clock must not move. A refused dispatch that
+    /// still advanced lastFired is worse than a loud failure: the job silently
+    /// skips its slot and the schedule reads as healthy. Roll back, stay due,
+    /// try again next tick. Only when nobody has touched the stamp since.
+    static func rollBack(session: String, id: String, stamp: TimeInterval, to before: TimeInterval) {
+        var jobs = load(session: session)
+        guard let i = jobs.firstIndex(where: { $0.id == id }), jobs[i].lastFired == stamp else { return }
+        jobs[i].lastFired = before
+        save(session: session, jobs: jobs)
+    }
+
+    /// One pass over a team's schedule, filing on this thread.
+    ///
+    /// `dispatch` is injected so the decision logic can be tested without a
+    /// control plane; the default actually files the job.
+    @discardableResult
+    static func tick(session: String,
+                     now: Date = Date(),
+                     dispatch: (Job, String, String) -> Bool = CronSchedule.file) -> [(String, Outcome)] {
+        var (claims, results) = claimDue(session: session, now: now)
+        for c in claims {
+            if dispatch(c.job, c.body, session) {
+                results.append((c.job.id, c.outward ? .gated : .dispatched))
+            } else {
+                rollBack(session: session, id: c.job.id, stamp: c.stamp, to: c.before)
+                results.append((c.job.id, .failed("job create refused")))
+            }
+        }
+        for (id, outcome) in results where outcome != .notDue && outcome != .disabled {
+            Pong.log("cron \(session)/\(id): \(outcome)")
+        }
+        return results
+    }
+
+    /// The one clock that fires crons, for the life of the app.
+    ///
+    /// A minute, not a poll: the shortest cadence the parser accepts is "every
+    /// 1m", so a 60s tick can be at most a minute late and costs one JSON read
+    /// per team. This is deliberately not a watcher that wakes c1 and not a
+    /// 10Hz loop — it reads the schedule, and the only thing it can do is file a job.
+    private static var runner: Timer?
+
+    /// Posted after a pass or a Run now filed something (the Schedules page redraws).
+    static let didFire = Notification.Name("CronSchedule.didFire")
+
+    /// Filing runs the CLI, which can take a second or two: never on the main thread.
+    private static let filer = DispatchQueue(label: "pong.cron.file", qos: .utility)
+    private static var passing = false
+    /// The teams that were up at the runner's last pass (nil before the first one).
+    private static var lastPassLive: Set<String>?
+
+    /// Teams whose tmux session is up, as of the last pass (nil before the first).
+    private(set) static var running: Set<String>?
+
+    static func startRunner() {
+        guard runner == nil else { return }
+        let t = Timer(timeInterval: 60, repeats: true) { _ in tickRunningTeams() }
+        t.tolerance = 10                      // let the OS coalesce it; nothing here is urgent
+        RunLoop.main.add(t, forMode: .common)
+        runner = t
+        Pong.log("cron runner started (60s, every running team)")
+        tickRunningTeams()
+    }
+
+    /// Which teams are up: their tmux session exists. Off the main thread.
+    private static func liveTeams() -> Set<String> {
+        let out = Pong.sh("tmux list-sessions -F '#{session_name}' 2>/dev/null || true")
+        return Set(out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+
+    /// Look again at which teams are up, then call back on the main thread.
+    static func refreshRunning(_ then: (() -> Void)? = nil) {
+        filer.async {
+            let live = liveTeams()
+            DispatchQueue.main.async {
+                running = live
+                then?()
+            }
+        }
+    }
+
+    /// Fire what is due on every running team (1.9: it used to be the bound team only,
+    /// so a second team's schedules sat on hold). Deciding and stamping happen on the
+    /// main thread, where the pages write the schedule file too; filing goes to a
+    /// background queue, and a refused filing rolls its stamp back. A stopped team's
+    /// schedules wait: a job filed to a team with no seats would only pile up.
+    private static func tickRunningTeams() {
+        guard !passing else { return }
+        passing = true
+        refreshRunning {
+            let live = running ?? []
+            let previous = lastPassLive
+            lastPassLive = live
+            let db = Pong.loadJSON(path)
+            var work: [(String, Claim)] = []
+            for team in db.keys.sorted() where team != "updated" && live.contains(team) {
+                // after a launch every team counts as up before: a Mac that slept still catches up once
+                let justStarted = previous.map { !$0.contains(team) } ?? false
+                let (claims, results) = claimDue(session: team, now: Date(), justStarted: justStarted)
+                for (id, outcome) in results where outcome == .seeded {
+                    Pong.log("cron \(team)/\(id): \(justStarted ? "team just started, clock starts now" : "seeded")")
+                }
+                work += claims.map { (team, $0) }
+            }
+            guard !work.isEmpty else { passing = false; return }
+            filer.async {
+                let filed = work.map { ($0.0, $0.1, file($0.1.job, $0.1.body, $0.0)) }
+                DispatchQueue.main.async {
+                    for (team, c, ok) in filed {
+                        if !ok { rollBack(session: team, id: c.job.id, stamp: c.stamp, to: c.before) }
+                        Pong.log("cron \(team)/\(c.job.id): \(ok ? (c.outward ? "gated" : "dispatched") : "failed: job create refused")")
+                    }
+                    passing = false
+                    NotificationCenter.default.post(name: didFire, object: nil)
+                }
+            }
+        }
+    }
+
+    /// Run one schedule now, whatever its clock says (Schedules › Run now). The next
+    /// run counts from now; a refused filing rolls that back. `done` gets nil, or why
+    /// it did not go, in plain words.
+    static func runNow(session: String, id: String, done: @escaping (String?) -> Void) {
+        var jobs = load(session: session)
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { done("That schedule is gone."); return }
+        let job = jobs[i]
+        let before = job.lastFired
+        let stamp = Date().timeIntervalSince1970
+        jobs[i].lastFired = stamp
+        save(session: session, jobs: jobs)
+        let body = reachesOutside(job.task) ? draftOnlyTask(job, byHand: true) : job.task
+        filer.async {
+            let ok = file(job, body, session)
+            DispatchQueue.main.async {
+                if !ok { rollBack(session: session, id: id, stamp: stamp, to: before) }
+                Pong.log("cron \(session)/\(id): run now, \(ok ? "filed" : "refused")")
+                done(ok ? nil : "The team didn't take it. Check that it's running.")
+                NotificationCenter.default.post(name: didFire, object: nil)
+            }
+        }
+    }
+
+    /// The task a gated cron gets instead of its own.
+    ///
+    /// It still runs — the work of preparing is useful on a schedule — but it
+    /// stops at the point where a person has to say yes, and it says so in the
+    /// text rather than relying on the seat to remember. Run now is a person
+    /// starting the task, not a person approving what it would send.
+    private static func draftOnlyTask(_ job: Job, byHand: Bool = false) -> String {
+        let why = byHand
+            ? "Someone pressed Run now on this schedule: that starts the task, it approves nothing it would send."
+            : "This fired on a timer, so nobody has approved it."
+        // what the AIs call the person (settings.json "owner_name"), one line of at most 60
+        // characters; "the person" until it is set
+        let raw = (Pong.loadJSON(Pong.stateDir + "/settings.json")["owner_name"] as? String) ?? ""
+        let named = String(raw.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").prefix(60))
+        let owner = named.isEmpty ? "the person" : named
+        return """
+        SCHEDULED — \(job.name)
+
+        \(job.task)
+
+        HUMAN GATE. \(why) This
+        wording looks like it would send, publish or spend. Prepare the work and
+        STOP at the point of sending: draft it, put it where \(owner) can see it,
+        and say plainly what you would do next and what it would cost. Do not
+        send, publish, pay, deploy, or widen a scope. A named human presses the
+        button, not a schedule.
+        """
+    }
+
+    /// File a real job on the control plane. One dispatch path, the same one
+    /// the rest of the app uses.
+    private static func file(_ job: Job, _ body: String, _ session: String) -> Bool {
+        let tmp = NSTemporaryDirectory() + "pong-cron-\(job.id)-\(UUID().uuidString).md"
+        do {
+            try body.write(toFile: tmp, atomically: true, encoding: .utf8)
+        } catch {
+            Pong.log("cron could not stage task for \(job.id): \(error.localizedDescription)")
+            return false
+        }
+        // PONG_SEAT unset for the same reason the bar setter unsets it: the
+        // control plane infers the assigner from the environment, and a stray
+        // seat id would make a schedule look like one seat routing to another.
+        // The control plane refuses an explicit `-s <session>` from a caller it
+        // cannot identify (routing.resolve_write_session): this app exports no
+        // PONG_SESSION, so it is caller=none and must present that session's own
+        // token. bash reads the token file itself — interpolating the secret into
+        // this script would put it in the `bash -c` argv, where `ps` shows it to
+        // anything running on the box. Only the path travels in argv.
+        let tokenPath = Pong.stateDir + "/sessions/\(session)/token"
+        if !FileManager.default.fileExists(atPath: tokenPath) {
+            // Not fatal, and deliberately not a second auth path: the CLI creates
+            // the token while refusing this attempt, so the next tick authenticates.
+            // Logged so "refused once, right after install" is readable.
+            Pong.log("cron \(job.id): no session token at \(tokenPath) — this dispatch will be refused")
+        }
+        let out = Pong.sh("""
+        \(SessionArchive.pongPrefix())
+        unset PONG_SEAT
+        export PONG_TOKEN="$(cat '\(tokenPath)' 2>/dev/null)"
+        python3 -m pong.cli.main -s \(session) job create --worker \(job.ownerId) --file '\(tmp)' 2>&1
+        """)
+        try? FileManager.default.removeItem(atPath: tmp)
+        // The CLI writes the job file and THEN tries to deliver it. A seat with
+        // no pane makes it exit non-zero while the job is already written and
+        // queued for the waitroom, so job_id= is the honest test of "did this
+        // cron fire" — but a delivery that failed still has to be visible, or a
+        // cron that never reaches its seat looks identical to one that did.
+        let ok = out.contains("job_id=")
+        if !ok {
+            Pong.log("cron dispatch failed for \(job.id): \(out.prefix(200))")
+        } else if out.contains("error:") {
+            Pong.log("cron \(job.id) queued but not delivered: \(out.prefix(200))")
+        }
+        return ok
     }
 
     /// Parse human cadence into interval + phase. Accepts "every 15m", "every 1h", "daily 04:00".
@@ -237,473 +563,4 @@ enum CronSchedule {
     }
 }
 
-/// Invisible full-row hit target so clicking a job opens edit (not only the Edit button).
-private final class CronJobRowButton: NSButton {
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-}
-
-// MARK: - Cron manager sheet (add / edit jobs)
-
-final class CronManagerSheet: NSObject {
-    static let shared = CronManagerSheet()
-    private var window: NSWindow?
-    private var session = ""
-    private var jobs: [CronSchedule.Job] = []
-    private var seats: [Seat3D] = []
-    private var onDone: (() -> Void)?
-    private var listBox: NSView!
-    private var scroll: NSScrollView!
-    private var themeObserver: NSObjectProtocol?
-    private weak var titleField: NSTextField?
-    private weak var subField: NSTextField?
-
-    func show(session: String, seats: [Seat3D], preselectJobId: String? = nil, onDone: @escaping () -> Void) {
-        self.session = session
-        self.seats = seats.filter { $0.role != "human" }
-        self.onDone = onDone
-        self.jobs = CronSchedule.load(session: session)
-        if themeObserver == nil {
-            themeObserver = NotificationCenter.default.addObserver(
-                forName: PongTheme.appearanceDidChange, object: nil, queue: .main
-            ) { [weak self] _ in
-                self?.applyChrome()
-                self?.reloadList()
-            }
-        }
-        build()
-        applyChrome()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        reloadList()
-        // Map ruler click: open editor preselected on that job
-        if let pid = preselectJobId, let idx = jobs.firstIndex(where: { $0.id == pid }) {
-            DispatchQueue.main.async { [weak self] in
-                _ = self?.editJobAt(idx, isNew: false)
-            }
-        }
-    }
-
-    /// Light/dark surfaces + button ink (avoids white-on-white in aqua).
-    private func applyChrome() {
-        guard let win = window, let root = win.contentView else { return }
-        let aqua = PongTheme.appearance == .dark
-            ? NSAppearance(named: .darkAqua)
-            : NSAppearance(named: .aqua)
-        win.appearance = aqua
-        win.backgroundColor = PongTheme.bg
-        root.appearance = aqua
-        root.wantsLayer = true
-        root.layer?.backgroundColor = PongTheme.bg.cgColor
-        titleField?.textColor = PongTheme.textPrimary
-        titleField?.font = PongTheme.font(16, weight: .semibold)
-        subField?.textColor = PongTheme.textSecondary
-        subField?.font = PongTheme.font(11)
-        for v in root.subviews {
-            if let b = v as? NSButton {
-                styleFooterButton(b)
-            }
-        }
-        scroll?.drawsBackground = false
-        scroll?.backgroundColor = .clear
-    }
-
-    private func styleFooterButton(_ b: NSButton) {
-        let title = b.attributedTitle.string.isEmpty ? b.title : b.attributedTitle.string
-        guard !title.isEmpty else { return }
-        b.bezelStyle = .rounded
-        b.isBordered = true
-        b.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
-        b.contentTintColor = PongTheme.textPrimary
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.textPrimary,
-            .font: PongTheme.font(12, weight: .medium),
-        ])
-    }
-
-    private func styleRowButton(_ b: NSButton, title: String) {
-        b.bezelStyle = .rounded
-        b.isBordered = true
-        b.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
-        b.contentTintColor = PongTheme.textPrimary
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: PongTheme.textPrimary,
-            .font: PongTheme.font(11, weight: .medium),
-        ])
-    }
-
-    private func build() {
-        let w: CGFloat = 520
-        let h: CGFloat = 480
-        if let existing = window {
-            existing.contentView?.subviews.forEach { $0.removeFromSuperview() }
-        }
-        let win = window ?? NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-            styleMask: [.titled, .closable],
-            backing: .buffered, defer: false
-        )
-        win.title = "Cron · schedule"
-        win.center()
-        win.isReleasedWhenClosed = false
-        win.backgroundColor = PongTheme.bg
-        win.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
-
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        root.wantsLayer = true
-        root.layer?.backgroundColor = PongTheme.bg.cgColor
-        root.appearance = win.appearance
-        win.contentView = root
-
-        let title = NSTextField(labelWithString: "CRON MANAGER")
-        title.font = PongTheme.font(16, weight: .semibold)
-        title.textColor = PongTheme.textPrimary
-        title.frame = NSRect(x: 20, y: h - 40, width: 280, height: 22)
-        root.addSubview(title)
-        titleField = title
-
-        let sub = NSTextField(labelWithString: "Who runs what · cadence · timeline order")
-        sub.font = PongTheme.font(11)
-        sub.textColor = PongTheme.textSecondary
-        sub.frame = NSRect(x: 20, y: h - 58, width: 360, height: 16)
-        root.addSubview(sub)
-        subField = sub
-
-        scroll = NSScrollView(frame: NSRect(x: 16, y: 56, width: w - 32, height: h - 120))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        scroll.backgroundColor = .clear
-        listBox = NSView(frame: .zero)
-        scroll.documentView = listBox
-        root.addSubview(scroll)
-
-        let add = NSButton(title: "+ Describe in Guide", target: self, action: #selector(addJob))
-        add.toolTip = "Create a schedule by chatting with Guide (recommended)"
-        add.frame = NSRect(x: 16, y: 16, width: 140, height: 28)
-        styleFooterButton(add)
-        root.addSubview(add)
-
-        let manual = NSButton(title: "Manual form", target: self, action: #selector(addJobManual))
-        manual.toolTip = "Classic multi-field form"
-        manual.frame = NSRect(x: 164, y: 16, width: 100, height: 28)
-        styleFooterButton(manual)
-        root.addSubview(manual)
-
-        let defaults = NSButton(title: "Suggested", target: self, action: #selector(restoreDefaults))
-        defaults.frame = NSRect(x: 272, y: 16, width: 90, height: 28)
-        styleFooterButton(defaults)
-        root.addSubview(defaults)
-
-        let done = NSButton(title: "Done", target: self, action: #selector(donePressed))
-        done.keyEquivalent = "\r"
-        done.frame = NSRect(x: w - 100, y: 16, width: 80, height: 28)
-        styleFooterButton(done)
-        root.addSubview(done)
-
-        window = win
-    }
-
-    private func reloadList() {
-        guard listBox != nil, scroll != nil else { return }
-        listBox.subviews.forEach { $0.removeFromSuperview() }
-        let rowH: CGFloat = 64
-        let W = max(scroll.contentSize.width - 8, 460)
-        var y: CGFloat = 8
-        let sorted = jobs.sorted { $0.nextRun() < $1.nextRun() }
-        // Light: solid elevated card (not translucent white-on-white)
-        let rowFill: NSColor = PongTheme.appearance == .dark
-            ? PongTheme.bgElevated
-            : NSColor(calibratedWhite: 0.94, alpha: 1)
-        for (i, job) in sorted.enumerated() {
-            let row = NSView(frame: NSRect(x: 0, y: 0, width: W, height: rowH - 6))
-            row.wantsLayer = true
-            row.layer?.backgroundColor = rowFill.cgColor
-            row.layer?.cornerRadius = 6
-            row.layer?.borderWidth = 1
-            row.layer?.borderColor = PongTheme.border.cgColor
-
-            let accent = CronSchedule.accent(forOwnerId: job.ownerId, seats: seats)
-            let bar = NSView(frame: NSRect(x: 0, y: 0, width: 3, height: rowH - 6))
-            bar.wantsLayer = true
-            bar.layer?.backgroundColor = accent.cgColor
-            row.addSubview(bar)
-
-            let name = NSTextField(labelWithString: job.name)
-            name.font = PongTheme.font(13, weight: .semibold)
-            name.textColor = PongTheme.textPrimary
-            name.frame = NSRect(x: 14, y: 36, width: 220, height: 18)
-            row.addSubview(name)
-
-            let ownerSeat = seats.first(where: { $0.id == job.ownerId })
-            let ownerLabel = ownerSeat?.title ?? job.ownerTag
-            let taskPreview = job.task.isEmpty ? "(no task yet)" : String(job.task.prefix(56))
-            let meta = NSTextField(labelWithString: "\(job.cadence)  ·  → \(ownerLabel)  ·  \(taskPreview)")
-            meta.font = PongTheme.mono(10)
-            meta.textColor = PongTheme.textSecondary
-            meta.lineBreakMode = .byTruncatingTail
-            meta.frame = NSRect(x: 14, y: 10, width: max(200, W - 220), height: 14)
-            row.addSubview(meta)
-
-            let nf = DateFormatter()
-            nf.dateFormat = "HH:mm"
-            // Light: dark ink for NEXT if accent is too pale; accents stay readable
-            let next = NSTextField(labelWithString: "NEXT \(nf.string(from: job.nextRun()))")
-            next.font = PongTheme.mono(10, weight: .semibold)
-            next.textColor = PongTheme.appearance == .dark
-                ? accent
-                : accent.blended(withFraction: 0.35, of: .black) ?? PongTheme.textPrimary
-            next.alignment = .right
-            next.frame = NSRect(x: W - 200, y: 32, width: 100, height: 16)
-            row.addSubview(next)
-
-            let jobIdx = jobs.firstIndex(where: { $0.id == job.id }) ?? i
-            let edit = NSButton(title: "Edit", target: self, action: #selector(editJob(_:)))
-            edit.tag = jobIdx
-            edit.frame = NSRect(x: W - 100, y: 18, width: 48, height: 26)
-            styleRowButton(edit, title: "Edit")
-            row.addSubview(edit)
-
-            let del = NSButton(title: "✕", target: self, action: #selector(deleteJob(_:)))
-            del.tag = jobIdx
-            del.frame = NSRect(x: W - 48, y: 18, width: 32, height: 26)
-            styleRowButton(del, title: "✕")
-            row.addSubview(del)
-
-            // Click row (outside buttons) to edit
-            let hit = CronJobRowButton(frame: NSRect(x: 0, y: 0, width: W - 110, height: rowH - 6))
-            hit.isBordered = false
-            hit.title = ""
-            hit.tag = jobIdx
-            hit.target = self
-            hit.action = #selector(editJob(_:))
-            hit.wantsLayer = true
-            hit.layer?.backgroundColor = NSColor.clear.cgColor
-            row.addSubview(hit, positioned: .below, relativeTo: name)
-
-            row.setFrameOrigin(NSPoint(x: 4, y: y))
-            listBox.addSubview(row)
-            y += rowH
-        }
-        listBox.frame = NSRect(x: 0, y: 0, width: W, height: max(y + 8, scroll.contentSize.height))
-        // Flip so top jobs are at top of scroll
-        if let doc = scroll.documentView {
-            doc.frame = listBox.frame
-        }
-    }
-
-    /// Primary path: Guide chat to describe the schedule (not the multi-field alert).
-    @objc private func addJob() {
-        let sess = session
-        window?.orderOut(nil)
-        AppAIChatBubble.shared.beginCronWizard(session: sess.isEmpty ? nil : sess)
-        onDone?()
-    }
-
-    /// Power-user fallback: classic form.
-    @objc private func addJobManual() {
-        let owner = seats.first?.id ?? "c1"
-        appendAndEdit(ownerId: owner)
-    }
-
-    /// From map `+` menu: chat-first for this seat; manual still available in manager.
-    func addJobForOwner(session: String, ownerId: String, seats: [Seat3D], onDone: @escaping () -> Void) {
-        self.session = session
-        self.seats = seats.filter { $0.role != "human" }
-        self.onDone = onDone
-        AppAIChatBubble.shared.beginCronWizard(
-            session: session,
-            ownerHint: ownerId,
-            seatLabels: seats.map { "\($0.id)=\($0.title)" }
-        )
-        onDone()
-    }
-
-    private func appendAndEdit(ownerId: String) {
-        let ownerSeat = seats.first(where: { $0.id == ownerId })
-        let ownerName = ownerSeat?.title ?? ownerId
-        jobs.append(CronSchedule.Job(
-            id: String(UUID().uuidString.prefix(8)).lowercased(),
-            name: "New job",
-            task: "Describe what \(ownerName) should do when this fires…",
-            cadence: "every 1h",
-            intervalSec: 3600,
-            phaseSec: 0,
-            ownerId: ownerId,
-            enabled: true
-        ))
-        let idx = jobs.count - 1
-        // Only persist after the user confirms the edit alert — cancel drops the stub.
-        if editJobAt(idx, isNew: true) {
-            persist()
-            reloadList()
-        } else {
-            if jobs.indices.contains(idx) { jobs.remove(at: idx) }
-            reloadList()
-        }
-    }
-
-    @objc private func restoreDefaults() {
-        jobs = CronSchedule.defaultJobs(session: session)
-        persist()
-        reloadList()
-    }
-
-    @objc private func editJob(_ sender: NSButton) {
-        _ = editJobAt(sender.tag, isNew: false)
-    }
-
-    /// Returns true if the user saved. For `isNew`, caller owns persist (so cancel leaves no stub).
-    @discardableResult
-    private func editJobAt(_ idx: Int, isNew: Bool) -> Bool {
-        guard jobs.indices.contains(idx) else { return false }
-        var j = jobs[idx]
-        let ownerSeat = seats.first(where: { $0.id == j.ownerId })
-        let ownerName = ownerSeat?.title ?? j.ownerId
-
-        let a = NSAlert()
-        a.messageText = isNew ? "New cron job" : "Edit cron job"
-        a.informativeText =
-            "This task is delivered to the owner agent when it fires.\n" +
-            "Owner: \(ownerName) (\(j.ownerId)) — change owner below if needed."
-        a.addButton(withTitle: "Save")
-        a.addButton(withTitle: "Cancel")
-        let alertAqua = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
-        a.window.appearance = alertAqua
-        a.icon = nil
-
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 210))
-        box.appearance = alertAqua
-        box.wantsLayer = true
-        box.layer?.backgroundColor = PongTheme.bg.cgColor
-
-        func fieldLabel(_ text: String, frame: NSRect) -> NSTextField {
-            let l = NSTextField(labelWithString: text)
-            l.font = PongTheme.mono(10)
-            l.textColor = PongTheme.textSecondary
-            l.frame = frame
-            return l
-        }
-        func styleTextField(_ f: NSTextField) {
-            f.textColor = PongTheme.textPrimary
-            f.backgroundColor = PongTheme.bgInput
-            f.drawsBackground = true
-            f.font = PongTheme.font(12)
-        }
-
-        let nameL = fieldLabel("Name", frame: NSRect(x: 0, y: 188, width: 120, height: 14))
-        box.addSubview(nameL)
-        let nameF = NSTextField(frame: NSRect(x: 0, y: 162, width: 380, height: 24))
-        nameF.stringValue = j.name
-        nameF.placeholderString = "Short job name"
-        styleTextField(nameF)
-        box.addSubview(nameF)
-
-        let taskL = fieldLabel("Task for the owner agent", frame: NSRect(x: 0, y: 140, width: 280, height: 14))
-        box.addSubview(taskL)
-        let taskScroll = NSScrollView(frame: NSRect(x: 0, y: 72, width: 380, height: 64))
-        taskScroll.hasVerticalScroller = true
-        taskScroll.borderType = .bezelBorder
-        taskScroll.autohidesScrollers = true
-        let taskF = NSTextView(frame: NSRect(x: 0, y: 0, width: 364, height: 64))
-        taskF.string = j.task
-        taskF.font = PongTheme.font(12)
-        taskF.isRichText = false
-        taskF.drawsBackground = true
-        taskF.backgroundColor = PongTheme.bgInput
-        taskF.textColor = PongTheme.textPrimary
-        taskF.insertionPointColor = PongTheme.textPrimary
-        taskF.isEditable = true
-        taskF.isSelectable = true
-        taskScroll.documentView = taskF
-        box.addSubview(taskScroll)
-
-        let cadL = fieldLabel("Cadence", frame: NSRect(x: 0, y: 50, width: 100, height: 14))
-        box.addSubview(cadL)
-        let cadF = NSTextField(frame: NSRect(x: 0, y: 26, width: 180, height: 24))
-        cadF.stringValue = j.cadence
-        cadF.placeholderString = "every 15m · daily 04:00"
-        styleTextField(cadF)
-        box.addSubview(cadF)
-
-        let ownL = fieldLabel("Owner seat", frame: NSRect(x: 190, y: 50, width: 100, height: 14))
-        box.addSubview(ownL)
-        let ownPop = NSPopUpButton(frame: NSRect(x: 190, y: 26, width: 100, height: 24), pullsDown: false)
-        let seatIds = seats.map(\.id)
-        if seatIds.isEmpty {
-            ownPop.addItem(withTitle: j.ownerId.isEmpty ? "c1" : j.ownerId)
-        } else {
-            for seat in seats {
-                let title = "\(seat.id) · \(seat.title)"
-                ownPop.addItem(withTitle: title)
-                ownPop.lastItem?.representedObject = seat.id
-            }
-            if let ix = seats.firstIndex(where: { $0.id == j.ownerId }) {
-                ownPop.selectItem(at: ix)
-            }
-        }
-        PongTheme.stylePopUp(ownPop)
-        box.addSubview(ownPop)
-
-        let minL = fieldLabel("Every (min)", frame: NSRect(x: 300, y: 50, width: 80, height: 14))
-        box.addSubview(minL)
-        let minF = NSTextField(frame: NSRect(x: 300, y: 26, width: 80, height: 24))
-        minF.stringValue = "\(max(1, Int(j.intervalSec / 60)))"
-        minF.placeholderString = "min"
-        styleTextField(minF)
-        box.addSubview(minF)
-
-        a.accessoryView = box
-        a.window.initialFirstResponder = nameF
-        guard a.runModal() == .alertFirstButtonReturn else { return false }
-
-        j.name = nameF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        j.task = taskF.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        j.cadence = cadF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let oid = ownPop.selectedItem?.representedObject as? String, !oid.isEmpty {
-            j.ownerId = oid
-        } else if let t = ownPop.titleOfSelectedItem, !t.isEmpty {
-            // fallback: first token before ·
-            j.ownerId = t.split(separator: "·").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? j.ownerId
-        }
-        if let m = Int(minF.stringValue), m > 0 {
-            j.intervalSec = TimeInterval(m * 60)
-            if j.cadence.lowercased().hasPrefix("daily") == false && j.intervalSec < 86400 {
-                // keep user's cadence text if they typed one; else synthesize
-                if j.cadence.isEmpty || j.cadence == "hourly" {
-                    j.cadence = m >= 60 ? "every \(m / 60)h" : "every \(m)m"
-                }
-            }
-        }
-        if j.name.isEmpty { j.name = "Job" }
-        if j.ownerId.isEmpty { j.ownerId = "c1" }
-        if j.task.isEmpty {
-            j.task = "Run scheduled work for \(j.name)."
-        }
-        jobs[idx] = j
-        if !isNew {
-            persist()
-            reloadList()
-        }
-        return true
-    }
-
-    @objc private func deleteJob(_ sender: NSButton) {
-        let idx = sender.tag
-        guard jobs.indices.contains(idx) else { return }
-        jobs.remove(at: idx)
-        persist()
-        reloadList()
-    }
-
-    private func persist() {
-        CronSchedule.save(session: session, jobs: jobs)
-    }
-
-    @objc private func donePressed() {
-        persist()
-        window?.orderOut(nil)
-        onDone?()
-    }
-}
+// MARK: - end of CronSchedule (tests/swift/run.sh slices the enum above this line)

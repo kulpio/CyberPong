@@ -38,7 +38,7 @@ None.
 
 1. **Options is prominent, not full-width** — task allowed “full-width-ish or left-aligned prominent”; 116pt + hint meets accessibility intent.
 2. **Line 1 Kill ends ~386** — tighter than Options was, but still inside boxW; if a vertical scroller steals width on some macOS versions, Kill is the first at risk, not Options.
-3. **Did not re-smoke install/pkill** — trust claim; if Dylan still sees old UI, force-kill leftover HermesPong process once more.
+3. **Did not re-smoke install/pkill** — trust claim; if the old UI still shows, force-kill leftover HermesPong process once more.
 
 ## Acceptance mapping
 

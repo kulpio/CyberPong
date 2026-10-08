@@ -8,21 +8,21 @@ final class AppAIChatBubble: NSView {
 
     private let fab = NSButton(frame: .zero)
     private let panel = NSView(frame: .zero)
-    private let titleLabel = NSTextField(labelWithString: "GUIDE")
+    private let titleLabel = PongUI.eyebrow("Guide")
     private let transcript = NSTextView()
     private let scroll = NSScrollView()
     private let input = NSTextField(frame: .zero)
-    private let sendBtn = NSButton(frame: .zero)
+    private let sendBtn = PongButton(title: "Ask", style: .primary, size: .small)
     private let nudgeChip = NSTextField(labelWithString: "")
     /// Disconnect / reconnect strip above the input
     private let reconnectBar = NSView(frame: .zero)
     private let reconnectLabel = NSTextField(wrappingLabelWithString: "")
-    private let reconnectBtn = NSButton(frame: .zero)
+    private let reconnectBtn = PongButton(title: "Reconnect", style: .primary, size: .small)
     /// Coach / Apply action strip (ghost seats, spawn sub, chat intents)
     private let actionBar = NSView(frame: .zero)
     private let actionLabel = NSTextField(wrappingLabelWithString: "")
-    private let actionBtn = NSButton(frame: .zero)
-    private let actionBtn2 = NSButton(frame: .zero)
+    private let actionBtn = PongButton(title: "Apply", style: .primary, size: .small)
+    private let actionBtn2 = PongButton(title: "", style: .secondary, size: .small)
     private var actionHandler: (() -> Void)?
     private var secondaryHandler: (() -> Void)?
     private var pendingIntents: [AppAIMutator.Intent] = []
@@ -47,8 +47,8 @@ final class AppAIChatBubble: NSView {
 
     /// Collapsed FAB size · expanded panel (sizes fixed — job e83a7a)
     private let fabSize: CGFloat = 44
-    private let panelW: CGFloat = 300
-    private let panelH: CGFloat = 380
+    private let panelW: CGFloat = 360
+    private let panelH: CGFloat = 440
     private let pad: CGFloat = 16
     private let reconnectBarH: CGFloat = 80
     private let actionBarH: CGFloat = 72
@@ -71,7 +71,7 @@ final class AppAIChatBubble: NSView {
             mapHost = PanelController.shared.mapHostView()
         }
         guard mapHost != nil || PanelController.shared.guideOverlayHost() != nil else { return }
-        isHidden = false
+        isHidden = !expanded
         reparentForCurrentMode()
         layoutInHost()
         ensureFrontmost()
@@ -139,222 +139,144 @@ final class AppAIChatBubble: NSView {
             nudgeChip.isHidden = true
             layer?.zPosition = overlayZ
         } else {
-            let grow: CGFloat = (hovering ? 6 : 0)
-            let s = fabSize + grow
-            frame = NSRect(
-                x: w - s - pad,
-                y: pad + 36,
-                width: s + (nudgeChip.isHidden ? 0 : 160),
-                height: max(s, nudgeChip.isHidden ? s : 52)
-            )
+            // collapsed is closed: the floating button is retired (1.9)
+            frame = .zero
             panel.isHidden = true
-            fab.isHidden = false
-            fab.frame = NSRect(x: frame.width - s, y: 0, width: s, height: s)
-            fab.layer?.cornerRadius = s / 2
+            fab.isHidden = true
             layer?.zPosition = 100
         }
+        isHidden = !expanded
         autoresizingMask = [.minXMargin, .maxYMargin]
         ensureFrontmost()
     }
 
     private func build() {
-        fab.bezelStyle = .inline
-        fab.isBordered = false
-        fab.wantsLayer = true
-        fab.layer?.backgroundColor = PongTheme.bgElevated.cgColor
-        fab.layer?.borderWidth = 1
-        fab.layer?.borderColor = PongSheetChrome.lime.withAlphaComponent(0.55).cgColor
-        fab.layer?.cornerRadius = fabSize / 2
-        fab.layer?.shadowColor = PongSheetChrome.lime.cgColor
-        fab.layer?.shadowOpacity = 0.35
-        fab.layer?.shadowRadius = 10
-        fab.layer?.shadowOffset = .zero
-        fab.toolTip = "CyberPong Guide"
+        // 1.9: the floating sparkle button is retired; the Guide opens from ⌘K (Ask the Guide)
+        // and its hints arrive as toasts. What is left is the panel, in the popover look.
+        fab.isHidden = true
         fab.target = self
         fab.action = #selector(toggleExpand)
-        if #available(macOS 11.0, *) {
-            let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-            fab.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Guide")?
-                .withSymbolConfiguration(cfg)
-            fab.contentTintColor = PongSheetChrome.lime
-            fab.imagePosition = .imageOnly
-        } else {
-            fab.title = "✦"
-        }
         addSubview(fab)
-
         nudgeChip.isHidden = true
-        nudgeChip.font = PongTheme.font(11, weight: .medium)
-        nudgeChip.textColor = PongTheme.textPrimary
-        nudgeChip.backgroundColor = .clear
-        nudgeChip.isBezeled = false
-        nudgeChip.drawsBackground = false
-        nudgeChip.lineBreakMode = .byTruncatingTail
         addSubview(nudgeChip)
 
         panel.wantsLayer = true
-        panel.layer?.backgroundColor = PongTheme.bgElevated.cgColor
-        panel.layer?.cornerRadius = 16
-        panel.layer?.borderWidth = 1
-        panel.layer?.borderColor = PongTheme.line.withAlphaComponent(0.4).cgColor
+        panel.layer?.backgroundColor = PongColor.overlay.cgColor
+        panel.layer?.cornerRadius = PongRadius.card
         panel.layer?.shadowColor = NSColor.black.cgColor
         panel.layer?.shadowOpacity = 0.45
         panel.layer?.shadowRadius = 16
         panel.isHidden = true
+        panel.setAccessibilityElement(true)
+        panel.setAccessibilityRole(.group)
+        panel.setAccessibilityLabel("Guide")
         addSubview(panel)
 
-        titleLabel.font = PongTheme.labelFont(10)
-        titleLabel.textColor = PongSheetChrome.limeDim
         panel.addSubview(titleLabel)
 
-        let close = NSButton(title: "✕", target: self, action: #selector(collapse))
-        close.bezelStyle = .inline
-        close.isBordered = false
-        close.wantsLayer = true
-        close.font = PongTheme.font(13, weight: .semibold)
-        close.contentTintColor = PongTheme.textPrimary
-        close.attributedTitle = NSAttributedString(string: "✕", attributes: [
-            .foregroundColor: PongTheme.textPrimary,
-            .font: PongTheme.font(13, weight: .semibold),
-        ])
-        close.frame = NSRect(x: panelW - 30, y: panelH - 30, width: 24, height: 24)
+        let close = PongButton(title: "", style: .quiet, size: .small)
+        close.symbol = "xmark"
+        close.target = self
+        close.action = #selector(collapse)
+        close.frame = NSRect(x: panelW - 36, y: panelH - 36, width: 28, height: 28)
         close.identifier = NSUserInterfaceItemIdentifier("close")
-        close.toolTip = "Close Guide"
+        close.toolTip = "Close the Guide"
+        close.setAccessibilityLabel("Close the Guide")
         panel.addSubview(close)
 
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
         transcript.isEditable = false
         transcript.isRichText = false
-        transcript.font = PongTheme.font(12)
-        transcript.textColor = PongTheme.textPrimary
+        transcript.font = PongType.body
+        transcript.textColor = PongColor.textPrimary
         transcript.backgroundColor = .clear
         transcript.drawsBackground = false
-        transcript.textContainerInset = NSSize(width: 6, height: 6)
+        transcript.textContainerInset = NSSize(width: 8, height: 8)
+        transcript.setAccessibilityLabel("The Guide's answers")
         scroll.documentView = transcript
         panel.addSubview(scroll)
 
-        // Reconnect strip
+        // offline: it needs you, so it sits on the question tint
         reconnectBar.wantsLayer = true
-        reconnectBar.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.12).cgColor
-        reconnectBar.layer?.cornerRadius = 10
-        reconnectBar.layer?.borderWidth = 1
-        reconnectBar.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.35).cgColor
+        reconnectBar.layer?.backgroundColor = PongColor.tintYou.cgColor
+        reconnectBar.layer?.cornerRadius = PongRadius.control
         reconnectBar.isHidden = true
         panel.addSubview(reconnectBar)
-
-        reconnectLabel.font = PongTheme.font(11)
-        reconnectLabel.textColor = PongTheme.textPrimary
+        reconnectLabel.font = PongType.secondary
+        reconnectLabel.textColor = PongColor.textPrimary
         reconnectLabel.maximumNumberOfLines = 3
         reconnectLabel.isEditable = false
         reconnectLabel.isBezeled = false
         reconnectLabel.drawsBackground = false
         reconnectBar.addSubview(reconnectLabel)
-
-        reconnectBtn.bezelStyle = .inline
-        reconnectBtn.isBordered = false
-        reconnectBtn.wantsLayer = true
-        reconnectBtn.layer?.cornerRadius = 8
-        reconnectBtn.layer?.backgroundColor = PongSheetChrome.lime.cgColor
         reconnectBtn.target = self
         reconnectBtn.action = #selector(reconnectPressed)
-        styleReconnectButton(title: "Reconnect")
         reconnectBar.addSubview(reconnectBtn)
 
-        // Coach Apply strip
+        // a change the Guide can apply
         actionBar.wantsLayer = true
-        actionBar.layer?.backgroundColor = PongSheetChrome.lime.withAlphaComponent(0.10).cgColor
-        actionBar.layer?.cornerRadius = 10
-        actionBar.layer?.borderWidth = 1
-        actionBar.layer?.borderColor = PongSheetChrome.lime.withAlphaComponent(0.35).cgColor
+        actionBar.layer?.backgroundColor = PongColor.raised.cgColor
+        actionBar.layer?.cornerRadius = PongRadius.control
         actionBar.isHidden = true
         panel.addSubview(actionBar)
-
-        actionLabel.font = PongTheme.font(11)
-        actionLabel.textColor = PongTheme.textPrimary
+        actionLabel.font = PongType.secondary
+        actionLabel.textColor = PongColor.textPrimary
         actionLabel.maximumNumberOfLines = 2
         actionLabel.isEditable = false
         actionLabel.isBezeled = false
         actionLabel.drawsBackground = false
         actionBar.addSubview(actionLabel)
-
-        actionBtn.bezelStyle = .inline
-        actionBtn.isBordered = false
-        actionBtn.wantsLayer = true
-        actionBtn.layer?.cornerRadius = 8
-        actionBtn.layer?.backgroundColor = PongSheetChrome.lime.cgColor
         actionBtn.target = self
         actionBtn.action = #selector(actionPressed)
-        styleActionButton(title: "Apply")
         actionBar.addSubview(actionBtn)
-
-        actionBtn2.bezelStyle = .inline
-        actionBtn2.isBordered = false
-        actionBtn2.wantsLayer = true
-        actionBtn2.layer?.cornerRadius = 8
-        actionBtn2.layer?.backgroundColor = PongTheme.bgHover.cgColor
-        actionBtn2.layer?.borderWidth = 1
-        actionBtn2.layer?.borderColor = PongTheme.border.cgColor
         actionBtn2.target = self
         actionBtn2.action = #selector(secondaryActionPressed)
         actionBtn2.isHidden = true
         actionBar.addSubview(actionBtn2)
 
-        input.placeholderString = "Ask Guide…"
-        input.font = PongTheme.font(12)
+        input.placeholderAttributedString = NSAttributedString(string: "Ask the Guide…", attributes: [
+            .font: PongType.body, .foregroundColor: PongColor.textTertiary])
+        input.font = PongType.body
+        input.textColor = PongColor.textPrimary
         input.isBordered = false
-        input.wantsLayer = true
-        input.layer?.cornerRadius = 10
-        input.layer?.backgroundColor = PongTheme.bgInput.cgColor
+        input.drawsBackground = false
         input.focusRingType = .none
         input.target = self
         input.action = #selector(send)
+        input.setAccessibilityLabel("Ask the Guide")
+        inputBox.wantsLayer = true
+        inputBox.layer?.backgroundColor = PongColor.field.cgColor
+        inputBox.layer?.cornerRadius = PongRadius.control
+        inputBox.layer?.borderWidth = 1
+        inputBox.layer?.borderColor = PongColor.control.cgColor
+        panel.addSubview(inputBox)
         panel.addSubview(input)
 
-        sendBtn.bezelStyle = .inline
-        sendBtn.isBordered = false
-        sendBtn.wantsLayer = true
-        sendBtn.layer?.cornerRadius = 10
-        sendBtn.layer?.backgroundColor = PongSheetChrome.lime.cgColor
-        sendBtn.attributedTitle = NSAttributedString(string: "↑", attributes: [
-            .foregroundColor: NSColor.black,
-            .font: PongTheme.font(14, weight: .bold),
-        ])
         sendBtn.target = self
         sendBtn.action = #selector(send)
         panel.addSubview(sendBtn)
 
-        let track = NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        fab.addTrackingArea(track)
-
-        appendLocal("Guide · ask about this team or map.")
+        appendLocal("Ask about your teams and graphs: what is running, what is stuck, what needs you.")
     }
 
+    private let inputBox = NSView()
+
     private func styleReconnectButton(title: String) {
-        reconnectBtn.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: NSColor.black,
-            .font: PongTheme.font(11, weight: .semibold),
-        ])
+        reconnectBtn.title = title
     }
 
     private func styleActionButton(title: String) {
-        actionBtn.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: NSColor.black,
-            .font: PongTheme.font(11, weight: .semibold),
-        ])
+        actionBtn.title = title
     }
 
     override func layout() {
         super.layout()
         if expanded {
             panel.frame = bounds
-            titleLabel.frame = NSRect(x: 14, y: panelH - 28, width: 160, height: 16)
+            titleLabel.frame = NSRect(x: 16, y: panelH - 30, width: 160, height: 16)
             let reconOn = !reconnectBar.isHidden
             let actOn = !actionBar.isHidden
             let reconH: CGFloat = reconOn ? reconnectBarH : 0
@@ -369,22 +291,25 @@ final class AppAIChatBubble: NSView {
             var yBar: CGFloat = 44
             if reconOn {
                 reconnectBar.frame = NSRect(x: 10, y: yBar, width: panelW - 20, height: reconnectBarH)
-                reconnectLabel.frame = NSRect(x: 10, y: 30, width: panelW - 40, height: 36)
-                reconnectBtn.frame = NSRect(x: 10, y: 6, width: 168, height: 24)
+                reconnectLabel.frame = NSRect(x: 10, y: 32, width: panelW - 40, height: 40)
+                reconnectBtn.frame = NSRect(x: 10, y: 6, width: reconnectBtn.intrinsicContentSize.width, height: 24)
                 yBar += reconnectBarH + 6
             }
             if actOn {
                 actionBar.frame = NSRect(x: 10, y: yBar, width: panelW - 20, height: actionBarH)
                 actionLabel.frame = NSRect(x: 10, y: 36, width: panelW - 40, height: 28)
-                actionBtn.frame = NSRect(x: 10, y: 6, width: 120, height: 24)
+                let aw = actionBtn.intrinsicContentSize.width
+                actionBtn.frame = NSRect(x: 10, y: 6, width: aw, height: 24)
                 if !actionBtn2.isHidden {
-                    actionBtn2.frame = NSRect(x: 136, y: 6, width: 110, height: 24)
+                    actionBtn2.frame = NSRect(x: 18 + aw, y: 6, width: actionBtn2.intrinsicContentSize.width, height: 24)
                 }
             }
-            input.frame = NSRect(x: 10, y: 10, width: panelW - 52, height: 30)
-            sendBtn.frame = NSRect(x: panelW - 38, y: 10, width: 28, height: 30)
+            let sw = sendBtn.intrinsicContentSize.width
+            inputBox.frame = NSRect(x: 12, y: 12, width: panelW - 24 - sw - 8, height: 28)
+            input.frame = inputBox.frame.insetBy(dx: 8, dy: 5)
+            sendBtn.frame = NSRect(x: panelW - 12 - sw, y: 14, width: sw, height: 24)
             if let close = panel.subviews.first(where: { $0.identifier?.rawValue == "close" }) {
-                close.frame = NSRect(x: panelW - 30, y: panelH - 30, width: 24, height: 24)
+                close.frame = NSRect(x: panelW - 36, y: panelH - 36, width: 28, height: 28)
             }
         } else if !nudgeChip.isHidden {
             let s = fab.frame.width
@@ -425,6 +350,12 @@ final class AppAIChatBubble: NSView {
         layout()
         ensureFrontmost()
         window?.makeFirstResponder(input)
+    }
+
+    /// Open the panel without asking anything (previews).
+    func previewOpen() {
+        attachIfNeeded()
+        toggleExpand()
     }
 
     @objc private func collapse() {
@@ -475,7 +406,7 @@ final class AppAIChatBubble: NSView {
             }
         } else if !AppAIRuntime.isHeadlessReady {
             showDisconnected(
-                userFacing: "Guide is offline. Reconnect, then describe the cron (or use Manual form in Cron Manager).",
+                userFacing: "The Guide is offline. Reconnect, then describe the schedule (or add it on the Schedules page).",
                 expand: true
             )
         }
@@ -509,7 +440,7 @@ final class AppAIChatBubble: NSView {
         let prompt =
             "MISSION Q&A (use live team state only; name seats and job ages; no fluff).\n" +
             "Question: \(q)\n" +
-            "If useful, suggest opening a job id or switching the map team."
+            "If useful, suggest opening a job id or switching the team shown on the Team page."
         AppAIRuntime.chat(userMessage: prompt) { [weak self] result in
             guard let self else { return }
             self.busy = false
@@ -533,26 +464,8 @@ final class AppAIChatBubble: NSView {
             appendLocal("Guide: \(short)")
             return
         }
-        nudgeChip.stringValue = short
-        nudgeChip.isHidden = false
-        pulseFab(strong: true)
-        layoutInHost()
-        let anim = CABasicAnimation(keyPath: "transform.scale")
-        anim.fromValue = 1.0
-        anim.toValue = 1.08
-        anim.duration = 0.35
-        anim.autoreverses = true
-        anim.repeatCount = 2
-        fab.layer?.add(anim, forKey: "nudge")
-
-        nudgeHideWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.nudgeChip.isHidden = true
-            self?.pulseFab(strong: false)
-            self?.layoutInHost()
-        }
-        nudgeHideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5, execute: work)
+        // 1.9: a hint is a toast (the floating button it used to sit beside is retired)
+        Toast.show(short)
     }
 
     /// Proactive coach: short card + action button(s) — not a wall of text.
@@ -566,15 +479,27 @@ final class AppAIChatBubble: NSView {
     ) {
         attachIfNeeded()
         let short = String(text.prefix(120))
-        // Collapsed: chip only (no transcript spam)
+        // Collapsed: a toast, with the action on it when there is one (no transcript spam)
         if !expanded {
-            nudge(chipText ?? short)
+            if let actionTitle, let action {
+                Toast.show(chipText ?? short, action: actionTitle, onAction: action)
+            } else {
+                nudge(chipText ?? short)
+            }
         }
         // Expanded transcript: one short line, not a novel
         if expanded {
             appendLocal("Guide: \(short)")
         }
-        expanded = true
+        // Do NOT expand. A nudge is Guide's idea, not a request — opening the
+        // panel over what someone is doing to volunteer a suggestion is the
+        // interruption, and it arrives from a background poll they never asked
+        // for. Collapsed, it glows and waits to be opened. An explicit click,
+        // the cron wizard and a direct question all still expand, because those
+        // are asked for.
+        if !expanded {
+            pulseFab(strong: true)
+        }
         layoutInHost()
         if let actionTitle, let action {
             actionHandler = action
@@ -585,10 +510,7 @@ final class AppAIChatBubble: NSView {
             if let secondaryTitle, let secondaryAction {
                 secondaryHandler = secondaryAction
                 actionBtn2.isHidden = false
-                actionBtn2.attributedTitle = NSAttributedString(string: secondaryTitle, attributes: [
-                    .foregroundColor: PongTheme.textPrimary,
-                    .font: PongTheme.font(11, weight: .semibold),
-                ])
+                actionBtn2.title = secondaryTitle
             } else {
                 secondaryHandler = nil
                 actionBtn2.isHidden = true
@@ -672,18 +594,14 @@ final class AppAIChatBubble: NSView {
         }
         needsLayout = true
         layout()
-        // Orange pulse on FAB when collapsed
-        fab.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.8).cgColor
-        pulseFab(strong: true)
         if !expand {
-            nudge("Guide offline · reconnect")
+            nudge("The Guide is offline: ask it something to reconnect")
         }
     }
 
     private func hideReconnectBar() {
         reconnectPhase = .hidden
         reconnectBar.isHidden = true
-        fab.layer?.borderColor = PongSheetChrome.lime.withAlphaComponent(0.55).cgColor
         needsLayout = true
         layout()
     }
@@ -748,7 +666,7 @@ final class AppAIChatBubble: NSView {
                 userFacing: "Guide is offline. Open sign-in Terminal, sign in, then tap I’m signed in (safe to close that window after).",
                 expand: true
             )
-            appendLocal("Guide: Still disconnected — use the orange bar below to reconnect.")
+            appendLocal("Guide: Still offline. Use Open sign-in Terminal below to reconnect.")
             return
         }
         input.stringValue = ""

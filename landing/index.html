@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CyberPong 1.4.3 — Local agent mission control for Mac</title>
-  <meta name="description" content="CyberPong 1.4.3 runs multi-agent coding teams on your Mac. Pick a conductor, staff workers (Claude, Grok, Hermes, Codex…), watch the live mission map, step in when needed. Jobs stay local." />
-  <meta property="og:title" content="CyberPong 1.4.3" />
+  <title>CyberPong 2.0.0 — Local agent mission control for Mac</title>
+  <meta name="description" content="CyberPong 2.0.0 runs multi-agent coding teams on your Mac. Pick a conductor, staff workers (Claude, Grok, Hermes, Codex…), watch the live mission map, step in when needed. Jobs stay local." />
+  <meta property="og:title" content="CyberPong 2.0.0" />
   <meta property="og:description" content="Local agent mission control. Multi-CLI teams, live 3D map, human-in-the-loop — all on your Mac." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="app-icon.png" />
@@ -506,6 +506,7 @@
       font-family: var(--font-mono);
     }
     .steps strong { color: var(--text); font-weight: 600; }
+    .steps code { overflow-wrap: anywhere; }
 
     /* Tips */
     .price-grid {
@@ -638,17 +639,17 @@
       </a>
       <nav aria-label="Primary">
         <a href="#gallery">Screens</a>
-        <a href="#whats-new">1.4.3</a>
+        <a href="#whats-new">2.0.0</a>
         <a href="#can-do">What it does</a>
         <a href="#support">Tip</a>
         <a href="#install">Install</a>
         <a href="#get">Download</a>
-        <a class="primary" href="https://github.com/kulpio/hermes-pong">GitHub</a>
+        <a class="primary" href="https://github.com/kulpio/CyberPong">GitHub</a>
       </nav>
     </header>
 
     <section class="hero">
-      <div class="version-pill"><span class="dot" aria-hidden="true"></span> Release 1.4.3 · CyberPong</div>
+      <div class="version-pill"><span class="dot" aria-hidden="true"></span> Release 2.0.0 · CyberPong</div>
       <img
         class="hero-wordmark"
         src="cyberpong-wordmark-dark.png"
@@ -663,11 +664,11 @@
         watch the live map, and jump in when something needs a human.
       </p>
       <div class="cta-row">
-        <a class="btn primary" id="get" download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip">Download 1.4.3</a>
-        <a class="btn ghost" href="https://github.com/kulpio/hermes-pong">View on GitHub</a>
+        <a class="btn primary" id="get" download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip">Download 2.0.0</a>
+        <a class="btn ghost" href="https://github.com/kulpio/CyberPong">View on GitHub</a>
         <a class="btn ghost" href="#install">Install from source</a>
       </div>
-      <p class="fine">macOS 13+ · free to run locally · no vendor API keys stored by the app</p>
+      <p class="fine">macOS 13+ · free to run locally · your AIs keep their own sign-ins · optional Jev and Perplexity keys stay on your Mac</p>
 
       <div class="team-diagram" aria-hidden="true">
         <div class="terminal-window orch">
@@ -796,26 +797,35 @@
     </section>
 
     <section class="section" id="whats-new">
-      <h2>New in 1.4</h2>
-      <p>Hermes Pong → <strong style="color:var(--text)">CyberPong</strong>. Same control plane energy, conductor-agnostic product.</p>
+      <h2>New in 2.0.0</h2>
+      <p><strong>Ready for other Macs.</strong> Download it, open it, and a short setup gets this Mac, your AIs and your limits in place. Then say what you want done: a chat plans it as a graph of steps, your AIs do the steps, and they ask you when a decision is yours.</p>
       <div class="new-in">
         <div class="new-item">
-          <strong>CyberPong brand</strong>
-          <span>Dock name, wordmark, mark, and landing. Binary stays <code>Pong</code> for path compat.</span>
+          <strong>Questions you can answer without opening a file</strong>
+          <span>One short question, a few lines of context, then “What you’re deciding”: the facts and numbers behind it, each linked to the file it comes from. The buttons say what they do. The points come from the work itself: the chat or the graph’s designer writes them, or CyberPong and Claude Haiku do from the step’s report and files (Haiku is a switch in Settings).</span>
         </div>
         <div class="new-item">
-          <strong>Mission map</strong>
-          <span>3D seats, directed links, floor-flow only when data moves. Architecture editor alongside.</span>
+          <strong>A first-run setup</strong>
+          <span>It checks this Mac with a fix for anything missing, signs you in to each AI in its own Terminal window, and picks the AI and model that plan your graphs. Help › Set up CyberPong… runs it again.</span>
         </div>
         <div class="new-item">
-          <strong>Multi-CLI teams</strong>
-          <span>Conductor + workers from Claude, Grok, Hermes, Codex, Kimi, or custom. Not a single-pair toy.</span>
+          <strong>Limits &amp; keys</strong>
+          <span>Running graphs pause at Claude’s 5-hour limit and pick up after the reset. Near the weekly limit you set (97% unless you change it) they stop until the reset, or until you press Resume anyway. Perplexity research has a daily cap ($15 unless you change it).</span>
         </div>
         <div class="new-item">
-          <strong>~/.pong control plane</strong>
-          <span>Jobs, events, ledger, teams on disk. <code>pong snapshot</code> is what the UI reads.</span>
+          <strong>Keys stay on your Mac</strong>
+          <span>Optional Jev and Perplexity keys are saved only on this Mac, in a file only you can read, and never shown again. Each AI keeps its own sign-in: CyberPong never sees a password.</span>
+        </div>
+        <div class="new-item">
+          <strong>Graphs, planned in a chat</strong>
+          <span>New graph (⌘N) opens a chat that turns your request into steps, picks an AI and a model for each one, and starts it when you agree. Chats keeps every planning chat so you can change a graph later.</span>
+        </div>
+        <div class="new-item">
+          <strong>Every question and every graph in one place</strong>
+          <span>Needs you lists each question from your graphs and chats; the notch island and notifications show them too. Graphs shows every graph on the Mac step by step: which AI runs each step, what it made, its terminal.</span>
         </div>
       </div>
+      <p class="fine" style="margin-top:14px">No checkout needed: the app puts its engine and the <code>pong</code> command in place by itself, and the setup turns the graph runner on with one button.</p>
     </section>
 
     <section class="section" id="can-do">
@@ -875,7 +885,7 @@
           <div class="ico">8</div>
           <div>
             <strong>Stay local</strong>
-            <span>Teams, jobs, ledger, and events stay on your Mac. CyberPong pairs windows and files — it does not store model API keys.</span>
+            <span>Graphs, chats, teams, jobs, ledger, and events stay on your Mac. Each AI keeps its own sign-in; the only service keys CyberPong saves are the optional Jev and Perplexity keys, on this Mac, in a file only you can read.</span>
           </div>
         </li>
       </ul>
@@ -918,35 +928,39 @@
         <ol class="steps">
           <li>
             <div>
-              <strong>Release zip (fastest)</strong><br />
-              Grab <a download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip" style="color:var(--cyan-dim)">CyberPong-macOS.zip</a> from GitHub Releases,
-              open the app, allow Accessibility / Automation for Terminal when asked.
+              <strong>Download and open</strong><br />
+              Download <a download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip" style="color:var(--cyan-dim)">CyberPong-macOS.zip</a>,
+              unzip it, move <strong>CyberPong</strong> to your Applications folder, and open it.
             </div>
           </li>
           <li>
             <div>
-              <strong>Or clone &amp; setup</strong><br />
-              <code>git clone https://github.com/kulpio/hermes-pong.git</code><br />
-              <code>cd CyberPong && bash scripts/setup.sh --with-skills</code>
+              <strong>If macOS can’t check it</strong><br />
+              Close the message, open <strong>System Settings › Privacy &amp; Security</strong>, press <strong>Open Anyway</strong> next to CyberPong under Security, and confirm.
+              You only do this once; if macOS then asks the same about Pong Island (the notch island inside CyberPong), do the same for it.
             </div>
           </li>
           <li>
             <div>
-              <strong>Build the Mac app</strong><br />
-              <code>bash scripts/build-app.sh && bash scripts/install.sh</code><br />
-              Opens <strong>CyberPong</strong> as <code>/Applications/CyberPong.app</code>.
+              <strong>The setup walks you through the rest</strong><br />
+              It checks this Mac (Python, tmux, the <code>pong</code> command, the graph runner) with a fix for anything missing, signs in your AIs,
+              picks the AI and model that plan your graphs, and sets your limits and optional keys. Allow Accessibility and Automation for Terminal when macOS asks.
             </div>
           </li>
           <li>
             <div>
-              <strong>New team</strong> — pick a conductor and workers, then send a mission from the human console or the conductor terminal.
+              <strong>Or from source</strong><br />
+              <code>git clone https://github.com/kulpio/CyberPong.git &amp;&amp; cd CyberPong &amp;&amp; bash scripts/setup.sh</code><br />
+              It installs the engine, the <code>pong</code> command and the graph runner, and builds and opens the app when this Mac can build it.
             </div>
           </li>
         </ol>
         <p style="margin:16px 0 0;color:var(--muted);font-size:0.9rem">
-          Needs macOS 13+, Terminal.app, tmux, and the worker CLIs you want to staff.
-          Full notes: <a href="https://github.com/kulpio/hermes-pong/blob/main/README.md" style="color:var(--cyan-dim)">README</a>.
-          Migrate older Hermes Pong state with <code>pong migrate</code>.
+          Needs macOS 13+, Apple’s command line tools (<code>xcode-select --install</code>), tmux (<code>brew install tmux</code>),
+          and at least one AI command line tool, signed in: Claude Code, Grok Build, Codex or Hermes.
+          The setup checks each one and shows the fix.
+          Full notes: <a href="https://github.com/kulpio/CyberPong#readme" style="color:var(--cyan-dim)">README</a>.
+          Older Hermes Pong state moves over with <code>pong migrate</code>.
         </p>
       </div>
     </section>
@@ -955,22 +969,22 @@
       <div class="card" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px">
         <div>
           <h3 style="margin:0 0 4px">Open source on GitHub</h3>
-          <p>Code, issues, and releases live in <strong style="color:var(--text)">kulpio/hermes-pong</strong>. UI name: <strong style="color:var(--text)">CyberPong</strong>.</p>
+          <p>Code, issues, and releases live in <strong style="color:var(--text)">kulpio/CyberPong</strong>.</p>
         </div>
         <div class="cta-row" style="margin:0">
-          <a class="btn primary" href="https://github.com/kulpio/hermes-pong">View repo</a>
-          <a class="btn ghost" href="https://github.com/kulpio/hermes-pong/blob/main/README.md">README</a>
+          <a class="btn primary" href="https://github.com/kulpio/CyberPong">View repo</a>
+          <a class="btn ghost" href="https://github.com/kulpio/CyberPong#readme">README</a>
         </div>
       </div>
     </section>
 
     <footer>
-      <a href="https://github.com/kulpio/hermes-pong">GitHub</a>
-      <a href="https://github.com/kulpio/hermes-pong/blob/main/README.md">Docs</a>
+      <a href="https://github.com/kulpio/CyberPong">GitHub</a>
+      <a href="https://github.com/kulpio/CyberPong#readme">Docs</a>
       <a href="https://github.com/kulpio/CyberPong/releases">Releases</a>
       <a href="#can-do">What it does</a>
       <a href="#support">Tip</a>
-      <span>CyberPong 1.4.3 · Built by Dylan · Boreal</span>
+      <span>CyberPong 2.0.0 · Built by Dylan · Boreal</span>
     </footer>
   </div>
 </body>

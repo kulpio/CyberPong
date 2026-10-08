@@ -1,0 +1,13 @@
+{
+  "kind": "join",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "join",
+      "kind": "join",
+      "role": "join"
+    }
+  ],
+  "edges": [],
+  "notes": "Wait for listed node mailbox items, then one job."
+}

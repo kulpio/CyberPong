@@ -67,8 +67,10 @@ def _tmux_current_session() -> str | None:
     if not os.environ.get("TMUX"):
         return None
     try:
+        from .groups import tmux_bin  # Homebrew's tmux, even off the shell's PATH
+
         r = subprocess.run(
-            ["tmux", "display-message", "-p", "#{session_name}"],
+            [tmux_bin() or "tmux", "display-message", "-p", "#{session_name}"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -268,7 +270,13 @@ def resolve_worker(state: dict[str, Any], key: str | None) -> dict[str, Any]:
     )
 
 
-def format_team_context(state: dict[str, Any]) -> str:
+def format_team_context(state: dict[str, Any], *, graph_step: bool = False) -> str:
+    """The team's scope at the top of a seat's prompt.
+
+    A graph step carries its own scope (the graph's goal and the step's task), so
+    the team brief, written for whatever the team was set up to do, is left out:
+    a brief from an earlier mission told a later graph's critic to grade the
+    wrong document (2026-09-24)."""
     sess = state.get("session") or ""
     root = (state.get("project_root") or "").strip()
     brief = (state.get("team_brief") or "").strip()
@@ -280,12 +288,18 @@ def format_team_context(state: dict[str, Any]) -> str:
     ]
     if root:
         lines.append(f"- project_root: {root}")
-    if brief:
-        lines.append(f"- team_brief: {brief}")
-    lines.append(
-        "Treat this as hard scope. Do not work outside project_root. "
-        "Another product/repo is a STOP, not a detour."
-    )
+    if graph_step:
+        lines.append(
+            "This is one step of a graph: your task below is the scope (the team brief is not shown). "
+            "Write only inside project_root; read other folders only as your task allows."
+        )
+    else:
+        if brief:
+            lines.append(f"- team_brief: {brief}")
+        lines.append(
+            "Treat this as hard scope. Do not work outside project_root. "
+            "Another product/repo is a STOP, not a detour."
+        )
     lines.append("")
     return "\n".join(lines)
 

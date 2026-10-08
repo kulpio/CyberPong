@@ -1,0 +1,500 @@
+{
+  "version": 1,
+  "notes": "Runtimes, models and routing rules as data. Adding a model is a file edit, not a code change — same contract as loops/*.json. Overrides: ~/.pong/models/catalog.json, then sessions/<session>/models/catalog.json.",
+  "runtimes": {
+    "claude": {
+      "label": "Claude Code",
+      "bin": "claude",
+      "cmd": "claude",
+      "model_flag": "--model",
+      "model_command": "/model",
+      "pool": "anthropic",
+      "tools": true,
+      "default_model": "opus",
+      "models": {
+        "fable": {
+          "label": "Fable 5",
+          "tier": "deep",
+          "aliases": [
+            "fable 5",
+            "fable-5",
+            "fable5",
+            "claude-fable-5"
+          ]
+        },
+        "opus": {
+          "label": "Opus 5",
+          "tier": "judge",
+          "aliases": [
+            "opus 5",
+            "opus-5",
+            "opus5",
+            "claude-opus-5"
+          ]
+        },
+        "sonnet": {
+          "label": "Sonnet 5",
+          "tier": "balanced",
+          "aliases": [
+            "sonnet 5",
+            "sonnet-5",
+            "sonnet5",
+            "claude-sonnet-5"
+          ]
+        },
+        "haiku": {
+          "label": "Haiku 4.5",
+          "tier": "fast",
+          "aliases": [
+            "haiku 4.5",
+            "haiku-4.5",
+            "haiku4.5",
+            "claude-haiku-4-5"
+          ]
+        }
+      },
+      "strengths": {
+        "judge": 5,
+        "build": 5,
+        "write": 5,
+        "long": 5,
+        "scout": 2,
+        "classify": 3,
+        "cost": 4
+      },
+      "boundaries": []
+    },
+    "grok": {
+      "label": "Grok Build",
+      "bin": "grok",
+      "cmd": "grok",
+      "model_flag": "--model",
+      "model_command": null,
+      "pool": "xai",
+      "tools": true,
+      "default_model": "grok-4.7",
+      "models": {
+        "grok-4.7": {
+          "label": "Grok 4.7",
+          "tier": "balanced",
+          "aliases": [
+            "grok4.7",
+            "grok 4.7",
+            "grok-4-7"
+          ]
+        },
+        "grok-4.7-build-fast": {
+          "label": "Grok 4.7 Build Fast",
+          "tier": "fast",
+          "aliases": [
+            "grok4.7-fast",
+            "grok 4.7 fast",
+            "build-fast",
+            "grok-4-7-build-fast"
+          ]
+        },
+        "grok-4.6": {
+          "label": "Grok 4.6",
+          "tier": "fast",
+          "aliases": [
+            "grok4.6",
+            "grok 4.6",
+            "grok-4-6"
+          ]
+        },
+        "grok-4.5": {
+          "label": "Grok 4.5",
+          "tier": "fast",
+          "aliases": [
+            "grok4.5",
+            "grok 4.5",
+            "grok-4-5"
+          ]
+        }
+      },
+      "strengths": {
+        "judge": 2,
+        "build": 2,
+        "write": 2,
+        "long": 2,
+        "scout": 5,
+        "classify": 5,
+        "cost": 1
+      },
+      "boundaries": [
+        "no_client_facing_prose",
+        "shared_weekly_pool"
+      ],
+      "tools_note": "Grok Build 1.0.40 lists grok-4.7, grok-4.7-build-fast, grok-4.6 and grok-4.5 (checked 2026-09-22); grok-4.7 is the default for every grok seat, build-fast for ticks and sweeps. Grok Build 4.6 runs shell, edits files and calls MCP servers (verified 2026-09-18: a persona loop's gather and synthesize stages ran on it). It stays out of client-facing prose."
+    },
+    "codex": {
+      "label": "Codex / OpenAI",
+      "bin": "codex",
+      "cmd": "codex",
+      "model_flag": "--model",
+      "model_command": null,
+      "pool": "openai",
+      "tools": true,
+      "default_model": "gpt-5.1-codex",
+      "note": "Model ids here are unverified — codex is not installed on this machine, so nothing has queried the CLI for its list. Unknown ids pass through untouched, so correcting this is a one-line edit once the CLI is present.",
+      "models": {
+        "gpt-5.1-codex": {
+          "label": "GPT-5.1 Codex",
+          "tier": "deep",
+          "aliases": [
+            "gpt5.1-codex",
+            "gpt-5.1",
+            "codex"
+          ]
+        }
+      },
+      "strengths": {
+        "judge": 3,
+        "build": 5,
+        "write": 2,
+        "long": 3,
+        "scout": 1,
+        "classify": 3,
+        "cost": 3
+      },
+      "boundaries": []
+    },
+    "hermes": {
+      "label": "Hermes",
+      "bin": "hermes",
+      "cmd": "hermes chat",
+      "model_flag": null,
+      "model_command": null,
+      "pool": "xai",
+      "tools": true,
+      "default_model": null,
+      "note": "A harness, not a model. It runs whatever it is pointed at (Grok today) and carries the MCP servers and skills, which is why it counts as a tool runtime while drawing on the xai pool.",
+      "models": {},
+      "strengths": {
+        "judge": 2,
+        "build": 2,
+        "write": 2,
+        "long": 2,
+        "scout": 4,
+        "classify": 4,
+        "cost": 1
+      },
+      "boundaries": [
+        "no_client_facing_prose",
+        "shared_weekly_pool"
+      ]
+    }
+  },
+  "pools": {
+    "anthropic": {
+      "shared": false,
+      "label": "Anthropic"
+    },
+    "xai": {
+      "shared": true,
+      "label": "xAI (Grok)",
+      "note": "Every grok seat and the Hermes chief draw on one login and one weekly allowance. Ten seats plus the chief is one quota, not eleven, so heavy work sent here is taken out of every other seat's budget."
+    },
+    "openai": {
+      "shared": false,
+      "label": "OpenAI"
+    }
+  },
+  "demands": [
+    {
+      "id": "tools",
+      "why": "Needs MCP servers, skills, a browser or the filesystem. A bare Grok seat has none of those, so routing this work there produces a confident answer with nothing behind it.",
+      "any": [
+        "mcp",
+        "browser",
+        "playwright",
+        "screenshot",
+        "supabase",
+        "gmail",
+        "calendar",
+        "figma",
+        "webflow",
+        "deploy",
+        "migration",
+        "migrate",
+        "install",
+        "tmux",
+        "terminal",
+        "edit the file",
+        "open the file",
+        "run the tests",
+        "commit",
+        "pull request",
+        "repo",
+        "codebase"
+      ]
+    },
+    {
+      "id": "code",
+      "why": "Reads or writes source.",
+      "any": [
+        "refactor",
+        "implement",
+        "bug",
+        "stack trace",
+        "compile",
+        "build",
+        "test",
+        "tests",
+        "patch",
+        "diff",
+        "swift",
+        "python",
+        "typescript",
+        "sql",
+        "api",
+        "endpoint",
+        "function",
+        "class",
+        "module"
+      ]
+    },
+    {
+      "id": "deep",
+      "why": "Reasoning, not retrieval — the answer is wrong in ways that are expensive to notice.",
+      "any": [
+        "architecture",
+        "design",
+        "root cause",
+        "why does",
+        "race",
+        "deadlock",
+        "audit",
+        "review",
+        "trade-off",
+        "tradeoff",
+        "plan the",
+        "strategy",
+        "refactor",
+        "concurrency",
+        "security",
+        "correctness",
+        "polish"
+      ]
+    },
+    {
+      "id": "web",
+      "why": "The answer lives outside this machine.",
+      "any": [
+        "search",
+        "scout",
+        "latest",
+        "news",
+        "competitor",
+        "pricing",
+        "twitter",
+        "x.com",
+        "linkedin",
+        "reddit",
+        "hacker news",
+        "who is",
+        "market",
+        "trending",
+        "look up",
+        "find posts"
+      ]
+    },
+    {
+      "id": "fast",
+      "why": "Small, mechanical, and frequent. Paying a deep model for it is waste, not care.",
+      "any": [
+        "heartbeat",
+        "poll",
+        "tick",
+        "cron",
+        "bump",
+        "rename",
+        "one-liner",
+        "quick",
+        "status check",
+        "ping",
+        "digest",
+        "reminder",
+        "one-shot"
+      ]
+    },
+    {
+      "id": "long",
+      "why": "Whole-surface work. The context, not the reasoning, is the constraint.",
+      "any": [
+        "every file",
+        "entire repo",
+        "whole repo",
+        "comprehensive",
+        "exhaustive",
+        "across the codebase",
+        "all the seats",
+        "end to end",
+        "full sweep"
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "leads-think-on-fable",
+      "when": {
+        "roles": [
+          "orchestrator"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "fable"
+      },
+      "why": "Standing team policy (28 Aug): the lead agents run on Fable. Planning and routing is the one place the strongest model is cheap relative to what it prevents."
+    },
+    {
+      "id": "critic-judges-on-the-strongest",
+      "when": {
+        "roles": [
+          "critic",
+          "reviewer"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "A critic sets the bar. Grading on a cheaper model than the work was built with is how a bar quietly drops."
+    },
+    {
+      "id": "router-is-a-classifier",
+      "when": {
+        "roles": [
+          "router",
+          "join"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "haiku"
+      },
+      "why": "Picking an edge is a one-line classification. It does not need a reasoning model and it runs on every hop."
+    },
+    {
+      "id": "coders-on-opus",
+      "when": {
+        "roles": [
+          "coder",
+          "builder",
+          "migrator"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "Standing team policy (28 Aug): coders run on Opus. Code is where a wrong answer costs a round trip, and Opus is the reasoning tier."
+    },
+    {
+      "id": "research-on-the-open-web",
+      "when": {
+        "roles": [
+          "researcher",
+          "scout"
+        ],
+        "demands_any": [
+          "web"
+        ],
+        "demands_none": [
+          "tools",
+          "deep"
+        ]
+      },
+      "pick": {
+        "runtime": "grok",
+        "model": "grok-4.7"
+      },
+      "why": "Fast and cheap is the right trade for scouting, and this is what the grok seats exist for."
+    },
+    {
+      "id": "research-is-deep-work-by-default",
+      "when": {
+        "roles": [
+          "researcher",
+          "scout"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "Only open-web scouting is cheap. Everything else a researcher does needs MCP, skills or judgment; standing policy puts Deep Research on Opus."
+    },
+    {
+      "id": "errands-stay-cheap",
+      "when": {
+        "roles": [
+          "task_runner",
+          "operator"
+        ],
+        "demands_any": [
+          "fast"
+        ],
+        "demands_none": [
+          "tools",
+          "deep"
+        ]
+      },
+      "pick": {
+        "runtime": "grok",
+        "model": "grok-4.7-build-fast"
+      },
+      "why": "Cron ticks and one-shots repeat forever. Their cost is the thing that matters about them."
+    },
+    {
+      "id": "drafts-are-read-by-people",
+      "when": {
+        "roles": [
+          "writer"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "Anything a person reads goes to Claude. Grok is never client-facing prose."
+    },
+    {
+      "id": "anything-touching-tools",
+      "when": {
+        "demands_any": [
+          "tools"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "Tool work needs a runtime that has tools."
+    },
+    {
+      "id": "deep-work-gets-a-reasoner",
+      "when": {
+        "demands_any": [
+          "deep",
+          "long"
+        ]
+      },
+      "pick": {
+        "runtime": "claude",
+        "model": "opus"
+      },
+      "why": "Judgment and whole-surface work is where the strongest model pays for itself."
+    }
+  ],
+  "fallback": {
+    "pick": {
+      "runtime": "claude",
+      "model": "opus"
+    },
+    "why": "The standing policy for a Claude seat with nothing more specific said about it."
+  },
+  "strengths_note": "Per-runtime strengths 1-5 by the kind of work a node does (judge, build, write, long, scout, classify) and a cost tier; written from the standing team policy (Claude for judgement, writing, code and long context; Grok for scouting and cheap classification, never client-facing prose, never heavy work on the shared weekly pool). Edit here, not in code.",
+  "policy_note": "Model policy as of 2026-08-28: Fable on lead agents, Opus on coders, Opus + Research mode on researchers (Deep Research), scouts stay Grok, fallback for any other Claude seat is Opus. The roster field still wins."
+}

@@ -9,11 +9,21 @@ enum PongLoadingOverlay {
     private static var phase = 0
     private static weak var leftDot: NSView?
     private static weak var rightDot: NSView?
+    /// Safety: auto-hide if a caller forgets hide() after a failure path.
+    private static var safetyWork: DispatchWorkItem?
+    private static let safetyTimeoutSec: TimeInterval = 90
 
     /// Show dim scrim + centered card over `window` (or its contentView).
     static func show(on window: NSWindow?, message: String = "Saving…") {
         hide()
         guard let win = window, let content = win.contentView else { return }
+        // Auto-dismiss so a hung async path cannot leave the spinner forever
+        let work = DispatchWorkItem {
+            Pong.log("PongLoadingOverlay: safety timeout — force hide")
+            hide()
+        }
+        safetyWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + safetyTimeoutSec, execute: work)
 
         let scrim = NSView(frame: content.bounds)
         scrim.wantsLayer = true
@@ -81,6 +91,8 @@ enum PongLoadingOverlay {
     }
 
     static func hide() {
+        safetyWork?.cancel()
+        safetyWork = nil
         timer?.invalidate()
         timer = nil
         host?.removeFromSuperview()

@@ -127,3 +127,16 @@ def secure_file(path: Path, mode: int = 0o600) -> None:
             path.chmod(mode)
     except Exception:
         pass
+
+
+def resolved_folder(path: str | os.PathLike[str]) -> str:
+    """A folder someone named (``.``, ``~/site``, ``../shop``) as an absolute path with its links resolved,
+    "" for nothing. A team keeps its project folder this way: the runner and the app run from other
+    folders, where a relative one would be somewhere else."""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(Path(raw).expanduser().resolve())
+    except (OSError, RuntimeError):  # a link loop: absolute is still better than relative
+        return os.path.abspath(os.path.expanduser(raw))

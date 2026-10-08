@@ -53,6 +53,7 @@ EVENT_TYPES = frozenset(
         "job.created",
         "job.status",
         "job.claim",
+        "job.claim_harvested",
         "job.dispatch",
         "verdict",
         "pair.saved",
@@ -60,6 +61,15 @@ EVENT_TYPES = frozenset(
         "system",
         "route.refused",
         "brief.sent",
+        # Claim waitroom (inbox → digest paste)
+        "claim.queued",
+        "claim.notified",
+        # Seat availability + delivery
+        "seat.busy",
+        "seat.available",
+        "delivery.held",
+        "delivery.delivered",
+        "job.queued_delivery",
     }
 )
 

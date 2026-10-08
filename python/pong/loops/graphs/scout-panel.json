@@ -1,0 +1,34 @@
+{
+  "name": "scout-panel",
+  "notes": "Scouts → synthesize → cross-family judge panel → a person (T4). Every claim is checked against its source by three judges on different platforms; any refuted claim sends the brief to be fixed.",
+  "start": "scout",
+  "max_rounds": 2,
+  "boundaries": {"max_wall_min": 150, "max_jobs": 16},
+  "nodes": [
+    {"id": "scout", "role": "scout", "count": 3,
+     "task": "{goal}\n\nAngle {copy} of 3: 1 = primary sources and docs, 2 = what practitioners report (X, forums), 3 = counter-evidence and failures. Cite every claim with a URL and its date."},
+    {"id": "all", "role": "join", "wait": "all"},
+    {"id": "draft", "role": "writer",
+     "task": "Write the brief from:\n{prev_summary}\n\nOne claim per line, each with its source. Put it in a file and list it in the claim."},
+    {"id": "panel", "role": "critic", "count": 3, "pins": ["claude", "grok", "claude"],
+     "task": "Check each claim in {prev_artifacts} against its source. Mark it supported, refuted or unverified. Claim `win` if no claim is refuted, `fail` listing the refuted ones, `abstain` if you could not open the sources."},
+    {"id": "votes", "role": "join", "wait": "all", "pass": "all"},
+    {"id": "fix", "role": "writer",
+     "task": "Remove or fix the refuted claims and label the unverified ones. The panel said:\n{prev_summary}"},
+    {"id": "read", "role": "human"},
+    {"id": "end", "role": "end"}
+  ],
+  "edges": [
+    {"from": "scout", "to": "all", "on": "*"},
+    {"from": "all", "to": "draft", "on": "*"},
+    {"from": "draft", "to": "panel", "on": "done"},
+    {"from": "panel", "to": "votes", "on": "*"},
+    {"from": "votes", "to": "read", "on": "win"},
+    {"from": "votes", "to": "fix", "on": "fail"},
+    {"from": "votes", "to": "fix", "on": "done"},
+    {"from": "fix", "to": "panel", "on": "done"},
+    {"from": "fix", "to": "read", "on": "bounded"},
+    {"from": "read", "to": "end", "on": "approved"},
+    {"from": "read", "to": "fix", "on": "rejected"}
+  ]
+}

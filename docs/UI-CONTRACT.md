@@ -151,3 +151,27 @@ Foundation is “proven” when:
 4. UI only renders snapshot + pair layout fields (window ids, colors)
 
 Mission dashboard UI should land **after** these hold — not before.
+
+## Graphs (1.7)
+
+The Graphs page reads `pong graph list --json` (all teams, files only, no side effects), not the team snapshot. Each graph carries the v1 fields (`id, session, owner, kind, status, stop_reason, round, max_rounds, edges, nodes[], wiring, paused, topology`) plus:
+
+| field | meaning |
+|---|---|
+| `title`, `goal_text` | the topology's name, else the goal's first line; the goal (up to 1600 chars) |
+| `gates[]` | open gates: `node, at, from, reason, summary, artifacts[], options[]` (the answers the gate's edges accept) |
+| `attention[]` | running nodes a person must look at: the seat asks a question only a person should answer, or its terminal is at a shell prompt with no model running (`what` says which) |
+| `manual_pause`, `held` | a person's pause, and how many steps it holds |
+| `budget` | `max_rounds, max_wall_min, wall_min, people_wait_min, max_jobs, jobs, node_timeout_min` (`wall_min` is working time: minutes spent waiting only on a person are in `people_wait_min`, not in `wall_min`) |
+| `recent[]` | the last 60 history events: `round, node, outcome, event, summary, at, job_id` (event ∈ dispatch, claim, check, join, gate_open, gate_answer, route, retry, held, cancel, merged, seat, progress, stop; `progress` is a file in the working folder that changed while a step ran, at most 6 per step visit) |
+| `files[]` | files in the working folder changed since the graph started, newest first (20; 5 in the lean form): `path` (relative to `files_root`), `kb`, `at`, `node` (the running step it most likely belongs to: the only one running, or the one whose task names the file; null when that cannot be told). The engine walks the folder at most once a minute while a seat runs, skipping hidden, dependency and build folders, and never a whole home folder |
+| `files_root` | the folder `files[].path` is relative to |
+| `refusal_items[]`, `ends[]`, `notes_path`, `protected[]`, `last_error` | what was refused, how branches ended, the notes file, protected files, a tick error |
+
+Node additions: `visits, max_visits, last_outcome, started_at, finished_at, task_preview, wait, pass, arrivals, waiting_for[], fresh, retry_count, timeout_min, copy_of, branch, family, taken_over, attention, live, check_log, runtime, model, why, rule, rejected{}, pin`.
+
+`live` (running seat steps only, else null) is what the seat's screen showed on the engine's last look, every 30 s: `state` (working: mid-turn or its screen changed in the last 10 minutes; quiet: neither; no_model: the pane has been a shell prompt for 45 s, which also sets `attention`), `doing` (its latest step line, at most 160 chars), `busy` (mid-turn), `changed_at` (the last look at which the screen differed, spinners and timers aside), `seen_at`.
+
+The team snapshot (`pong snapshot`) carries the same graph block in a lean form (10 recent events, a shorter goal). One-team snapshots are written beside the team (`sessions/<s>/snapshot.json`); `~/.pong/snapshot.json` is always the all-teams view.
+
+Actions are commands: `goal resume --id G [--node N] --outcome O [--note T]`, `goal pause`, `goal cancel`, `graph retry --id G --node N`, `graph peek --seat S`, `graph seat-view --seat S`, `graph attach --owner O --file F --task T`.

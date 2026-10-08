@@ -22,26 +22,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var root: NSView!
 
-    // Chrome
-    private var topBar: NSView!
-    private var brandLabel: NSTextField!
-    private var brandLogo: NSImageView!
-    private var teamPopup: NSPopUpButton!
-    private var statusPill: NSView!
-    private var statusDot: NSView!
-    private var statusText: NSTextField!
-    private var refreshBtn: NSButton!
-    private var appearanceBtn: NSButton!
-    /// Top nav tabs (Map / Mission / Setup) — reclaims former left-rail width.
-    private var topTabCanvas: NSButton!
-    private var topTabMission: NSButton!
-    private var topTabSetup: NSButton!
-
-    // Legacy rail (hidden; width 0 — kept so existing styleRail calls no-op safely)
-    private var rail: NSView!
-    private var railCanvas: NSButton!
-    private var railMission: NSButton!
-    private var railSetup: NSButton!
+    // Chrome (1.9): a sidebar, a 52 pt window bar, the page under it
+    private var sidebar: SidebarView!
+    private var windowBar: WindowBarView!
+    private var sidebarHidden = UserDefaults.standard.bool(forKey: "shell.sidebarHidden")
+    private var shownOnce = false
+    /// The team whose window-bar actions are showing, and whether it was up then: when that changes, the
+    /// actions are built again ("Start team" becomes "Open a chat here").
+    private var teamActionsFor: (team: String, up: Bool)?
+    /// The width the old Setup page's cards were drawn at.
+    private var setupPaintedWidth: CGFloat = 0
 
     // Stage
     private var stage: NSView!
@@ -57,6 +47,17 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var setupPage: NSView!
     private var setupScroll: NSScrollView!
     private var setupBody: NSView!
+    /// Graphs: every graph loop on this Mac, one scene, three altitudes (1.7).
+    private var graphsPage: GraphStudioView!
+    /// Needs you (1.9): the questions, what is working, what finished.
+    private var homePage: HomePageView!
+    /// Schedules (1.9): everything that runs on its own.
+    private var schedulesPage: SchedulesPageView!
+    /// Teams (1.9): the list of teams, and one team's members, map and composer.
+    private var teamsList: TeamsListView!
+    private var teamPage: TeamPageView!
+    /// The Teams list shown as one 3D map of every team.
+    private var showTeamsMap = UserDefaults.standard.bool(forKey: "teams.showMap")
 
     private var selected: Destination = .canvas
     private var selectedSession: String?
@@ -71,32 +72,42 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var missionAskLastReply: String = ""
     private var hardRefreshInFlight = false
 
-    /// Left rail removed — map is full-bleed under the top bar.
-    private let railW: CGFloat = 0
-    /// Tall enough for wordmark + team popup + top tabs
-    private let topH: CGFloat = 58
-    private let titlebarLift: CGFloat = 30
-    private let trafficInset: CGFloat = 76
+    /// The window bar's height; the traffic lights sit centred in it.
+    private let barH: CGFloat = 52
     private let minSize = NSSize(width: 720, height: 520)
     private let defaultSize = NSSize(width: 960, height: 680)
 
-    enum Destination: Int { case canvas = 0, mission = 1, setup = 2 }
+    /// Where the window is. `canvas` is the Teams page, `mission` the old dashboard
+    /// (now Diagnostics), `setup` the old Setup page (until Settings has it all).
+    enum Destination: Int { case canvas = 0, mission = 1, setup = 2, graphs = 3, home = 4, chats = 5, schedules = 6 }
+    /// The map's own drawing of graph nodes (1.6.0). Off: the Graphs page owns graphs.
+    static let drawGraphsOnMap = false
 
     // MARK: Public
 
     func show() {
         if window == nil { build() }
-        // Always land on canvas + 3D when opening the app (unless user saved 2D)
-        selected = .canvas
         use3DMap = AppAISettings.prefer3DMap
-        reload()
         applyMapMode()
-        go(.canvas)
+        // First open lands on Needs you; after that the window keeps its place.
+        if !shownOnce {
+            shownOnce = true
+            go(.home)
+        }
         startPoll()
+        GraphStore.shared.fast = true
+        if UIPreview.isOn {
+            window?.orderBack(nil)
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        // Promise view: constellation even before first team
-        ensure3DVisible()
+    }
+
+    /// Open the app on the Graphs page (menu bar item, notifications).
+    func showGraphs() {
+        show()
+        go(.graphs)
     }
 
     func refreshUI() { reload() }
@@ -118,8 +129,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The old Guide set-up entry point: the first-run setup now covers it (2.0).
     @objc private func openAppAIGuide() {
-        AppAIOnboarding.present()
+        FirstRunSetup.present(force: true)
     }
 
     /// Host for floating Guide bubble (FAB on map page).
@@ -134,7 +146,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// Distance from top of contentView down past top bar (keeps expanded Guide below chrome).
     var guideTopBarClearance: CGFloat {
-        titlebarLift + topH
+        barH
     }
 
     static func label(_ text: String, frame: NSRect, bold: Bool = false,
@@ -151,18 +163,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         return f
     }
 
+    /// A team just started: say so quietly.
     static func showPairPersistTip(_ name: String) {
-        let flag = Pong.stateDir + "/dont-remind-pair-persist"
-        guard !FileManager.default.fileExists(atPath: flag) else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        let a = NSAlert()
-        a.messageText = "Team is live"
-        a.informativeText = "“\(name)” stays connected until you kill it. Arrange agents on the canvas; open any terminal anytime."
-        a.addButton(withTitle: "Got it")
-        a.addButton(withTitle: "Don't remind me")
-        if a.runModal() == .alertSecondButtonReturn {
-            try? "1\n".write(toFile: flag, atomically: true, encoding: .utf8)
-        }
+        Toast.show("“\(name)” is running.")
     }
 
     // MARK: Build
@@ -175,8 +178,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         win.title = PongTheme.productName
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
+        // An empty unified toolbar gives the 52 pt title area with the traffic lights centred in it.
+        let tb = NSToolbar(identifier: "cyberpong.shell")
+        tb.showsBaselineSeparator = false
+        tb.allowsUserCustomization = false
+        win.toolbar = tb
+        win.toolbarStyle = .unified
         win.isReleasedWhenClosed = false
-        win.backgroundColor = PongTheme.bg
+        win.backgroundColor = PongColor.base
+        win.appearance = NSAppearance(named: .darkAqua)
         win.minSize = minSize
         win.isMovableByWindowBackground = true
         win.center()
@@ -184,98 +194,264 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         root = NSView(frame: NSRect(origin: .zero, size: defaultSize))
         root.wantsLayer = true
-        root.layer?.backgroundColor = PongTheme.bg.cgColor
+        root.layer?.backgroundColor = PongColor.base.cgColor
         root.autoresizingMask = [.width, .height]
 
-        buildTopBar()
-        buildRail() // builds hidden zero-width shell for API compatibility
-        rail.isHidden = true
+        buildShell()
         buildStage()
-        root.addSubview(topBar)
         root.addSubview(stage)
+        root.addSubview(windowBar)
+        root.addSubview(sidebar)
 
         win.contentView = root
         window = win
         NotificationCenter.default.addObserver(
-            self, selector: #selector(themeDidChange),
-            name: PongTheme.appearanceDidChange, object: nil)
+            self, selector: #selector(storeChanged), name: GraphStore.didChange, object: nil)
         applyChrome()
         layoutAll()
-        go(.canvas)
+        updateSidebar()
     }
 
-    @objc private func themeDidChange() {
-        applyChrome()
-        reload()
-    }
-
-    /// Anduril chrome: pure black bars, white type, hairline structure.
+    /// Night chrome for the pages that still paint themselves (the map, Diagnostics, Setup).
     private func applyChrome() {
-        window?.backgroundColor = PongTheme.bg
-        window?.appearance = NSAppearance(named: PongTheme.appearance == .dark ? .darkAqua : .aqua)
-        root?.layer?.backgroundColor = PongTheme.bg.cgColor
-        topBar?.layer?.backgroundColor = PongTheme.bgChrome.cgColor
-        brandLabel?.textColor = PongTheme.textPrimary
-        brandLabel?.font = PongTheme.font(13, weight: .semibold)
-        brandLogo?.image = PongTheme.wordmarkImage(height: 38)
-        brandLabel?.isHidden = true
-        statusText?.textColor = PongTheme.textSecondary
-        statusText?.font = PongTheme.labelFont(10)
-        statusPill?.wantsLayer = true
-        statusPill?.layer?.backgroundColor = NSColor.clear.cgColor
-        statusPill?.layer?.cornerRadius = 12
-        statusPill?.layer?.borderWidth = PongTheme.hairline
-        statusPill?.layer?.borderColor = PongTheme.border.cgColor
-        for v in topBar?.subviews ?? [] where v.identifier?.rawValue == "topline" {
-            v.layer?.backgroundColor = PongTheme.border.cgColor
-        }
-        rail?.layer?.backgroundColor = PongTheme.bgChrome.cgColor
-        for v in rail?.subviews ?? [] where v.identifier?.rawValue == "railedge" {
-            v.layer?.backgroundColor = PongTheme.lineSoft.cgColor
-        }
-        for v in rail?.subviews ?? [] where v.identifier?.rawValue == "railglow" {
-            v.isHidden = true
-        }
-        stage?.layer?.backgroundColor = PongTheme.bg.cgColor
-        styleRail()
-        styleTopTabs()
-        if let teamPopup { PongTheme.stylePopUp(teamPopup) }
-        styleAppearanceBtn()
-        styleRefreshBtn()
+        window?.backgroundColor = PongColor.base
+        root?.layer?.backgroundColor = PongColor.base.cgColor
+        stage?.layer?.backgroundColor = PongColor.base.cgColor
         restyleCanvasToolbar()
         canvas?.retheme()
         map3D?.applyChromeTheme()
+        graphsPage?.retheme()
     }
 
-    private func styleAppearanceBtn() {
-        guard let appearanceBtn else { return }
-        let isDark = PongTheme.appearance == .dark
-        appearanceBtn.toolTip = isDark ? "Switch to light mode" : "Switch to dark mode"
-        // Dark mode → show moon (click for light); light mode → sun
-        appearanceBtn.attributedTitle = NSAttributedString(
-            string: isDark ? "☾" : "☀",
-            attributes: [
-                .foregroundColor: PongTheme.textSecondary,
-                .font: PongTheme.font(14, weight: .medium),
-                .paragraphStyle: centered(),
-            ])
-        appearanceBtn.layer?.backgroundColor = NSColor.clear.cgColor
-        appearanceBtn.layer?.borderWidth = PongTheme.hairline
-        appearanceBtn.layer?.borderColor = PongTheme.border.cgColor
+    // MARK: Shell
+
+    private func buildShell() {
+        sidebar = SidebarView(frame: .zero)
+        sidebar.onSelect = { [weak self] a in self?.goArea(a) }
+        sidebar.onSelectTeam = { [weak self] id in self?.openTeam(id) }
+        sidebar.onShowAllTeams = { [weak self] in self?.openTeam("__all__") }
+        sidebar.onNewGraph = { [weak self] in self?.newGraph() }
+        sidebar.onFixEngine = { [weak self] in self?.go(.mission) }
+        windowBar = WindowBarView(frame: .zero)
+        windowBar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
+        windowBar.onSearch = { [weak self] in self?.openPalette() }
+        windowBar.onToggleInspector = { [weak self] in self?.graphsPage?.toggleInspectorFromShell() }
     }
 
-    private func styleRefreshBtn() {
-        guard let refreshBtn else { return }
-        refreshBtn.layer?.backgroundColor = NSColor.clear.cgColor
-        refreshBtn.layer?.borderWidth = PongTheme.hairline
-        refreshBtn.layer?.borderColor = PongTheme.border.cgColor
-        refreshBtn.attributedTitle = NSAttributedString(
-            string: "↻",
-            attributes: [
-                .foregroundColor: PongTheme.textPrimary,
-                .font: PongTheme.font(13, weight: .medium),
-                .paragraphStyle: centered(),
-            ])
+    /// ⌘1–5 and the sidebar's items.
+    func goArea(_ a: ShellArea) {
+        if window == nil { show() }
+        switch a {
+        case .home: go(.home)
+        case .chats, .graphs:
+            let d: Destination = a == .chats ? .chats : .graphs
+            // pressing the area you are in goes back to its list
+            if selected == d && graphsPage.showingDetail { graphsPage.showList() } else { go(d) }
+        case .teams: openTeam("__all__")
+        case .schedules: go(.schedules)
+        }
+    }
+
+    /// A team's page; "__all__" shows every team on one map.
+    func openTeam(_ id: String) {
+        if window == nil { show() }
+        selectedSession = id
+        syncHumanFocusToMap()
+        go(.canvas)
+    }
+
+    /// ⌘N: a new graph starts with a chat.
+    func newGraph() {
+        if window == nil { show() }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        NewGraphSheet.present(from: window) { [weak self] key in
+            guard let self else { return }
+            self.go(.chats)
+            self.graphsPage.openChat(key)
+        }
+    }
+
+    /// A ready-made graph on a team that exists.
+    func startFromTemplate() {
+        if window == nil { show() }
+        go(.graphs)
+        graphsPage.startFromTemplate()
+    }
+
+    /// ⇧⌘N
+    func newTeam() {
+        if window == nil { show() }
+        newTeamPressed()
+    }
+
+    func openGraph(_ key: String, tab: GraphStudioView.Tab? = nil) {
+        if window == nil { show() }
+        go(.graphs)
+        graphsPage.openGraph(key, tab: tab)
+    }
+
+    func openChat(_ key: String) {
+        if window == nil { show() }
+        go(.chats)
+        graphsPage.openChat(key)
+    }
+
+    /// ⌘J: the next question, wherever it is.
+    func nextQuestion() {
+        if window == nil { show() }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        if selected != .home { go(.home) }
+        homePage.focusNextQuestion()
+    }
+
+    /// ⌘1–3 answers the focused question (Home or an open graph). False when there is none,
+    /// so the keys fall through to the areas.
+    func answerFocused(_ i: Int) -> Bool {
+        if selected == .home { return homePage.answerFocused(i) }
+        if selected == .graphs || selected == .chats { return graphsPage.answerBanner(i) }
+        return false
+    }
+
+    /// ⌥⌘1–3: a graph's Steps, Plan and Screen.
+    func setGraphTab(_ t: GraphStudioView.Tab) {
+        guard selected == .graphs else { return }
+        graphsPage.setTab(t)
+    }
+
+    func linkTerminals() { if window == nil { show() }; linkPressed() }
+    func showSavedTeams() { showTeamsPressed() }
+    func showRecaps() { showSessionsPressed() }
+
+    /// ⌘,
+    func openSettings() {
+        if window == nil { show() }
+        SettingsWindow.shared.show()
+    }
+
+    func newSchedule() {
+        if window == nil { show() }
+        go(.schedules)
+        schedulesPage.newSchedule()
+    }
+
+    /// ⌘K: jump anywhere, run anything, or ask.
+    func openPalette() {
+        if window == nil { show() }
+        CommandPalette.shared.present(in: window)
+    }
+
+    /// ⌥⌘S
+    @objc func toggleSidebar() {
+        sidebarHidden.toggle()
+        UserDefaults.standard.set(sidebarHidden, forKey: "shell.sidebarHidden")
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = PongMotion.reduced ? 0 : PongMotion.panel
+            self.layoutAll()
+        }
+        // Diagnostics draws its cards to the page's width, as a window resize redraws it
+        if selected == .mission { paintMission() }
+    }
+
+    /// ⌥⌘I
+    @objc func toggleInspector() {
+        graphsPage?.toggleInspectorFromShell()
+    }
+
+    /// The page that is showing, for menus and the palette.
+    var currentDestination: Destination { selected }
+
+    @objc private func storeChanged() {
+        updateSidebar()
+        if selected == .home { homePage?.render() }
+    }
+
+    private func teamName(_ p: String, _ db: [String: Any]) -> String {
+        let n = ((db[p] as? [String: Any])?["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return n.isEmpty ? p : n
+    }
+
+    /// The sidebar's counts and team list, from the graph feed and pairs.json.
+    private func updateSidebar() {
+        guard let sidebar else { return }
+        let st = GraphStore.shared
+        let db = PairState.loadPairsDb()
+        // Running is the test Teams and Schedules use (its terminals are there), so the sidebar never says
+        // a team runs while those pages say it is stopped; working is a graph at work, never a paused one.
+        // A fresh look at tmux redraws the Teams list or the team's page too (updateStatus), at the same moment.
+        let up = TeamsUp.now { [weak self] in self?.updateStatus() }
+        let busy = Set(st.graphs.filter { $0.isWorking }.map { $0.session })
+        let ids = PairState.listPairs() + PairState.listStoppedPairs()
+        var teams = ids.filter { up.contains($0) }.map {
+            ShellTeam(id: $0, name: teamName($0, db), running: true, working: busy.contains($0))
+        }
+        teams += ids.filter { !up.contains($0) }.map { ShellTeam(id: $0, name: teamName($0, db), running: false, working: false) }
+        if let shown = teamActionsFor, selected == .canvas, selectedSession == shown.team, up.contains(shown.team) != shown.up {
+            syncShell()
+        }
+        let engineOff = st.loadedOnce && !st.loadError.isEmpty && st.graphs.isEmpty
+        sidebar.update(needsYou: st.needsYouCount, chats: st.liveChats.count,
+                       graphs: st.running.count + st.waiting.count, teams: teams, engineOff: engineOff)
+    }
+
+    /// The sidebar's selection and the window bar's breadcrumb follow the page.
+    private func syncShell() {
+        guard let sidebar, let windowBar else { return }
+        var crumbs: [WindowBarView.Crumb] = []
+        switch selected {
+        case .home: sidebar.select(area: .home)
+        case .chats: sidebar.select(area: .chats)
+        case .graphs: sidebar.select(area: .graphs)
+        case .schedules: sidebar.select(area: .schedules)
+        case .canvas:
+            if let s = selectedSession, s != "__all__" {
+                sidebar.select(area: nil, team: s)
+                crumbs = [.init(title: "Teams") { [weak self] in self?.openTeam("__all__") }]
+            } else {
+                sidebar.select(area: .teams)
+            }
+        case .mission:
+            sidebar.select(area: nil)
+            crumbs = [.init(title: "Settings", go: nil), .init(title: "Diagnostics", go: nil)]
+        case .setup:
+            sidebar.select(area: nil)
+            crumbs = [.init(title: "Settings", go: nil)]
+        }
+        var actions: [NSView] = []
+        switch selected {
+        case .graphs, .chats:
+            crumbs = graphsPage?.crumbs ?? []
+            actions = graphsPage?.pageActions ?? []
+        case .schedules:
+            let b = PongButton(title: "New schedule", style: .primary)
+            b.symbol = "plus"
+            b.onPress = { [weak self] in self?.schedulesPage.newSchedule() }
+            actions = [b]
+        case .canvas:
+            if let s = selectedSession, s != "__all__" {
+                actions = teamActions(s)
+            } else {
+                let map = PongButton(title: showTeamsMap ? "Show as a list" : "Show on the map", style: .quiet)
+                map.symbol = showTeamsMap ? "list.bullet" : "cube"
+                map.onPress = { [weak self] in
+                    guard let self else { return }
+                    self.showTeamsMap.toggle()
+                    UserDefaults.standard.set(self.showTeamsMap, forKey: "teams.showMap")
+                    self.go(.canvas)
+                }
+                let b = PongButton(title: "New team", style: .secondary)
+                b.symbol = "plus"
+                b.toolTip = "A lead AI and its helpers (⇧⌘N)"
+                b.onPress = { [weak self] in self?.newTeamPressed() }
+                actions = [map, b]
+            }
+        default:
+            break
+        }
+        windowBar.setCrumbs(crumbs)
+        windowBar.setActions(actions)
+        windowBar.showsInspectorToggle = (selected == .graphs || selected == .chats) && graphsPage?.hasInspector == true
     }
 
     private func restyleCanvasToolbar() {
@@ -318,250 +494,44 @@ final class PanelController: NSObject, NSWindowDelegate {
         layoutAll()
         if selected == .canvas { refreshCanvas(light: true) }
         if selected == .mission { paintMission() }
+        graphsPage?.needsLayout = true
     }
 
     private func layoutAll() {
-        guard let root else { return }
+        guard let root, let sidebar, let windowBar else { return }
         let W = root.bounds.width
         let H = root.bounds.height
-
-        // Top bar under traffic lights
-        let topY = H - titlebarLift - topH
-        topBar.frame = NSRect(x: 0, y: topY, width: W, height: topH)
-        layoutTopBar(width: W)
-
-        // Stage full-bleed under top bar (no left rail)
-        let bodyH = topY
-        stage.frame = NSRect(x: 0, y: 0, width: W, height: bodyH)
-        for page in [canvasPage, missionPage, setupPage] {
+        // Below 900 pt the sidebar folds to a 56 pt icon rail; at 1400 it widens to 232.
+        let compact = W < 900
+        let sw: CGFloat = sidebarHidden ? 0 : (compact ? 56 : (W >= 1400 ? 232 : 200))
+        sidebar.isHidden = sidebarHidden
+        sidebar.compact = compact
+        sidebar.frame = NSRect(x: 0, y: 0, width: sw, height: H)
+        // The traffic lights take ~72 pt: leave room when nothing else is under them.
+        windowBar.leadingInset = sidebarHidden ? 72 : (compact ? 20 : 0)
+        windowBar.frame = NSRect(x: sw, y: H - barH, width: W - sw, height: barH)
+        stage.frame = NSRect(x: sw, y: 0, width: W - sw, height: H - barH)
+        for page in [missionPage, setupPage] {
             page?.frame = stage.bounds
+        }
+        graphsPage?.frame = stage.bounds
+        homePage?.frame = stage.bounds
+        schedulesPage?.frame = stage.bounds
+        teamsList?.frame = stage.bounds
+        teamPage?.frame = stage.bounds
+        teamPage?.layoutSubtreeIfNeeded()
+        if let canvasPage {
+            canvasPage.frame = canvasPage.superview === teamPage?.mapHost ? teamPage.mapHost.bounds : stage.bounds
         }
         layoutCanvasPage()
         layoutMissionPage()
         layoutSetupPage()
     }
 
-    // MARK: Top bar
-
-    private func buildTopBar() {
-        topBar = NSView(frame: .zero)
-        topBar.wantsLayer = true
-        topBar.layer?.backgroundColor = PongTheme.bg.cgColor
-
-        brandLogo = NSImageView(frame: .zero)
-        brandLogo.imageScaling = .scaleProportionallyUpOrDown
-        brandLogo.imageAlignment = .alignLeft
-        // Original glow PNGs only — NSImageView scales; we do not re-export the asset
-        brandLogo.image = PongTheme.wordmarkImage(height: 38)
-        brandLogo.toolTip = PongTheme.productName
-        brandLogo.wantsLayer = true
-        brandLogo.layer?.masksToBounds = false
-        topBar.addSubview(brandLogo)
-
-        // Text label kept for a11y / fallback; wordmark image is the public mark
-        brandLabel = Self.label(PongTheme.productName, frame: .zero, bold: true, size: 13)
-        brandLabel.font = PongTheme.font(13, weight: .semibold)
-        brandLabel.toolTip = PongTheme.productName
-        brandLabel.isHidden = true
-        topBar.addSubview(brandLabel)
-
-        teamPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        teamPopup.target = self
-        teamPopup.action = #selector(teamChanged)
-        teamPopup.font = PongTheme.labelFont(11)
-        PongTheme.stylePopUp(teamPopup)
-        topBar.addSubview(teamPopup)
-
-        topTabCanvas = makeTopTab("Map", tag: 0)
-        topTabMission = makeTopTab("Mission", tag: 1)
-        topTabSetup = makeTopTab("Setup", tag: 2)
-        topBar.addSubview(topTabCanvas)
-        topBar.addSubview(topTabMission)
-        topBar.addSubview(topTabSetup)
-
-        statusPill = NSView(frame: .zero)
-        statusPill.wantsLayer = true
-        statusPill.layer?.backgroundColor = NSColor.clear.cgColor
-        statusPill.layer?.cornerRadius = 12
-        statusPill.layer?.borderWidth = PongTheme.hairline
-        statusPill.layer?.borderColor = PongTheme.border.cgColor
-        statusDot = NSView(frame: NSRect(x: 10, y: 10, width: 6, height: 6))
-        statusDot.wantsLayer = true
-        statusDot.layer?.cornerRadius = 3
-        statusPill.addSubview(statusDot)
-        statusText = Self.label("Idle", frame: NSRect(x: 22, y: 5, width: 120, height: 16), size: 11, secondary: true)
-        statusText.font = PongTheme.labelFont(11)
-        statusText.maximumNumberOfLines = 1
-        statusText.lineBreakMode = .byTruncatingTail
-        statusPill.addSubview(statusText)
-        topBar.addSubview(statusPill)
-
-        refreshBtn = iconTextButton("↻", #selector(reloadPressed))
-        refreshBtn.toolTip = "Refresh"
-        topBar.addSubview(refreshBtn)
-
-        appearanceBtn = iconTextButton("☀", #selector(appearancePressed))
-        topBar.addSubview(appearanceBtn)
-        styleAppearanceBtn()
-
-        let line = NSView(frame: .zero)
-        line.identifier = NSUserInterfaceItemIdentifier("topline")
-        line.wantsLayer = true
-        line.layer?.backgroundColor = PongTheme.border.cgColor
-        topBar.addSubview(line)
-    }
-
-    private func makeTopTab(_ title: String, tag: Int) -> NSButton {
-        let b = NSButton(frame: .zero)
-        b.title = title
-        b.tag = tag
-        b.target = self
-        b.action = #selector(railPressed(_:))
-        b.toolTip = title
-        PongTheme.styleTopTab(b, selected: false)
-        return b
-    }
-
-    private func styleTopTabs() {
-        guard topTabCanvas != nil else { return }
-        PongTheme.styleTopTab(topTabCanvas, selected: selected == .canvas)
-        PongTheme.styleTopTab(topTabMission, selected: selected == .mission)
-        PongTheme.styleTopTab(topTabSetup, selected: selected == .setup)
-    }
-
-    private func layoutTopBar(width W: CGFloat) {
-        let left = trafficInset
-        // Compact wordmark so team + tabs fit
-        let wmH: CGFloat = 34
-        let wmW: CGFloat = min(180, max(120, W * 0.18))
-        let wmY = (topH - wmH) / 2
-        brandLogo.frame = NSRect(x: left, y: wmY, width: wmW, height: wmH)
-        brandLabel.frame = NSRect(x: left, y: wmY, width: wmW, height: wmH)
-        let teamX = left + wmW + 12
-        let teamW = min(160, max(96, W * 0.14))
-        teamPopup.frame = NSRect(x: teamX, y: (topH - 28) / 2, width: teamW, height: 28)
-        // Tabs immediately after team dropdown
-        var tabX = teamX + teamW + 10
-        let tabH: CGFloat = 26
-        let tabY = (topH - tabH) / 2
-        for (btn, w) in [(topTabCanvas, CGFloat(48)), (topTabMission, CGFloat(64)), (topTabSetup, CGFloat(52))] {
-            btn?.frame = NSRect(x: tabX, y: tabY, width: w, height: tabH)
-            tabX += w + 4
-        }
-        statusPill.frame = NSRect(x: W - 236, y: (topH - 28) / 2, width: 140, height: 28)
-        appearanceBtn.frame = NSRect(x: W - 80, y: (topH - 28) / 2, width: 28, height: 28)
-        refreshBtn.frame = NSRect(x: W - 44, y: (topH - 28) / 2, width: 28, height: 28)
-        for v in topBar.subviews where v.identifier?.rawValue == "topline" {
-            v.frame = NSRect(x: 0, y: 0, width: W, height: 1)
-        }
-    }
-
-    @objc private func appearancePressed() {
-        PongTheme.toggleAppearance()
-    }
-
-    // MARK: Rail
-
-    private func buildRail() {
-        rail = NSView(frame: .zero)
-        rail.wantsLayer = true
-        rail.layer?.backgroundColor = PongTheme.bgRail.cgColor
-
-        railCanvas = railButton(symbol: "square.grid.2x2", fallback: "◎", tip: "Canvas — map of seats", tag: 0)
-        railMission = railButton(symbol: "target", fallback: "◎", tip: "Mission — jobs & flow", tag: 1)
-        railSetup = railButton(symbol: "gearshape", fallback: "⚙", tip: "Setup — new team & link", tag: 2)
-        rail.addSubview(railCanvas)
-        rail.addSubview(railMission)
-        rail.addSubview(railSetup)
-
-        // Soft cyan glow strip + hard hairline edge (neon dual-edge language)
-        let glow = NSView(frame: .zero)
-        glow.identifier = NSUserInterfaceItemIdentifier("railglow")
-        glow.wantsLayer = true
-        glow.layer?.backgroundColor = NSColor.clear.cgColor
-        rail.addSubview(glow)
-
-        let edge = NSView(frame: .zero)
-        edge.identifier = NSUserInterfaceItemIdentifier("railedge")
-        edge.wantsLayer = true
-        edge.layer?.backgroundColor = PongTheme.lineSoft.cgColor
-        rail.addSubview(edge)
-    }
-
-    private func railButton(symbol: String, fallback: String, tip: String, tag: Int) -> NSButton {
-        let b = NSButton(frame: .zero)
-        b.title = ""
-        b.bezelStyle = .inline
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = PongTheme.radiusRail
-        b.tag = tag
-        b.toolTip = tip
-        b.target = self
-        b.action = #selector(railPressed(_:))
-        b.imagePosition = .imageOnly
-        if #available(macOS 11.0, *),
-           let img = NSImage(systemSymbolName: symbol, accessibilityDescription: tip) {
-            let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-            b.image = img.withSymbolConfiguration(cfg)
-            b.contentTintColor = PongTheme.textSecondary
-        } else {
-            b.attributedTitle = NSAttributedString(string: fallback, attributes: [
-                .foregroundColor: PongTheme.textSecondary,
-                .font: PongTheme.font(16, weight: .medium),
-                .paragraphStyle: centered(),
-            ])
-        }
-        return b
-    }
-
     private func centered() -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
         p.alignment = .center
         return p
-    }
-
-    private func layoutRail(height H: CGFloat) {
-        let top = H - 72
-        railCanvas.frame = NSRect(x: 10, y: top, width: 44, height: 44)
-        railMission.frame = NSRect(x: 10, y: top - 56, width: 44, height: 44)
-        railSetup.frame = NSRect(x: 10, y: top - 112, width: 44, height: 44)
-        for v in rail.subviews where v.identifier?.rawValue == "railglow" {
-            v.frame = NSRect(x: railW - 6, y: 0, width: 6, height: H)
-        }
-        for v in rail.subviews where v.identifier?.rawValue == "railedge" {
-            v.frame = NSRect(x: railW - 2, y: 0, width: 2, height: H)
-        }
-    }
-
-    private func styleRail() {
-        styleRailBtn(railCanvas, on: selected == .canvas)
-        styleRailBtn(railMission, on: selected == .mission)
-        styleRailBtn(railSetup, on: selected == .setup)
-    }
-
-    private func styleRailBtn(_ b: NSButton, on: Bool) {
-        b.layer?.cornerRadius = PongTheme.radiusRail
-        b.layer?.backgroundColor = (on ? PongTheme.tabSelected : NSColor.clear).cgColor
-        b.layer?.borderWidth = 0
-        let tint = on ? PongTheme.textPrimary : PongTheme.textTertiary
-        if #available(macOS 11.0, *), b.image != nil {
-            b.contentTintColor = tint
-            let names = [0: "square.grid.2x2", 1: "target", 2: "gearshape"]
-            if let name = names[b.tag],
-               let img = NSImage(systemSymbolName: name, accessibilityDescription: nil) {
-                let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: on ? .semibold : .medium)
-                b.image = img.withSymbolConfiguration(cfg)
-            }
-        } else {
-            let symbols = [0: "◎", 1: "◎", 2: "⚙"]
-            let s = symbols[b.tag] ?? "·"
-            b.attributedTitle = NSAttributedString(string: s, attributes: [
-                .foregroundColor: tint,
-                .font: PongTheme.font(16, weight: on ? .semibold : .regular),
-                .paragraphStyle: centered(),
-            ])
-        }
     }
 
     // MARK: Stage pages
@@ -740,6 +710,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         canvasToolbar.addSubview(pillButton("+", #selector(zoomInPressed)))
         canvasToolbar.addSubview(pillButton("Link terminals", #selector(linkPressed)))
         canvasToolbar.addSubview(pillButton("Architecture", #selector(architecturePressed)))
+        canvasToolbar.addSubview(pillButton("Island", #selector(islandPressed)))
         canvasToolbar.addSubview(pillButton("Reset position", #selector(arrangeTeamsPressed)))
         canvasToolbar.addSubview(accentButton("New team", #selector(newTeamPressed)))
 
@@ -779,6 +750,47 @@ final class PanelController: NSObject, NSWindowDelegate {
         setupPage.isHidden = true
         stage.addSubview(setupPage)
         paintSetup()
+
+        // Graphs and Chats pages
+        graphsPage = GraphStudioView(frame: .zero)
+        graphsPage.isHidden = true
+        graphsPage.onCrumbsChanged = { [weak self] in self?.syncShell() }
+        graphsPage.onNavigate = { [weak self] mode in self?.go(mode == .chats ? .chats : .graphs) }
+        stage.addSubview(graphsPage)
+
+        // Needs you
+        homePage = HomePageView(frame: .zero)
+        homePage.isHidden = true
+        homePage.onOpenGraph = { [weak self] key in
+            self?.go(.graphs)
+            self?.graphsPage.openGraph(key)
+        }
+        homePage.onOpenChat = { [weak self] key in
+            self?.go(.chats)
+            self?.graphsPage.openChat(key)
+        }
+        homePage.onNewGraph = { [weak self] in self?.newGraph() }
+        homePage.onWatchGraph = { [weak self] key in self?.openGraph(key, tab: .screen) }
+        homePage.onScrolled = { [weak self] scrolled in self?.windowBar?.showsRule = scrolled }
+        stage.addSubview(homePage)
+
+        // Teams
+        teamsList = TeamsListView(frame: .zero)
+        teamsList.isHidden = true
+        teamsList.onOpen = { [weak self] id in self?.openTeam(id) }
+        teamsList.onNewTeam = { [weak self] in self?.newTeamPressed() }
+        teamsList.onChange = { [weak self] in self?.hardRefresh() }
+        stage.addSubview(teamsList)
+        teamPage = TeamPageView(frame: .zero)
+        teamPage.isHidden = true
+        teamPage.onChange = { [weak self] in self?.hardRefresh() }
+        stage.addSubview(teamPage)
+
+        // Schedules
+        schedulesPage = SchedulesPageView(frame: .zero)
+        schedulesPage.isHidden = true
+        schedulesPage.onOpenTeam = { [weak self] id in self?.openTeam(id) }
+        stage.addSubview(schedulesPage)
     }
 
     private func layoutCanvasPage() {
@@ -900,6 +912,9 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func layoutSetupPage() {
         setupScroll.frame = setupPage.bounds.insetBy(dx: 20, dy: 16)
+        // its cards are drawn to the page's width: draw them again when that changes (the sidebar hid or
+        // came back, the window grew), so the content widens with the room it has
+        if selected == .setup, abs(setupScroll.contentSize.width - setupPaintedWidth) > 1 { paintSetup() }
     }
 
     private func glassBar() -> NSView {
@@ -925,6 +940,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             case "ORBIT", "MOVE": w = 56
             case "LINK TERMINALS": w = 118
             case "ARCHITECTURE": w = 100
+            // Sized to sit with Orbit/Move rather than falling to the default,
+            // which happens not to clip at six characters but is not a decision.
+            case "ISLAND": w = 62
             case "RESET POSITION", "ARRANGE TEAMS": w = 118
             case "NEW TEAM": w = 96
             default: w = max(48, CGFloat(title.count) * 8 + 20)
@@ -944,23 +962,152 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func go(_ d: Destination) {
+        if d != selected {
+            // a card focused for ⌘1–3 lets go when the page changes
+            homePage?.clearFocus()
+            graphsPage?.clearBannerFocus()
+        }
         selected = d
-        styleRail()
-        styleTopTabs()
-        canvasPage.isHidden = d != .canvas
+        let oneTeam = d == .canvas && selectedSession != nil && selectedSession != "__all__"
+        let teamsMap = d == .canvas && !oneTeam && showTeamsMap
+        placeMap(inTeamPage: oneTeam)
+        teamPage.isHidden = !oneTeam
+        teamsList.isHidden = !(d == .canvas && !oneTeam && !showTeamsMap)
+        canvasPage.isHidden = !(oneTeam || teamsMap)
         missionPage.isHidden = d != .mission
         setupPage.isHidden = d != .setup
-        // Design: pause 3D while Mission/Setup are showing
-        if use3DMap {
-            map3D.setMapPlaying(d == .canvas)
-            map3D.isHidden = d != .canvas
+        graphsPage.isHidden = !(d == .graphs || d == .chats)
+        homePage.isHidden = d != .home
+        schedulesPage.isHidden = d != .schedules
+        windowBar?.showsRule = false
+        if d == .graphs || d == .chats {
+            graphsPage.mode = d == .chats ? .chats : .graphs
+            graphsPage.start()
+        } else {
+            graphsPage.stop()
         }
+        if d == .home { homePage.render() }
+        if d == .schedules { schedulesPage.render() }
+        // Pause the 3D map while another page is showing
+        if use3DMap {
+            let mapShown = !canvasPage.isHidden
+            map3D.setMapPlaying(mapShown)
+            map3D.isHidden = !mapShown
+        }
+        syncShell()
         reload()
+    }
+
+    /// The 3D map lives in one team's page (under its members), or fills the Teams area.
+    private func placeMap(inTeamPage: Bool) {
+        guard let canvasPage, let teamPage else { return }
+        let host: NSView = inTeamPage ? teamPage.mapHost : stage
+        if canvasPage.superview !== host {
+            canvasPage.removeFromSuperview()
+            if inTeamPage {
+                host.addSubview(canvasPage)
+            } else {
+                stage.addSubview(canvasPage, positioned: .below, relativeTo: missionPage)
+            }
+        }
+        // in a team's page the map is only the map: its old toolbar, HUD and legend step aside
+        for v in canvasPage.subviews where v !== map3D && v !== canvasScroll {
+            v.isHidden = inTeamPage || (v === canvasEmpty && true)
+        }
+        layoutAll()
+    }
+
+    func previewOpenGraph(_ key: String) { graphsPage.openGraph(key) }
+    func previewOpenChat(_ key: String) { graphsPage.openChat(key) }
+    func previewGraphTab(_ i: Int) { graphsPage.setTab(GraphStudioView.Tab(rawValue: i) ?? .steps) }
+    func previewSelectNode(_ id: String) { graphsPage.previewSelectNode(id) }
+    func previewToggleActivity() { graphsPage.previewToggleActivity() }
+
+    /// One team's window-bar actions: open a chat on it (the way work starts now), and ⋯. A stopped
+    /// team's first action starts it again as it was set up.
+    private func teamActions(_ session: String) -> [NSView] {
+        // the team page's own test: its terminals are there
+        let running = SchedulesPageView.runningTeams.contains(session)
+        teamActionsFor = (session, running)
+        let name = ((PairState.loadPairsDb()[session] as? [String: Any])?["display_name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? session
+        // running: open a chat on it; stopped: start it again (a chat on it is in ⋯)
+        let first: PongButton
+        if running {
+            first = PongButton(title: "Open a chat here", style: .secondary)
+            first.toolTip = "A chat on this team: tell it what you want done and it plans a graph"
+            first.onPress = { [weak self] in self?.openChatOnTeam(session) }
+        } else {
+            first = PongButton(title: "Start team", style: .primary)
+            first.toolTip = "Start \(name) again: its lead and helpers, as it was set up"
+            first.onPress = { [weak self] in TeamStart.start(session, name: name) { self?.hardRefresh() } }
+        }
+        let more = PongButton(title: "", style: .quiet)
+        more.symbol = "ellipsis"
+        more.setAccessibilityLabel("More actions")
+        let menu = NSMenu()
+        func item(_ t: String, _ fn: @escaping () -> Void) {
+            let box = ClosureBox(fn)
+            let i = NSMenuItem(title: t, action: #selector(ClosureBox.fire), keyEquivalent: "")
+            i.target = box
+            i.representedObject = box
+            menu.addItem(i)
+        }
+        if running {
+            item("Open the lead's terminal") { DispatchQueue.global(qos: .userInitiated).async { Pairing.frontConductor(session) } }
+            item("Conversation with the lead") { TeamFocusController.shared.show(session: session) }
+        } else {
+            item("Start with a chat") { [weak self] in self?.openChatOnTeam(session) }
+            menu.addItem(.separator())
+        }
+        item("Team layout…") { [weak self] in self?.map3D?.openArchitectureSheet() }
+        item("Team options…") { [weak self] in TeamOptionsSheetController.shared.show(for: session) { self?.reload() } }
+        item("Use terminals already open…") { [weak self] in self?.linkPressed() }
+        if running {
+            menu.addItem(.separator())
+            item("Stop team…") { [weak self] in self?.confirmKillTeam(session: session, displayName: name) }
+        }
+        more.onPress = { [weak more] in
+            guard let more else { return }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.height + 4), in: more)
+        }
+        return [first, more]
+    }
+
+    /// A chat (an architect) on an existing team; it opens the team's terminal session if it was closed.
+    func openChatOnTeam(_ session: String) {
+        Toast.show("Opening a chat on this team…")
+        GraphCLI.run(["-s", session, "architect", "start", "--json"], timeout: 60) { [weak self] r in
+            switch ArchitectStart.read(out: r.out, err: r.err) {
+            case .failed(let why):
+                // the toast wraps to three lines, so the fix at the end of the sentence is read too
+                Toast.show(why, warn: true)
+                Pong.log("architect start on \(session) failed: \(r.err.isEmpty ? r.out : r.err)")
+            case .opened(let key, let warning):
+                if let warning {
+                    Pong.log("architect start on \(session): \(warning)")
+                    Toast.show(warning, warn: true)
+                }
+                GraphStore.shared.refresh()
+                self?.openChat(key)
+            }
+        }
+    }
+
+    /// Open Diagnostics (the old Mission page).
+    func goDiagnostics() {
+        if window == nil { show() }
+        go(.mission)
+    }
+
+    /// Open the old Setup page (Settings moves into its own window).
+    func goSetup() {
+        if window == nil { show() }
+        go(.setup)
     }
 
     /// Human chat job chip → Mission tab.
     func goToMission() {
-        go(.mission)
+        go(.home)
     }
 
     /// Push top-bar team focus into the human console (lock orch target).
@@ -980,25 +1127,27 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Soft reload (poll / navigation) — file cache + light canvas.
     private func reload() {
         updateStatus()
-        fillTeamPopup()
         switch selected {
-        case .canvas: refreshCanvas()
+        case .canvas:
+            refreshCanvas()
+            renderTeams()
         case .mission: paintMission()
         case .setup: paintSetup()
+        case .graphs, .chats: GraphStore.shared.refresh()
+        case .home: homePage.render()
+        case .schedules: schedulesPage.render()
         }
         layoutAll()
     }
 
-    /// Top-right ↻ — force control-plane snapshot + full UI rebuild.
-    private func hardRefresh() {
+    /// ⌘R — force a fresh snapshot and graph list, then rebuild the page.
+    @objc func hardRefresh() {
         guard !hardRefreshInFlight else { return }
         hardRefreshInFlight = true
-        refreshBtn?.isEnabled = false
-        statusText.stringValue = "Refreshing…"
-        statusDot.layer?.backgroundColor = PongTheme.blue.cgColor
         PairState.invalidatePairsCache()
         // Allow a concurrent async writer to finish; we force our own snapshot pass
         snapshotRefreshInFlight = false
+        GraphStore.shared.refresh()
         Pong.log("refresh hard begin selected=\(selected.rawValue)")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1024,24 +1173,16 @@ final class PanelController: NSObject, NSWindowDelegate {
                 guard let self else { return }
                 if let obj { self.lastSnapshot = obj }
                 self.updateStatus()
-                self.fillTeamPopup()
                 switch self.selected {
-                case .canvas:
-                    self.refreshCanvas(light: false)
-                case .mission:
-                    self.paintMission()
-                case .setup:
-                    self.paintSetup()
+                case .canvas: self.refreshCanvas(light: false)
+                case .mission: self.paintMission()
+                case .setup: self.paintSetup()
+                case .graphs, .chats: break
+                case .home: self.homePage.render()
+                case .schedules: self.schedulesPage.render()
                 }
                 self.layoutAll()
                 self.hardRefreshInFlight = false
-                self.refreshBtn?.isEnabled = true
-                // Brief “done” flash then restore normal status
-                self.statusText.stringValue = "Refreshed"
-                self.statusDot.layer?.backgroundColor = PongTheme.live.cgColor
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-                    self?.updateStatus()
-                }
                 Pong.log("refresh hard done teams=\((obj?["teams"] as? [Any])?.count ?? -1)")
             }
         }
@@ -1059,6 +1200,8 @@ final class PanelController: NSObject, NSWindowDelegate {
             let win = self.window
             let fullyOccluded = win.map { !$0.occlusionState.contains(.visible) } ?? false
             let appInactive = !NSApp.isActive
+            // the graph feed polls fast only while someone can see it
+            GraphStore.shared.fast = !(fullyOccluded || appInactive) && win?.isVisible == true
             if fullyOccluded || appInactive {
                 self.updateStatus()
                 return
@@ -1078,8 +1221,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             self.updateStatus()
             if self.selected == .mission { self.paintMission() }
             if self.selected == .canvas {
+                // Light map poll — coalesce + no snapshot re-entry storm
                 self.refreshCanvas(light: true)
-                // Poll human asks for focused team without opening Focus window
+                // Human console: cheaper than full map; still throttle inside
                 self.map3D?.pollHumanConsole()
             }
             // Proactive Guide: situation detectors (ghosts, no-subs, stalled jobs)
@@ -1093,75 +1237,54 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func updateStatus() {
-        // File-only count — never block main on `tmux list-sessions` (beachball)
-        let n = PairState.pairCountFromDb()
-        if n == 0 {
-            statusText.stringValue = "Idle"
-            statusDot.layer?.backgroundColor = PongTheme.idle.cgColor
-        } else {
-            statusText.stringValue = n == 1 ? "1 team live" : "\(n) teams live"
-            statusDot.layer?.backgroundColor = PongTheme.live.cgColor
-        }
+        updateSidebar()
+        if selected == .canvas { renderTeams() }
     }
 
-    private func fillTeamPopup() {
-        let pairs = PairState.listPairs()
-        let prev = selectedSession
-        teamPopup.removeAllItems()
-        if pairs.isEmpty {
-            teamPopup.addItem(withTitle: "No team")
-            teamPopup.isEnabled = false
-            selectedSession = nil
-            return
+    /// The Teams list, or one team's page, from the latest snapshot.
+    private func renderTeams() {
+        let snap = lastSnapshot ?? Pong.loadJSON(Pong.stateDir + "/snapshot.json")
+        if let s = selectedSession, s != "__all__" {
+            teamPage.render(s, snapshot: snap)
+        } else if !showTeamsMap {
+            teamsList.render(snapshot: snap)
         }
-        teamPopup.isEnabled = true
-        // Multi-team canvas first
-        teamPopup.addItem(withTitle: "All teams")
-        teamPopup.lastItem?.representedObject = "__all__"
-        let db = PairState.loadPairsDb()
-        for p in pairs {
-            let entry = db[p] as? [String: Any] ?? [:]
-            let name = (entry["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            teamPopup.addItem(withTitle: name.isEmpty ? p : name)
-            teamPopup.lastItem?.representedObject = p
-        }
-        if prev == "__all__" || prev == nil {
-            teamPopup.selectItem(at: 0)
-            selectedSession = pairs.count > 1 ? "__all__" : pairs[0]
-            if pairs.count == 1 {
-                teamPopup.selectItem(at: 1)
-                selectedSession = pairs[0]
-            }
-        } else if let i = pairs.firstIndex(of: prev!) {
-            teamPopup.selectItem(at: i + 1) // offset for All teams
-            selectedSession = prev
-        } else {
-            teamPopup.selectItem(at: 0)
-            selectedSession = pairs.count > 1 ? "__all__" : pairs[0]
-        }
-        syncHumanFocusToMap()
-    }
-
-    @objc private func teamChanged() {
-        selectedSession = teamPopup.selectedItem?.representedObject as? String
-        syncHumanFocusToMap()
-        refreshCanvas()
     }
 
     // MARK: Canvas
 
-    private func refreshCanvas(light: Bool = false) {
+    /// - Parameters:
+    ///   - light: poll path — skip topology seed + use dirty-only 3D apply
+    ///   - kickSnapshot: false when applying an async snapshot result (avoids feedback loop)
+    private func refreshCanvas(light: Bool = false, kickSnapshot: Bool = true) {
+        if canvasDragging { return }
+        // Coalesce stacked light refreshes (poll + snapshot callback same tick)
+        if light {
+            if lightCanvasRefreshPending { return }
+            lightCanvasRefreshPending = true
+            // Run body on next main turn so multiple callers merge into one
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lightCanvasRefreshPending = false
+                self.refreshCanvasBody(light: true, kickSnapshot: kickSnapshot)
+            }
+            return
+        }
+        refreshCanvasBody(light: false, kickSnapshot: kickSnapshot)
+    }
+
+    private func refreshCanvasBody(light: Bool, kickSnapshot: Bool) {
         if canvasDragging { return }
         let pairs = PairState.listPairs()
         // Empty state: keep 3D constellation + toolbar; hide flat empty card
         canvasEmpty.isHidden = true
-        canvasToolbar.isHidden = false
+        canvasToolbar.isHidden = canvasPage.superview === teamPage?.mapHost
         map3D.isHidden = !use3DMap || selected != .canvas
         // Keep 2D scroll visible even with zero teams so the workplace is always panable
         canvasScroll.isHidden = use3DMap || selected != .canvas
         if pairs.isEmpty {
             if use3DMap {
-                map3D.reload(seats: Self.previewConstellationSeats(), multiTeam: false)
+                map3D.reload(seats: Self.previewConstellationSeats(), multiTeam: false, light: light)
                 map3D.setMapPlaying(true)
             }
             if !use3DMap {
@@ -1190,14 +1313,21 @@ final class PanelController: NSObject, NSWindowDelegate {
                     CanvasLayout.hudClearY + CGFloat(rows) * CanvasLayout.multiPitchY + CanvasLayout.workplacePad)
             )
         }
-        canvas.setFrameSize(size)
+        // Light poll: avoid thrashing 2D document size every 4s if already sized
+        if !light || !use3DMap {
+            canvas.setFrameSize(size)
+        }
 
-        let snap = snapshot()
+        // Poll: kickSnapshot=true (throttled async shell). Async apply: kickSnapshot=false.
+        let snap = snapshot(kickAsync: kickSnapshot)
         var models: [AgentNodeModel] = []
         var seats3D: [Seat3D] = []
+        // Work-graph wiring — plotlines the roster cannot derive. Drawn, never saved.
+        var graphLinks3D: [FlowLink3D] = []
         var posMap = CanvasLayout.positions(for: multi ? nil : showPairs.first)
         // Multi: unstack teams that share nearly-identical conductor slots (bare-key bug residue)
-        if multi {
+        // Skip disk writes on light poll — only heal layout on full refresh / user action
+        if !light, multi {
             if CanvasLayout.unstackOverlappingTeams(&posMap, sessions: showPairs) {
                 for (key, p) in posMap where key.contains("::") {
                     let parts = key.components(separatedBy: "::")
@@ -1206,7 +1336,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                     }
                 }
             }
-        } else if CanvasLayout.compactIfSpread(&posMap, multi: false) {
+        } else if !light, CanvasLayout.compactIfSpread(&posMap, multi: false) {
             // Single-team only: heal pathological void scatter
             for (key, p) in posMap {
                 if key.contains("::") {
@@ -1445,6 +1575,109 @@ final class PanelController: NSObject, NSWindowDelegate {
                 }
             }
 
+            // Work graphs (loops) under this team — read-only projection of the snapshot.
+            // Every node becomes an ephemeral seat on the SUB layer beneath the graph's
+            // owner, and every edge a plotline named for the outcome that fires it.
+            // 1.7: graphs have their own page (Graphs), drawn from `pong graph list`.
+            // This interim projection drew each running node twice, greyed live
+            // nodes out and offered roster actions that did nothing on a graph
+            // seat, so the map leaves graphs to the Graphs page.
+            if Self.drawGraphsOnMap, let graphs = (teamSnap?["work_graph"] as? [String: Any])?["graphs"] as? [[String: Any]] {
+                let now = Date().timeIntervalSince1970
+                for g in graphs {
+                    guard let gid = (g["id"] as? String).flatMap({ $0.isEmpty ? nil : $0 })
+                    else { continue }
+                    let gStatus = ((g["status"] as? String) ?? "").lowercased()
+                    let finishedAt = Self.epochSeconds(g["finished_at"])
+                    // Finished loops linger ten minutes: the shape of what just ran is
+                    // the most useful thing on the map right after it stops.
+                    let lingering = gStatus == "done"
+                        && (finishedAt.map { now - $0 < 600 } ?? false)
+                    guard gStatus == "running" || gStatus == "waiting" || lingering else { continue }
+
+                    let owner = (g["owner"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? condId
+                    let ownerGid = "\(session)::\(owner)"
+                    let nodes = (g["nodes"] as? [[String: Any]]) ?? []
+                    let wiring = (g["wiring"] as? [String: Any]) ?? [:]
+                    let round = Self.intValue(g["round"])
+                    let maxRounds = Self.intValue(g["max_rounds"])
+                    let stopReason = (g["stop_reason"] as? String) ?? ""
+                    let paused = g["paused"] as? [String: Any]
+                    let goal = (g["goal"] as? String) ?? ""
+
+                    var gidForNode: [String: String] = [:]
+                    var statusForNode: [String: String] = [:]
+                    var roleForNode: [String: String] = [:]
+                    for n in nodes {
+                        guard let nid = (n["id"] as? String).flatMap({ $0.isEmpty ? nil : $0 })
+                        else { continue }
+                        let nRole = ((n["role"] as? String) ?? "").lowercased()
+                        let nSeat = (n["seat"] as? String) ?? ""
+                        let nStatus = ((n["status"] as? String) ?? "").lowercased()
+                        roleForNode[nid] = nRole
+                        statusForNode[nid] = nStatus
+                        // A join/end that sits on the owner's own seat IS the owner —
+                        // draw the seat already on the map instead of a twin beside it.
+                        let foldedIntoOwner = nSeat == owner && (nRole == "join" || nRole == "end")
+                        gidForNode[nid] = foldedIntoOwner ? ownerGid : "\(session)::\(gid):\(nid)"
+                        guard !foldedIntoOwner else { continue }
+
+                        let wire = wiring[nid] as? [String: Any] ?? [:]
+                        let why = (wire["why"] as? String) ?? ""
+                        seats3D.append(Seat3D(
+                            session: session, id: "\(gid):\(nid)", role: "subagent",
+                            title: nid,
+                            subtitle: Self.platformBadge(
+                                runtime: (wire["runtime"] as? String) ?? "",
+                                model: (wire["model"] as? String) ?? "",
+                                status: nStatus),
+                            detail: Self.graphNodeDetail(
+                                why: why,
+                                rejected: (wire["rejected"] as? [String: Any]) ?? [:],
+                                round: round, maxRounds: maxRounds,
+                                stopReason: stopReason, paused: paused),
+                            status: Self.graphSeatStatus(nStatus),
+                            parentId: owner,
+                            openJobs: nStatus == "running" ? 1 : 0,
+                            flowHint: why.isEmpty ? goal : why,
+                            missionRole: Self.graphMissionRole(nRole),
+                            ephemeral: true
+                        ))
+                    }
+
+                    // GOAL: owner hands the loop its task at whichever node is live
+                    // (or, before anything runs, at the first one).
+                    let startNode = nodes.first {
+                        (($0["status"] as? String) ?? "").lowercased() == "running"
+                    } ?? nodes.first
+                    if let startId = startNode?["id"] as? String,
+                       let startGid = gidForNode[startId], startGid != ownerGid {
+                        graphLinks3D.append(FlowLink3D(
+                            id: "\(session)|wg:\(gid):goal>\(startId)",
+                            fromGid: ownerGid, toGid: startGid,
+                            label: "GOAL", kind: .delegate,
+                            active: statusForNode[startId] == "running",
+                            human: false, fromRole: "worker"
+                        ))
+                    }
+                    for e in (g["edges"] as? [[String: Any]]) ?? [] {
+                        guard let from = e["from"] as? String, let to = e["to"] as? String,
+                              let fromGid = gidForNode[from], let toGid = gidForNode[to]
+                        else { continue }
+                        let on = (e["on"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "done"
+                        graphLinks3D.append(FlowLink3D(
+                            id: "\(session)|wg:\(gid):\(from)>\(to):\(on)",
+                            fromGid: fromGid, toGid: toGid,
+                            label: "ON \(on.uppercased())", kind: .sub,
+                            // Packets only where data actually moves: out of a live node.
+                            active: statusForNode[from] == "running",
+                            human: roleForNode[to] == "human",
+                            fromRole: "worker"
+                        ))
+                    }
+                }
+            }
+
             models.append(AgentNodeModel(
                 session: session, id: "add", role: "add",
                 title: "+", subtitle: "worker", detail: "Add worker",
@@ -1454,14 +1687,17 @@ final class PanelController: NSObject, NSWindowDelegate {
             ))
         }
 
-        // Ensure flow_graph exists for editable topology
-        for session in showPairs {
-            let db = PairState.loadPairsDb()
-            if let entry = db[session] as? [String: Any] {
-                let g = entry["flow_graph"] as? [String: Any]
-                let arr = g?["edges"] as? [[String: Any]] ?? []
-                if arr.isEmpty {
-                    FlowGraph.save(pair: session, edges: FlowGraph.defaultEdges(entry: entry))
+        // Ensure flow_graph exists for editable topology — full refresh only
+        // (light poll must not write pairs.json every 4s)
+        if !light {
+            for session in showPairs {
+                let db = PairState.loadPairsDb()
+                if let entry = db[session] as? [String: Any] {
+                    let g = entry["flow_graph"] as? [String: Any]
+                    let arr = g?["edges"] as? [[String: Any]] ?? []
+                    if arr.isEmpty {
+                        FlowGraph.save(pair: session, edges: FlowGraph.defaultEdges(entry: entry))
+                    }
                 }
             }
         }
@@ -1469,10 +1705,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Single shared YOU seat (never one-per-team)
         if !showPairs.isEmpty {
             var needsHuman = false
+            var claimsWaiting = 0
             var primarySession = showPairs[0]
             if let teams = snap?["teams"] as? [[String: Any]] {
                 for session in showPairs {
                     guard let team = teams.first(where: { ($0["session"] as? String) == session }) else { continue }
+                    let wq = (team["waitroom_queued"] as? Int)
+                        ?? (team["waitroom_queued"] as? Double).map { Int($0) }
+                        ?? 0
+                    if wq > claimsWaiting {
+                        claimsWaiting = wq
+                        primarySession = session
+                    }
                     for w in (team["workers"] as? [[String: Any]]) ?? [] {
                         let h = ((w["status_hint"] as? String) ?? "").lowercased()
                         if h.contains("human") || h.contains("takeover") {
@@ -1491,25 +1735,33 @@ final class PanelController: NSObject, NSWindowDelegate {
             }
             let primaryCond = (PairState.loadPairsDb()[primarySession] as? [String: Any])
                 .flatMap { ($0["conductor"] as? [String: Any])?["id"] as? String } ?? "c1"
+            let claimHint = claimsWaiting > 0
+                ? "Claims waiting: \(claimsWaiting) · auto-deliver when orch free"
+                : ""
             seats3D.append(Seat3D(
                 session: primarySession, id: "you", role: "human",
                 title: "You",
                 subtitle: needsHuman
                     ? "A team needs input"
-                    : (multi ? "All teams · one human console" : "Send prompts · answer asks"),
+                    : (claimsWaiting > 0
+                        ? claimHint
+                        : (multi ? "All teams · one human console" : "Send prompts · answer asks")),
                 detail: multi
                     ? "One human seat for every team. Dock chat routes to the focused team."
-                    : "Human console — talk to the orchestrator without hunting Terminal windows.",
-                status: needsHuman ? "human" : "idle",
-                parentId: primaryCond, openJobs: 0,
-                flowHint: needsHuman ? "NEEDS YOU" : "",
+                    : (claimsWaiting > 0
+                        ? "\(claimHint). No TUI interrupt while orchestrator is busy."
+                        : "Human console — talk to the orchestrator without hunting Terminal windows."),
+                status: needsHuman ? "human" : (claimsWaiting > 0 ? "busy" : "idle"),
+                parentId: primaryCond, openJobs: claimsWaiting,
+                flowHint: needsHuman ? "NEEDS YOU" : (claimsWaiting > 0 ? "CLAIMS \(claimsWaiting)" : ""),
                 missionRole: "human"
             ))
         }
 
         if use3DMap {
-            map3D.reload(seats: seats3D, multiTeam: multi)
-        } else {
+            map3D.reload(seats: seats3D, multiTeam: multi, light: light,
+                         extraLinks: graphLinks3D)
+        } else if !light {
             // Size document to seat cluster + pan padding (fast draw, easy navigation)
             let pts = models.filter { $0.role != "add" && $0.role != "add-sub" }.map(\.origin)
             let fitted = CanvasLayout.workplaceSize(fitting: pts, card: AgentNodeView.size)
@@ -1518,7 +1770,99 @@ final class PanelController: NSObject, NSWindowDelegate {
                 canvas.setFrameSize(size)
             }
             canvas.reload(models: models, multiTeam: multi)
+        } else {
+            // 2D light: still update cards without resize thrash
+            canvas.reload(models: models, multiTeam: multi)
         }
+    }
+
+    // MARK: - Work-graph (loop) projection
+
+    /// Epoch seconds from a JSON number written by Python's `time.time()`.
+    private static func epochSeconds(_ raw: Any?) -> Double? {
+        if let d = raw as? Double { return d }
+        if let i = raw as? Int { return Double(i) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        return nil
+    }
+
+    private static func intValue(_ raw: Any?) -> Int? {
+        if let i = raw as? Int { return i }
+        if let d = raw as? Double { return Int(d) }
+        if let n = raw as? NSNumber { return n.intValue }
+        return nil
+    }
+
+    /// Platform badge for a wired node — letter first, then the model: `C · opus`.
+    private static func platformBadge(runtime: String, model: String, status: String) -> String {
+        let letter: String = {
+            switch runtime.lowercased() {
+            case "claude": return "C"
+            case "grok": return "G"
+            case "codex": return "X"
+            case "hermes": return "H"
+            default: return runtime.isEmpty ? "?" : String(runtime.uppercased().prefix(1))
+            }
+        }()
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let badge = m.isEmpty ? letter : "\(letter) · \(m)"
+        let st = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        return st.isEmpty ? badge : "\(badge) · \(st)"
+    }
+
+    /// Graph node status → the seat vocabulary the map already colors.
+    private static func graphSeatStatus(_ raw: String) -> String {
+        switch raw {
+        case "running", "awaiting_critic": return "busy"
+        case "waiting_human", "paused": return "human"
+        default: return "idle"
+        }
+    }
+
+    /// Graph node role → mission role (glyph + label the map already knows).
+    private static func graphMissionRole(_ raw: String) -> String {
+        switch raw {
+        case "critic": return MissionRole.reviewer.rawValue
+        case "builder", "writer": return MissionRole.coder.rawValue
+        case "scout", "researcher": return MissionRole.researcher.rawValue
+        case "router", "join", "end": return MissionRole.taskRunner.rawValue
+        case "operator": return MissionRole.operator.rawValue
+        case "orchestrator": return MissionRole.orchestrator.rawValue
+        case "human": return "human"
+        default: return MissionRole.coder.rawValue
+        }
+    }
+
+    /// The module card's text for a loop node: why this platform, what was turned
+    /// down and for what reason, where the loop is in its rounds, and how it stopped.
+    private static func graphNodeDetail(
+        why: String, rejected: [String: Any],
+        round: Int?, maxRounds: Int?,
+        stopReason: String, paused: [String: Any]?
+    ) -> String {
+        var lines: [String] = []
+        let w = clampDetail(why, max: 84)
+        if !w.isEmpty { lines.append(w) }
+        for key in rejected.keys.sorted() {
+            let raw = rejected[key]
+            let reason = clampDetail((raw as? String) ?? (raw.map { String(describing: $0) } ?? ""),
+                                     max: 60)
+            lines.append(reason.isEmpty ? "not \(key)" : "not \(key): \(reason)")
+        }
+        if let round {
+            lines.append(maxRounds.map { "round \(round)/\($0)" } ?? "round \(round)")
+        }
+        if let paused {
+            let reason = clampDetail((paused["reason"] as? String) ?? "", max: 52)
+            let gate = (paused["gate"] as? String) ?? ""
+            var line = reason.isEmpty ? "paused" : "paused: \(reason)"
+            if !gate.isEmpty { line += " · gate \(gate)" }
+            if let next = paused["next_node"] as? String, !next.isEmpty { line += " → \(next)" }
+            lines.append(line)
+        } else if !stopReason.isEmpty {
+            lines.append("stopped: \(clampDetail(stopReason, max: 52))")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Short seat blurbs for canvas cards (wrap-safe length).
@@ -1559,17 +1903,59 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: - Mission dashboard
 
     private var snapshotRefreshInFlight = false
+    /// Throttle shell `pong snapshot` — was re-kicked on every canvas paint → thrash loop.
+    private var lastSnapshotKickAt: TimeInterval = 0
+    /// Skip canvas re-apply when activity signature unchanged.
+    private var lastAppliedSnapshotSig: String = ""
+    /// Coalesce stacked light canvas refreshes onto one main-queue pass.
+    private var lightCanvasRefreshPending = false
 
     /// Never block main on `pong snapshot` — paint from file/cache; refresh async.
-    private func snapshot() -> [String: Any]? {
+    /// - Parameter kickAsync: false when applying an already-fresh async result (breaks
+    ///   refreshCanvas → snapshot → refreshCanvas feedback loop).
+    private func snapshot(kickAsync: Bool = true) -> [String: Any]? {
         let file = Pong.loadJSON(Pong.stateDir + "/snapshot.json")
         if !file.isEmpty { lastSnapshot = file }
-        refreshSnapshotAsync()
+        if kickAsync { refreshSnapshotAsync() }
         return lastSnapshot ?? (file.isEmpty ? nil : file)
+    }
+
+    /// Compact sig of map-relevant snapshot activity (not full JSON).
+    private func snapshotActivitySig(_ snap: [String: Any]) -> String {
+        let teams = (snap["teams"] as? [[String: Any]]) ?? []
+        var parts: [String] = []
+        for t in teams {
+            let sess = (t["session"] as? String) ?? "?"
+            let jobs = t["jobs"] as? [String: Any]
+            let open = (jobs?["activity_open"] as? [[String: Any]])
+                ?? (jobs?["open"] as? [[String: Any]])
+                ?? []
+            let openSig = open.map { j in
+                let id = (j["id"] as? String) ?? ""
+                let st = (j["status"] as? String) ?? ""
+                let w = (j["worker"] as? String) ?? (j["worker_id"] as? String) ?? ""
+                return "\(id):\(st):\(w)"
+            }.sorted().joined(separator: ",")
+            let workers = (t["workers"] as? [[String: Any]]) ?? []
+            let wSig = workers.map { w in
+                let id = (w["id"] as? String) ?? ""
+                let h = (w["status_hint"] as? String) ?? ""
+                let n = w["open_jobs"] as? Int ?? 0
+                return "\(id):\(h):\(n)"
+            }.sorted().joined(separator: ",")
+            let eph = ((t["ephemeral_subs"] as? [[String: Any]]) ?? [])
+                .compactMap { $0["id"] as? String }.sorted().joined(separator: ",")
+            parts.append("\(sess){\(openSig)|\(wSig)|\(eph)}")
+        }
+        return parts.sorted().joined(separator: ";")
     }
 
     private func refreshSnapshotAsync() {
         guard !snapshotRefreshInFlight else { return }
+        let now = Date().timeIntervalSince1970
+        // At most one shell snapshot every ~3.5s (poll is 4s; avoid re-entry from paint)
+        if now - lastSnapshotKickAt < 3.5 { return }
+        lastSnapshotKickAt = now
         snapshotRefreshInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let out = Pong.sh("export PATH=\"$HOME/bin:/opt/homebrew/bin:$PATH\"; pong snapshot --compact 2>/dev/null | head -c 500000")
@@ -1580,12 +1966,21 @@ final class PanelController: NSObject, NSWindowDelegate {
                 obj = parsed
             }
             DispatchQueue.main.async {
-                self?.snapshotRefreshInFlight = false
-                if let obj {
-                    self?.lastSnapshot = obj
-                    // Apply fresh seat activity immediately (was mission-only → ~poll-cycle lag)
-                    if self?.selected == .mission { self?.paintMission() }
-                    if self?.selected == .canvas { self?.refreshCanvas(light: true) }
+                guard let self else { return }
+                self.snapshotRefreshInFlight = false
+                guard let obj else { return }
+                let sig = self.snapshotActivitySig(obj)
+                let changed = sig != self.lastAppliedSnapshotSig
+                self.lastSnapshot = obj
+                if self.selected == .mission {
+                    self.paintMission()
+                }
+                // Only re-paint map when activity changed — never kick another snapshot
+                if changed, self.selected == .canvas {
+                    self.lastAppliedSnapshotSig = sig
+                    self.refreshCanvas(light: true, kickSnapshot: false)
+                } else if !changed {
+                    self.lastAppliedSnapshotSig = sig
                 }
             }
         }
@@ -1639,20 +2034,26 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Header — design: large title + CONTROL PLANE status
         let head = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: 72))
         head.wantsLayer = true
-        let titleL = Self.label("Mission", frame: NSRect(x: 0, y: 30, width: 320, height: 36), bold: true, size: 30)
-        titleL.font = PongTheme.font(30, weight: .bold)
-        titleL.textColor = NSColor(calibratedRed: 0.949, green: 0.965, blue: 0.973, alpha: 1)
+        let titleL = Self.label("Diagnostics", frame: NSRect(x: 0, y: 30, width: 320, height: 36), bold: true, size: 22)
+        titleL.font = PongType.title
+        titleL.textColor = PongColor.textPrimary
         head.addSubview(titleL)
-        let bridgeText = bridgeOn ? "CONTROL PLANE · LIVE" : "CONTROL PLANE · OFFLINE"
+        let bridgeText = bridgeOn ? "Numbers, problems and the event log, for engineers." : "No helpers are working. Numbers, problems and the event log, for engineers."
         let bridgeLbl = Self.label(bridgeText, frame: NSRect(x: 0, y: 10, width: boxW - 8, height: 14), size: 11, secondary: true)
-        bridgeLbl.font = PongTheme.mono(11, weight: .medium)
-        bridgeLbl.textColor = bridgeOn ? PongTheme.blue : PongTheme.textTertiary
+        bridgeLbl.font = PongType.secondary
+        bridgeLbl.textColor = PongColor.textSecondary
         head.addSubview(bridgeLbl)
         let rule = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: 1))
         rule.wantsLayer = true
         rule.layer?.backgroundColor = NSColor(calibratedRed: 0.51, green: 0.59, blue: 0.63, alpha: 0.16).cgColor
         head.addSubview(rule)
         push(head, 72)
+
+        // The Gauntlet, first thing on the page. Mission is already jobs & flow,
+        // and the bar is what those jobs are graded against, so its status sits
+        // above the list rather than behind a menu item nobody opens.
+        let gaunt = gauntletStrip(width: boxW)
+        push(gaunt, gaunt.frame.height)
 
         // Mission Q&A + cron entry (Guide-grounded; chips use live snapshot)
         let askH: CGFloat = 118
@@ -1707,14 +2108,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         if !humanSessions.isEmpty {
             let banH: CGFloat = 56
             let ban = tacticalCard(width: boxW, height: banH, accent: PongTheme.orange)
-            let humanT = Self.label("Human input required",
+            let humanT = Self.label("\(humanSessions.count) question\(humanSessions.count == 1 ? "" : "s") need you",
                 frame: NSRect(x: 16, y: 30, width: boxW - 140, height: 16), size: 13, secondary: false)
             humanT.font = PongTheme.font(13, weight: .semibold)
             humanT.textColor = PongTheme.amber
             ban.addSubview(humanT)
-            ban.addSubview(Self.label("\(humanSessions.count) team\(humanSessions.count == 1 ? "" : "s") need you — open Focus to intervene",
+            ban.addSubview(Self.label("A team is waiting for your answer.",
                 frame: NSRect(x: 16, y: 12, width: boxW - 140, height: 14), size: 12, secondary: true))
-            let fb = accentButton("Take action", #selector(missionFocusFirstHuman))
+            let fb = accentButton("Answer", #selector(missionFocusFirstHuman))
             fb.frame = NSRect(x: boxW - 118, y: 14, width: 100, height: 28)
             ban.addSubview(fb)
             push(ban, banH)
@@ -1744,7 +2145,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         // KPI 4-up — large values (design)
         let metricsH: CGFloat = 100
         let metrics = NSView(frame: NSRect(x: 0, y: 0, width: boxW, height: metricsH))
-        let titles = ["Open jobs", "Accept rate", "Seats", "Reject streak"]
+        let titles = ["Tasks in progress", "Passed review", "AIs", "Sent back in a row"]
         let values = ["\(openJobs)", "\(rate)%", "\(agentCount)", "\(streak)"]
         let subs = ["In flight", "\(rounds) rounds", "\(teams.count) teams", "Current"]
         let metricGap: CGFloat = 12
@@ -1860,10 +2261,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         // ── Agent / team watchlist (rogue · mistakes · runtime · sharpness) ──
         let watch = missionAgentWatchlist(teams: teams, events: events, ledger: ledger)
         let watchH: CGFloat = 44 + CGFloat(max(watch.count, 1)) * 52 + 8
-        let watchCard = missionChartCard(title: "Agent watchlist", subtitle: "HEALTH · RUNTIME · QUALITY",
+        let watchCard = missionChartCard(title: "Problems", subtitle: "STUCK · SLOW · FAILING",
                                          width: boxW, height: watchH)
         if watch.isEmpty {
-            let ok = Self.label("All clear — no seats look stuck, reject-heavy, or over-runtime.",
+            let ok = Self.label("Nothing is stuck, slow or failing.",
                 frame: NSRect(x: 16, y: 16, width: boxW - 32, height: 18), size: 12, secondary: true)
             watchCard.addSubview(ok)
         } else {
@@ -1898,7 +2299,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         // ACTIVITY log (design mono rows)
         let show = Array(events.suffix(12).reversed())
         let actH: CGFloat = 44 + CGFloat(max(show.count, 1)) * 28
-        let act = missionChartCard(title: "Activity", subtitle: "CONTROL PLANE", width: boxW, height: actH)
+        let act = missionChartCard(title: "Event log", subtitle: "FOR ENGINEERS", width: boxW, height: actH)
         if show.isEmpty {
             act.addSubview(Self.label("Jobs and verdicts appear here from the control plane.",
                 frame: NSRect(x: 16, y: 16, width: boxW - 32, height: 14), size: 12, secondary: true))
@@ -1930,15 +2331,15 @@ final class PanelController: NSObject, NSWindowDelegate {
             let card = tacticalCard(width: boxW, height: h, accent: needsHuman ? PongTheme.amber : PongTheme.ink)
             card.addSubview(Self.label(display,
                 frame: NSRect(x: 14, y: h - 28, width: boxW - 130, height: 18), bold: true, size: 14))
-            card.addSubview(Self.label("\(condLabel) · \(workers.count) workers · \(openList.count) open",
+            card.addSubview(Self.label("\(workers.isEmpty ? "Lead only" : "\(workers.count) helper\(workers.count == 1 ? "" : "s")") · \(openList.isEmpty ? "nothing in progress" : "\(openList.count) task\(openList.count == 1 ? "" : "s") in progress")",
                 frame: NSRect(x: 14, y: h - 46, width: boxW - 130, height: 14), size: 12, secondary: true))
-            let focusBtn = pillButton("Focus", #selector(missionFocusTeam(_:)))
+            let focusBtn = pillButton("Open team", #selector(missionFocusTeam(_:)))
             focusBtn.identifier = NSUserInterfaceItemIdentifier(session)
             focusBtn.frame = NSRect(x: boxW - 90, y: h - 38, width: 72, height: 26)
             card.addSubview(focusBtn)
             var ly = h - 58
             if openList.isEmpty {
-                card.addSubview(Self.label("Queue empty — assign work from the conductor.",
+                card.addSubview(Self.label("Nothing in progress.",
                     frame: NSRect(x: 14, y: 14, width: boxW - 28, height: 14), size: 12, secondary: true))
             } else {
                 for j in openList.prefix(8) {
@@ -2003,20 +2404,152 @@ final class PanelController: NSObject, NSWindowDelegate {
         PongSheetChrome.plate(frame: NSRect(x: 0, y: 0, width: width, height: height), accent: accent)
     }
 
+    /// The Gauntlet strip — every bar that is actually grading work, and the
+    /// two different ways in.
+    ///
+    /// It lists what `load_bars` returns, factory defaults included, because
+    /// those are the bars attaching to real jobs today whether or not anyone
+    /// set them. Each row carries its own Edit; creating a new bar is a separate
+    /// button, so Edit never quietly means create.
+    private func gauntletStrip(width: CGFloat) -> NSView {
+        let session = boundSession()
+        let read = session.isEmpty
+            ? GauntletRead(bars: [], error: "No team bound — pair one from Setup.")
+            : Gauntlet.bars(session: session)
+        gauntletBars = read.bars
+
+        let rowH: CGFloat = 46
+        let height = max(92, 58 + CGFloat(max(1, read.bars.count)) * rowH)
+        let card = tacticalCard(width: width, height: height, accent: PongSheetChrome.lime)
+
+        let head = Self.label("GAUNTLET", frame: NSRect(x: 16, y: height - 26, width: 200, height: 14),
+                              size: 10, secondary: true)
+        head.font = PongTheme.labelFont(10)
+        head.textColor = PongTheme.textSecondary
+        card.addSubview(head)
+
+        // Always here, always meaning the same thing: make a NEW bar.
+        let newBtn = PongSheetChrome.primaryButton("Set the bar", target: self,
+                                                   action: #selector(openGauntlet))
+        newBtn.frame = NSRect(x: width - 132, y: height - 34, width: 116, height: 28)
+        card.addSubview(newBtn)
+
+        var y = height - 58
+
+        if let error = read.error {
+            // A failed read is not "no bars". Saying so is the difference
+            // between a card that is empty and a card that is broken.
+            let t = Self.label(error, frame: NSRect(x: 16, y: y, width: width - 160, height: 32),
+                               size: 12)
+            t.textColor = PongTheme.danger
+            card.addSubview(t)
+            return card
+        }
+
+        if read.bars.isEmpty {
+            let t = Self.label("No bar set.", frame: NSRect(x: 16, y: y, width: width - 160, height: 16),
+                               size: 12)
+            t.font = PongTheme.font(12, weight: .semibold)
+            t.textColor = PongTheme.textPrimary
+            card.addSubview(t)
+            card.addSubview(Self.label("The team is running without a definition of great.",
+                                       frame: NSRect(x: 16, y: y - 18, width: width - 160, height: 14),
+                                       size: 11, secondary: true))
+            return card
+        }
+
+        for (i, bar) in read.bars.enumerated() {
+            let t = Self.label(bar.title, frame: NSRect(x: 16, y: y, width: width - 160, height: 16),
+                               size: 12)
+            t.font = PongTheme.font(12, weight: .semibold)
+            t.textColor = PongTheme.textPrimary
+            card.addSubview(t)
+
+            // Who it covers and who holds it, both resolved the way a real job
+            // resolves them, and both already in owner language.
+            var line = bar.lanes.isEmpty ? "covers nobody on this team"
+                                         : bar.lanes.joined(separator: " and ")
+            if !bar.references.isEmpty {
+                line += " · judged against " + bar.references.joined(separator: ", ")
+            }
+            if !bar.held.isEmpty { line += " · held by " + bar.held }
+            card.addSubview(Self.label(line, frame: NSRect(x: 16, y: y - 17, width: width - 160,
+                                                           height: 14), size: 11, secondary: true))
+
+            var note = ""
+            if bar.shipped { note = "shipped default — you did not set this" }
+            if bar.pending {
+                // Say what is actually knowable. A placeholder anchor means the
+                // bar has a gap in it; whether anyone is out looking for one is
+                // not something this card can see, and claiming a search is
+                // running when none is would be worse than saying nothing.
+                let gap = "no anchor yet — nothing real to point at"
+                note = note.isEmpty ? gap : note + " · " + gap
+            }
+            if !note.isEmpty {
+                card.addSubview(Self.label(note, frame: NSRect(x: 16, y: y - 32, width: width - 160,
+                                                               height: 14), size: 11, secondary: true))
+            }
+
+            let edit = PongSheetChrome.outlineButton("Edit", target: self,
+                                                     action: #selector(editGauntlet(_:)))
+            edit.tag = i
+            edit.frame = NSRect(x: width - 132, y: y - 6, width: 76, height: 26)
+            card.addSubview(edit)
+            y -= rowH
+        }
+        return card
+    }
+
+    /// The bars the card is currently showing, so an Edit button knows which one
+    /// it belongs to without the row having to carry the whole thing.
+    private var gauntletBars: [GauntletBar] = []
+
+    /// The team the panel is currently looking at. A bar covers seats on a team,
+    /// so with nothing bound there is nothing for the strip to describe.
+    private func boundSession() -> String {
+        let active = Pong.loadJSON(PairState.activePath)
+        return (active["session"] as? String) ?? PairState.listPairs().first ?? ""
+    }
+
+    /// Edit the bar on this row — pre-filled, and saved as an override.
+    @objc private func editGauntlet(_ sender: NSButton) {
+        let session = boundSession()
+        guard !session.isEmpty, gauntletBars.indices.contains(sender.tag) else { return }
+        GauntletSheet.present(session: session, editing: gauntletBars[sender.tag])
+    }
+
+    @objc private func openGauntlet() {
+        let session = boundSession()
+        guard !session.isEmpty else {
+            let a = NSAlert()
+            a.messageText = "No team bound"
+            a.informativeText = "A bar covers seats on a team. Pair one first."
+            a.runModal()
+            return
+        }
+        GauntletSheet.present(session: session)
+    }
+
+    /// Somewhere to hang a sheet. Setting the bar is a scoped task inside the
+    /// panel's context, so it attaches here instead of floating on its own where
+    /// it can end up behind the app.
+    var sheetHost: NSWindow? { window }
+
     private func missionDigest(openJobs: Int, teams: Int, streak: Int, human: Bool) -> (text: String, color: NSColor) {
         if human {
-            return ("A seat is waiting on you — open Focus and take the terminal.", PongTheme.orange)
+            return ("A team is waiting for your answer.", PongTheme.orange)
         }
         if streak >= 2 {
-            return ("Reject streak \(streak) — review claims before the next handoff.", PongTheme.orange)
+            return ("\(streak) results in a row were sent back. Check the work.", PongTheme.textPrimary)
         }
         if openJobs > 0 {
-            return ("\(openJobs) job\(openJobs == 1 ? "" : "s") in flight across \(teams) team\(teams == 1 ? "" : "s").", PongTheme.blue)
+            return ("\(openJobs) task\(openJobs == 1 ? "" : "s") in progress across \(teams) team\(teams == 1 ? "" : "s").", PongTheme.blue)
         }
         if teams == 0 {
-            return ("No live teams. Create or link a team from Setup.", PongTheme.textSecondary)
+            return ("No team is running.", PongTheme.textSecondary)
         }
-        return ("Queues clear. Conductor can assign the next job.", PongTheme.magenta)
+        return ("All clear.", PongTheme.textSecondary)
     }
 
     // MARK: Mission charts + agent watchlist
@@ -2569,7 +3102,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Setup
 
     private func paintSetup() {
+        // keep the place the person was reading, measured from the top: the page opens at its title, and
+        // a redraw (the poll, a wider page) doesn't move it
+        let clip = setupScroll.contentView
+        let fromTop = setupBody.frame.height > 0 ? max(0, setupBody.frame.height - clip.bounds.maxY) : 0
+        defer {
+            clip.scroll(to: NSPoint(x: 0, y: max(0, setupBody.frame.height - fromTop - clip.bounds.height)))
+            setupScroll.reflectScrolledClipView(clip)
+        }
         setupBody.subviews.forEach { $0.removeFromSuperview() }
+        setupPaintedWidth = setupScroll.contentSize.width
         let W: CGFloat = max(420, setupScroll.contentSize.width > 20 ? setupScroll.contentSize.width - 8 : 480)
         let accessText = Self.accessMapSummary()
         let accessLines = CGFloat(accessText.components(separatedBy: "\n").count)
@@ -2578,14 +3120,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         setupBody.setFrameSize(NSSize(width: W, height: y))
 
         // Design: large title + muted subtitle
-        let title = Self.label("Setup", frame: NSRect(x: 0, y: y - 42, width: 280, height: 38), bold: true, size: 32)
-        title.font = PongTheme.font(32, weight: .bold)
-        title.textColor = NSColor(calibratedRed: 0.949, green: 0.965, blue: 0.973, alpha: 1)
+        let title = Self.label("Teams and access", frame: NSRect(x: 0, y: y - 42, width: 400, height: 38), bold: true, size: 22)
+        title.font = PongType.title
+        title.textColor = PongColor.textPrimary
         setupBody.addSubview(title)
         y -= 56
-        let sub = Self.label("Architect a team, link terminals, or open saved layouts.",
+        let sub = Self.label("Start and save teams, and see what each AI may do. Everything else is in Settings (⌘,).",
             frame: NSRect(x: 0, y: y, width: W - 20, height: 18), size: 13, secondary: true)
-        sub.font = PongTheme.mono(12)
+        sub.font = PongType.secondary
         setupBody.addSubview(sub)
         y -= 28
         let rule = NSView(frame: NSRect(x: 0, y: y, width: W - 20, height: 1))
@@ -2597,7 +3139,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Access / MCP map — clear view of who can use tools
         let accessCard = tacticalCard(width: W - 20, height: accessH, accent: PongTheme.limeAction.withAlphaComponent(0.45))
         accessCard.setFrameOrigin(NSPoint(x: 0, y: y - accessH))
-        accessCard.addSubview(Self.label("Access · MCP · permissions", frame: NSRect(x: 16, y: accessH - 28, width: W - 48, height: 18), bold: true, size: 14))
+        accessCard.addSubview(Self.label("What each AI may do", frame: NSRect(x: 16, y: accessH - 28, width: W - 48, height: 18), bold: true, size: 14))
         let accessBody = Self.label(accessText,
             frame: NSRect(x: 16, y: 12, width: W - 48, height: accessH - 44), size: 11, secondary: true)
         accessBody.font = PongTheme.mono(10)
@@ -2606,22 +3148,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         setupBody.addSubview(accessCard)
         y -= accessH + 16
 
-        // Lime-accent primary card
+        // the page's one primary button; every other card's is secondary
         let card1 = actionCard(
             frame: NSRect(x: 0, y: y - 118, width: W - 20, height: 118),
             title: "New team",
-            body: "Guided architecture: draw seats & flows, names, policy, SOUL.md / SKILL.md scaffold.",
-            button: "Build team",
+            body: "Pick a lead and helpers, name them and set what they may do.",
+            button: "New team",
             action: #selector(newTeamPressed),
-            accent: PongTheme.limeAction
+            accent: PongTheme.limeAction,
+            primary: true
         )
         setupBody.addSubview(card1)
         y -= 132
 
         let card2 = actionCard(
             frame: NSRect(x: 0, y: y - 118, width: W - 20, height: 118),
-            title: "Link terminals",
-            body: "Attach windows already running — keep model, chat, and resume as-is.",
+            title: "Use terminals already open",
+            body: "Turn open AI windows into a team. Nothing restarts.",
             button: "Link…",
             action: #selector(linkPressed),
             accent: PongTheme.limeAction.withAlphaComponent(0.55)
@@ -2634,8 +3177,8 @@ final class PanelController: NSObject, NSWindowDelegate {
             let card3 = actionCard(
                 frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
                 title: "Saved teams",
-                body: "\(n) saved layout\(n == 1 ? "" : "s") (roster templates). Open, duplicate, or delete.",
-                button: "Manage",
+                body: "\(n) saved team\(n == 1 ? "" : "s"), ready to start again.",
+                button: "Open",
                 action: #selector(showTeamsPressed),
                 accent: PongTheme.limeAction.withAlphaComponent(0.4)
             )
@@ -2646,9 +3189,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         let nSess = SessionArchive.loadAll().count
         let cardSess = actionCard(
             frame: NSRect(x: 0, y: y - 100, width: W - 20, height: 100),
-            title: "Saved sessions",
-            body: "\(nSess) continuity package\(nSess == 1 ? "" : "s") (story). Compress live work; attach to a team.",
-            button: "Manage",
+            title: "Recaps",
+            body: "\(nSess) recap\(nSess == 1 ? "" : "s") of past work. Start a team from one to pick up where it left off.",
+            button: "Open",
             action: #selector(showSessionsPressed),
             accent: PongTheme.blue.withAlphaComponent(0.35)
         )
@@ -2657,33 +3200,22 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         let note = tacticalCard(width: W - 20, height: 96, accent: PongTheme.limeAction.withAlphaComponent(0.35))
         note.setFrameOrigin(NSPoint(x: 0, y: y - 96))
-        note.addSubview(Self.label("Control plane", frame: NSRect(x: 16, y: 62, width: 200, height: 16), bold: true, size: 14))
-        let noteBody = Self.label("pong snapshot · pong job create · pong check\nJobs are source of truth; the map is how you see seats.",
+        note.addSubview(Self.label("Command line (for engineers)", frame: NSRect(x: 16, y: 62, width: 300, height: 16), bold: true, size: 14))
+        let noteBody = Self.label("pong snapshot · pong graph list · pong -s <team> graph show --id <graph>",
             frame: NSRect(x: 16, y: 14, width: W - 48, height: 44), size: 12, secondary: true)
         noteBody.font = PongTheme.mono(11)
         note.addSubview(noteBody)
         setupBody.addSubview(note)
         y -= 112
 
-        let appCard = tacticalCard(width: W - 20, height: 64, accent: PongTheme.borderStrong)
-        appCard.setFrameOrigin(NSPoint(x: 0, y: y - 64))
-        appCard.addSubview(Self.label("Appearance", frame: NSRect(x: 16, y: 34, width: 160, height: 16), bold: true, size: 13))
-        appCard.addSubview(Self.label(PongTheme.appearance == .dark ? "Dark" : "Light",
-            frame: NSRect(x: 16, y: 14, width: 200, height: 14), size: 12, secondary: true))
-        let appB = pillButton(PongTheme.appearance == .dark ? "Light" : "Dark", #selector(appearancePressed))
-        appB.frame = NSRect(x: W - 100, y: 18, width: 64, height: 28)
-        appCard.addSubview(appB)
-        setupBody.addSubview(appCard)
-        y -= 80
-
         // Sequential account switch (one active login per provider CLI)
         let authCard = tacticalCard(width: W - 20, height: 88, accent: PongTheme.limeAction.withAlphaComponent(0.3))
         authCard.setFrameOrigin(NSPoint(x: 0, y: y - 88))
-        authCard.addSubview(Self.label("Provider accounts", frame: NSRect(x: 16, y: 58, width: 220, height: 16), bold: true, size: 13))
-        authCard.addSubview(Self.label("One login per CLI (Grok/Claude/Hermes). Switch reopens Terminal sign-in.",
+        authCard.addSubview(Self.label("AI accounts", frame: NSRect(x: 16, y: 58, width: 220, height: 16), bold: true, size: 13))
+        authCard.addSubview(Self.label("One sign-in per AI. Changing it opens that AI's sign-in in Terminal.",
             frame: NSRect(x: 16, y: 28, width: W - 48, height: 28), size: 11, secondary: true))
         let switchB = pillButton("Switch account…", #selector(switchAccountPressed))
-        switchB.frame = NSRect(x: W - 150, y: 18, width: 120, height: 28)
+        switchB.frame = NSRect(x: W - 156, y: 18, width: 120, height: 28)  // right edge in line with the cards' buttons
         authCard.addSubview(switchB)
         setupBody.addSubview(authCard)
     }
@@ -2697,13 +3229,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Who has MCP / tools / env scope — readable for humans.
     private static func accessMapSummary() -> String {
         var lines: [String] = []
-        lines.append("MCP = tools a model can call (browser, files, APIs…).")
-        lines.append("Ban MCP on a seat → that model cannot use tools.")
-        lines.append("Other seats keep their own rules. Scope is per agent.")
+        lines.append("Tools are outside apps an AI can use, like a browser, files or email. You can block them per AI.")
         lines.append("")
         let pairs = PairState.listPairs()
         if pairs.isEmpty {
-            lines.append("No live teams yet.")
+            lines.append("No team is running.")
             return lines.joined(separator: "\n")
         }
         let db = PairState.loadPairsDb()
@@ -2715,9 +3245,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             let teamBan = (teamPerm["ban_mcp"] as? Bool) == true
             lines.append("▸ \(name)")
             let cond = entry["conductor"] as? [String: Any] ?? [:]
-            let cLab = (cond["label"] as? String) ?? "Boss"
+            let cLab = "Lead"
             let cType = (cond["type"] as? String) ?? "?"
-            lines.append("  · \(cLab) (\(cType))  MCP: \(teamBan ? "banned" : "allowed")  env: team policy")
+            lines.append("  · \(cLab) (\(cType)): tools \(teamBan ? "blocked" : "allowed")")
             if teamBan { mcpBan += 1 } else { mcpOk += 1 }
             for w in Workers.list(from: entry) {
                 let id = (w["id"] as? String) ?? "?"
@@ -2728,32 +3258,35 @@ final class PanelController: NSObject, NSWindowDelegate {
                 let net = (wp["ban_network"] as? Bool) == true
                 let repo = (wp["repo_only"] as? Bool) == true
                 var flags: [String] = []
-                flags.append(ban ? "MCP off" : "MCP on")
-                if net { flags.append("no network") }
-                if repo { flags.append("repo only") }
-                lines.append("  · \(lab) (\(typ)/\(id))  \(flags.joined(separator: " · "))")
+                flags.append(ban ? "tools blocked" : "tools allowed")
+                if net { flags.append("no internet downloads") }
+                if repo { flags.append("stays in the project folder") }
+                lines.append("  · \(lab) (\(typ)): \(flags.joined(separator: " · "))")
                 if ban { mcpBan += 1 } else { mcpOk += 1 }
             }
             // Env files hint
             let root = (entry["project_root"] as? String) ?? ""
             if !root.isEmpty {
-                lines.append("  · project: \(root)  (.env lives here if present)")
+                lines.append("  · folder: \(root)")
             }
             lines.append("")
         }
-        lines.append("Totals: \(mcpOk) seat(s) MCP-on · \(mcpBan) MCP-banned")
-        lines.append("Edit: seat → Policy. Ban MCP on Hermes only keeps Claude tools alone.")
+        lines.append("\(mcpOk) AI\(mcpOk == 1 ? "" : "s") can use tools · \(mcpBan) blocked.")
+        lines.append("To change: open a team, click an AI › Permissions.")
         return lines.joined(separator: "\n")
     }
 
-    private func actionCard(frame: NSRect, title: String, body: String, button: String, action: Selector, accent: NSColor = PongTheme.amber) -> NSView {
+    /// A card with one button: the page's one primary when `primary`, else a secondary one.
+    private func actionCard(frame: NSRect, title: String, body: String, button: String, action: Selector, accent: NSColor = PongTheme.amber,
+                            primary: Bool = false) -> NSView {
         let v = PongSheetChrome.plate(frame: NSRect(origin: .zero, size: frame.size), accent: accent)
         v.setFrameOrigin(frame.origin)
         v.addSubview(Self.label(title, frame: NSRect(x: 16, y: frame.height - 34, width: frame.width - 40, height: 20), bold: true, size: 15))
         let bodyL = Self.label(body, frame: NSRect(x: 16, y: 44, width: frame.width - 150, height: frame.height - 86), size: 12, secondary: true)
         bodyL.maximumNumberOfLines = 3
         v.addSubview(bodyL)
-        let b = PongSheetChrome.primaryButton(button, target: self, action: action)
+        let b = primary ? PongSheetChrome.primaryButton(button, target: self, action: action)
+                        : PongSheetChrome.outlineButton(button, target: self, action: action)
         b.frame = NSRect(x: frame.width - 120, y: 14, width: 104, height: 30)
         v.addSubview(b)
         return v
@@ -2820,15 +3353,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Actions
 
     @objc private func newTeamPressed() {
-        AppDelegate.launchTeamWithOptionalWizard { [weak self] in
-            guard let self else { return }
-            let pairs = PairState.listPairs()
-            if let last = pairs.last {
-                self.selectedSession = last
-            }
-            self.go(.canvas)
-            self.reload()
-        }
+        // the sheet opens the new team's page itself once it has started
+        AppDelegate.launchTeamWithOptionalWizard { [weak self] in self?.reload() }
     }
 
     @objc private func linkPressed() {
@@ -2855,6 +3381,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     @objc private func architecturePressed() {
         map3D?.openArchitectureSheet()
+    }
+
+    /// Open the island from the map.
+    ///
+    /// Hovering only opens it on the real camera cutout now, so this is the
+    /// deliberate way in. Deliberately not mode-gated: the island is the same
+    /// island whether the map is flat or 3D.
+    @objc private func islandPressed() {
+        IslandHelper.expand()
     }
 
     /// 2D multi: force every team onto distinct default grid slots (persists scoped positions).
@@ -3010,7 +3545,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         let a = NSAlert()
         a.messageText = isConductor ? "Rename orchestrator" : "Rename agent"
-        a.informativeText = "Display name + neon accent for the map cube, plane glow, and Terminal."
+        a.informativeText = "Display name + neon accent for the team's cube on the Team page, plane glow, and Terminal."
         a.addButton(withTitle: "Save")
         a.addButton(withTitle: "Cancel")
 
@@ -3118,14 +3653,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Live CLI/model switch on a worker seat (2D cards + 3D module share this).
+    /// Live CLI/model switch — workers **or** orchestrator (2D cards + 3D module share this).
     private func changeSeatModel(_ m: AgentNodeModel) {
-        guard m.role != "conductor", m.id != "c1" else {
-            let a = NSAlert()
-            a.messageText = "Orchestrator model switch"
-            a.informativeText = "Changing the orchestrator CLI live is not supported here — restart the team or use Architecture design for a new plan. Workers can switch via CLI on their card."
-            a.addButton(withTitle: "OK")
-            a.runModal()
+        if m.role == "conductor" || m.id == "c1" {
+            changeConductorModel(m)
             return
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -3190,6 +3721,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 includeHistory: includeHistory
             )
             DispatchQueue.main.async {
+                // Always clear spinner — never leave panel loading after switch fail
                 PongLoadingOverlay.hide()
                 if !result.ok {
                     let err = NSAlert()
@@ -3198,6 +3730,86 @@ final class PanelController: NSObject, NSWindowDelegate {
                     err.addButton(withTitle: "OK")
                     err.runModal()
                 }
+                self.reload()
+            }
+        }
+    }
+
+    /// Switch orchestrator harness (Grok / Claude / Hermes) without killing workers.
+    private func changeConductorModel(_ m: AgentNodeModel) {
+        NSApp.activate(ignoringOtherApps: true)
+        let entry = PairState.loadPairsDb()[m.session] as? [String: Any] ?? [:]
+        let cond = entry["conductor"] as? [String: Any] ?? [:]
+        let cur = ((cond["type"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let models = ConductorType.all.filter { $0.id != "custom" }
+
+        let pick = NSAlert()
+        pick.messageText = "Switch orchestrator harness"
+        pick.informativeText =
+            "Current: \(ConductorType.resolved(cur.isEmpty ? "grok" : cur).label).\n" +
+            "Pick Grok, Claude, or Hermes. Workers stay running — only the conductor process restarts."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 26), pullsDown: false)
+        for t in models {
+            let title = t.label.replacingOccurrences(of: " (recommended)", with: "")
+            popup.addItem(withTitle: title)
+            popup.lastItem?.representedObject = t.id
+            if t.id == cur { popup.select(popup.lastItem) }
+        }
+        pick.accessoryView = popup
+        pick.addButton(withTitle: "Continue")
+        pick.addButton(withTitle: "Cancel")
+        guard pick.runModal() == .alertFirstButtonReturn else { return }
+        guard let newId = popup.selectedItem?.representedObject as? String else { return }
+        if newId.lowercased() == cur.lowercased() {
+            let same = NSAlert()
+            same.messageText = "Already \(ConductorType.resolved(newId).label)"
+            same.informativeText = "Pick a different harness to switch."
+            same.addButton(withTitle: "OK")
+            same.runModal()
+            return
+        }
+
+        let newLabel = ConductorType.resolved(newId).label
+            .replacingOccurrences(of: " (recommended)", with: "")
+        let confirm = NSAlert()
+        confirm.messageText = "Switch the lead to \(newLabel)?"
+        confirm.informativeText = "Only the lead restarts, on the new AI. Its helpers keep working, and a recap is saved first."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Switch AI")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        let hist = NSAlert()
+        hist.messageText = "Bring its recent history?"
+        hist.informativeText = "The new AI reads the last screenfuls of the old one's work as well as the recap. Recommended."
+        hist.addButton(withTitle: "Bring history")
+        hist.addButton(withTitle: "Recap only")
+        hist.addButton(withTitle: "Cancel")
+        let histResp = hist.runModal()
+        if histResp == .alertThirdButtonReturn { return }
+        let includeHistory = histResp == .alertFirstButtonReturn
+
+        let session = m.session
+        PongLoadingOverlay.show(on: window, message: "Switching orchestrator…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Workers.switchConductorModel(
+                pair: session,
+                newTypeId: newId,
+                includeHistory: includeHistory,
+                saveContinuity: true
+            )
+            DispatchQueue.main.async {
+                PongLoadingOverlay.hide()
+                let done = NSAlert()
+                if result.ok {
+                    done.messageText = "Orchestrator switched"
+                    done.informativeText = result.message
+                } else {
+                    done.messageText = "Orchestrator switch failed"
+                    done.informativeText = result.message
+                }
+                done.addButton(withTitle: "OK")
+                done.runModal()
                 self.reload()
             }
         }
@@ -3223,48 +3835,21 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     /// Kill entire team with hard warnings + optional Save team first.
+    /// "Stop team “X”?": save it to start again later, or just stop. Keep is the loud, safe choice.
     private func confirmKillTeam(session: String, displayName: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let a = NSAlert()
-        a.messageText = "Terminate team “\(displayName)”?"
-        a.informativeText =
-            "This will:\n" +
-            "• Kill the orchestrator and all worker terminals / tmux sessions\n" +
-            "• Drop the live pair from pairs.json\n" +
-            "• Lose unsaved chat context in those terminals\n" +
-            "• Leave open jobs without a live team\n\n" +
-            "Session: \(session)\n\n" +
-            "Save the team layout first if you want to spawn it again later."
-        a.alertStyle = .critical
-        a.addButton(withTitle: "Save team, then terminate")
-        a.addButton(withTitle: "Terminate without saving")
-        a.addButton(withTitle: "Cancel")
-        let r = a.runModal()
-        switch r {
-        case .alertFirstButtonReturn:
-            // Save then kill
-            let nameAlert = NSAlert()
-            nameAlert.messageText = "Save team as…"
-            nameAlert.informativeText = "Reusable under Show Teams (workers, crons, brief…)."
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-            field.stringValue = displayName.isEmpty ? session : displayName
-            nameAlert.accessoryView = field
-            nameAlert.addButton(withTitle: "Save & terminate")
-            nameAlert.addButton(withTitle: "Cancel")
-            nameAlert.window.initialFirstResponder = field
-            guard nameAlert.runModal() == .alertFirstButtonReturn else { return }
-            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { return }
-            _ = SavedTeams.saveFromLivePair(session, teamName: name, options: SavedTeams.SaveOptions())
+        let name = displayName.isEmpty ? session : displayName
+        PongAlert.show(on: window, title: "Stop team “\(name)”?",
+                       message: "Its AIs stop and their terminals close. Anything they were in the middle of is lost.",
+                       buttons: [.init("Stop without saving", .destructive), .init("Save and stop", .secondary), .init("Keep running", .primary)],
+                       cancelIndex: 2) { [weak self] i in
+            guard let self, i < 2 else { return }
+            if i == 1 {
+                _ = SavedTeams.saveFromLivePair(session, teamName: name, options: SavedTeams.SaveOptions())
+            }
             Pairing.killPair(session)
-            selectedSession = nil
-            reload()
-        case .alertSecondButtonReturn:
-            Pairing.killPair(session)
-            selectedSession = nil
-            reload()
-        default:
-            break
+            self.selectedSession = "__all__"
+            Toast.show(i == 1 ? "Saved and stopped. Start it again from Saved teams." : "Stopped.")
+            self.go(.canvas)
         }
     }
 

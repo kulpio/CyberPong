@@ -122,7 +122,7 @@ enum GuideCoach {
             let ids = ghosts.compactMap { $0["id"] as? String }
             return Finding(
                 key: "ghost-subs-\(session)-\(ids.joined())",
-                message: "Ghost seats on map (no TUI): \(labels.isEmpty ? ids.joined(separator: ", ") : labels).",
+                message: "Ghost seats on the Team page (no TUI): \(labels.isEmpty ? ids.joined(separator: ", ") : labels).",
                 actionTitle: "Remove ghosts",
                 action: {
                     for id in ids {
@@ -297,7 +297,7 @@ enum GuideCoach {
                 lines.append("- cron: " + crons.prefix(5).map { "\($0.name)@\($0.ownerId)/\($0.cadence)" }.joined(separator: ", "))
             }
         }
-        lines.append("Rules: seats without pane_id are ghosts. Prefer + on map or mutator add_subagent for live TUIs.")
+        lines.append("Rules: seats without pane_id are ghosts. Prefer + on the Team page or mutator add_subagent for live TUIs.")
         lines.append("Cron: emit CREATE_CRON name=… owner=w1 cadence=\"every 15m\" task=\"…\" for Apply.")
         return lines.joined(separator: "\n")
     }

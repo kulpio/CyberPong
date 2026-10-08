@@ -1,0 +1,34 @@
+{
+ "title": "code change rubric, tests protected (CyberPong, shipped)",
+ "version": 2,
+ "notes": "For build loops whose tests are protected (build-verify): the engine's check already proved the protected tests pass, and a builder may not add tests there, so the 'tested' line of @code-change does not apply. Jev grades that the change is the one asked for and that it can be reviewed. Use with \"diff\": true.",
+ "questions": {
+  "does_the_goal": {
+   "type": "noul",
+   "instructions": "The change does what the goal in the state asks for.",
+   "criteria": {
+    "true": "The requested behaviour is implemented",
+    "false": "It is missing, partial, or a different behaviour"
+   }
+  },
+  "nothing_unrelated": {
+   "type": "noul",
+   "instructions": "The change touches only what the goal needs: every edited line serves the goal, while tests and fixtures stay as strict as before.",
+   "criteria": {
+    "true": "Only what the goal needs is changed",
+    "false": "Unrelated changes, or checks weakened"
+   }
+  },
+  "reviewable": {
+   "type": "score",
+   "instructions": "A reviewer reads the change: how easily can they tell it is right?",
+   "criteria": [
+    "They cannot: the change is too large, tangled or unexplained to judge",
+    "With effort: it can be judged, but the reasons for key choices are missing",
+    "Readily: small enough to hold in mind, names and comments say why",
+    "At a glance: small, well named, and each non-obvious choice explained where it is made"
+   ],
+   "floor": 2
+  }
+ }
+}

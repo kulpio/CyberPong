@@ -1,0 +1,82 @@
+{
+ "rubric": "@code-change",
+ "model": "jev-1.13.0",
+ "probed_at": "2026-09-24 20:36",
+ "cases": 9,
+ "repeats": 3,
+ "calls": 45,
+ "notes": "Written by pong jev probe against the labelled cases beside this file. A status is keyed by the question's version (type, wording, options), its bar (floor or required option) and the model: change any of them and the line is unproven again until re-probed.",
+ "questions": {
+  "06fe5620867f@jev-1.13.0": {
+   "id": "does_the_goal",
+   "status": "ranker",
+   "at": 1790296601.733192,
+   "model": "jev-1.13.0",
+   "accuracy": 1.0,
+   "brier": 0.0318,
+   "stability_sd": 0.0685,
+   "state_blind_accuracy": 0.333,
+   "chance": 0.667,
+   "state_blind_leak": 0.0,
+   "injection_shift": 0.0,
+   "cases": 6,
+   "why": [
+    "repeats vary by sd 0.068 > 0.05"
+   ],
+   "misses": [],
+   "instructions": "The change does what the goal in the state asks for."
+  },
+  "fed298d5ab8f@jev-1.13.0": {
+   "id": "nothing_unrelated",
+   "status": "gate",
+   "at": 1790296601.733192,
+   "model": "jev-1.13.0",
+   "accuracy": 1.0,
+   "brier": 0.0306,
+   "stability_sd": 0.0094,
+   "state_blind_accuracy": 0.333,
+   "chance": 0.667,
+   "state_blind_leak": 0.0,
+   "injection_shift": 0.0,
+   "cases": 6,
+   "why": [],
+   "misses": [],
+   "instructions": "The change touches only what the goal needs: every edited line serves the goal, while tests and fixtures stay as strict as before."
+  },
+  "3b0775b94e5e@jev-1.13.0": {
+   "id": "tested",
+   "status": "gate",
+   "at": 1790296601.733192,
+   "model": "jev-1.13.0",
+   "accuracy": 1.0,
+   "brier": 0.0032,
+   "stability_sd": 0.0047,
+   "state_blind_accuracy": 0.333,
+   "chance": 0.667,
+   "state_blind_leak": 0.0,
+   "injection_shift": -0.007,
+   "cases": 6,
+   "why": [],
+   "misses": [],
+   "instructions": "New or changed behaviour has a test that would fail without the change."
+  },
+  "e18052f2ad66:floor=2@jev-1.13.0": {
+   "id": "reviewable",
+   "status": "gate",
+   "at": 1790296601.733192,
+   "model": "jev-1.13.0",
+   "accuracy": 1.0,
+   "brier": 0.0161,
+   "stability_sd": 0.0216,
+   "state_blind_accuracy": 0.333,
+   "chance": 0.667,
+   "state_blind_leak": 0.0,
+   "injection_shift": 0.023,
+   "cases": 6,
+   "why": [],
+   "misses": [],
+   "instructions": "A reviewer reads the change: how easily can they tell it is right?"
+  }
+ },
+ "not_recorded": {}
+}

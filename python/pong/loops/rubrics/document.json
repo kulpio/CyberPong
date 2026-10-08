@@ -1,0 +1,50 @@
+{
+ "title": "document rubric (CyberPong, shipped)",
+ "version": 2,
+ "notes": "For writing and research steps. Nouls where a line is a yes/no situation (better calibrated than a forced level), one Score for what a reader can do next. Five lines: a small rubric grades better than a long one. v2 (2026-09-24): 'sourced' no longer asks for a source for the document's own examples, plans or dates (a live run read 'Tuesdays at 7am' as an unsourced date); every line phrased so that yes is good. Probe cases: document.probes.json. Add goal-specific lines beside these in the topology: \"rubric\": [\"@document\", {\"id\": \"...\", \"type\": \"noul\", \"text\": \"...\"}].",
+ "questions": {
+  "does_the_goal": {
+   "type": "noul",
+   "instructions": "The documents do what the goal in the state asks for: the thing asked for is there, not a plan to make it or a description of it.",
+   "criteria": {
+    "true": "The deliverable the goal asks for is present",
+    "false": "It is missing, partial, or only described"
+   }
+  },
+  "sourced": {
+   "type": "noul",
+   "instructions": "Every statement of fact about the outside world (a product, a market figure, a price, a statistic) names its source: a URL, a file path or a named person. The document's own examples, assumptions, plans or schedule need no source.",
+   "criteria": {
+    "true": "Each outside fact names where it comes from, or there are no outside facts",
+    "false": "At least one outside fact is stated with no source"
+   }
+  },
+  "complete_sections": {
+   "type": "noul",
+   "instructions": "Every section of the documents has its content written out: each heading is followed by real text, and nothing is left as TODO or 'to be written'.",
+   "criteria": {
+    "true": "Every section has its content",
+    "false": "At least one section is empty or a placeholder"
+   }
+  },
+  "consistent": {
+   "type": "noul",
+   "instructions": "Each number, name and decision is stated the same way everywhere it appears in the documents.",
+   "criteria": {
+    "true": "Every repeated number, name or decision matches",
+    "false": "Two places state the same thing differently"
+   }
+  },
+  "reader_can_act": {
+   "type": "score",
+   "instructions": "A reader who has not followed the work reads the documents: can they tell what to do next, and why?",
+   "criteria": [
+    "No: the documents assume context the reader does not have",
+    "Partly: a next step is there, but its reason or its details are missing",
+    "Yes: the next step and its reason are clear",
+    "Yes, fully: the next step, its reason, who does it, and what would change the plan are all there"
+   ],
+   "floor": 2
+  }
+ }
+}

@@ -204,7 +204,10 @@ class FlowGraphTests(unittest.TestCase):
         self.assertIn("SEAT IDENTITY", prompt)
         self.assertIn("Mission role (locked)", prompt)
         self.assertIn("ARCHITECTURE ROAD", prompt)
-        self.assertIn("Coder", prompt)
+        # w1 has a child on this roster, so the identity block calls it a group
+        # lead (plans, fires jobs, verifies) rather than a coder — the role its
+        # reports carry. Both spellings are the locked role for this seat.
+        self.assertTrue("group lead" in prompt or "Coder" in prompt, prompt[:400])
         self.assertIn("build feature X", prompt)
 
 

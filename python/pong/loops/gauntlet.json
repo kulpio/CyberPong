@@ -1,0 +1,37 @@
+{
+  "kind": "gauntlet",
+  "version": 1,
+  "max_rounds": 3,
+  "pieces_cap": 6,
+  "requires_bar": true,
+  "nodes": [
+    {
+      "id": "builder",
+      "kind": "seat",
+      "role": "builder"
+    },
+    {
+      "id": "critic",
+      "kind": "seat",
+      "role": "critic"
+    }
+  ],
+  "edges": [
+    {
+      "from": "builder",
+      "to": "critic",
+      "on": "done"
+    },
+    {
+      "from": "critic",
+      "to": "builder",
+      "on": "fail"
+    },
+    {
+      "from": "critic",
+      "to": "join",
+      "on": "win"
+    }
+  ],
+  "notes": "Cycle with separate critic. Critic gets bar+artifacts, never builder transcript."
+}

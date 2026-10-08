@@ -1,0 +1,117 @@
+{
+ "name": "question-review",
+ "notes": "Improving a question Jev is asked (a rubric line here, a question card in another project's catalog). Fable drafts one edit from real disagreements, the engine lints it and probes it live on the labelled cases, a fresh critic on another family checks the edit fixes the failure it names and nothing else, and you approve. Put the rubric in the project root as rubric.json and its labelled cases as rubric.probes.json (edit the check commands if they live elsewhere). A question that does not earn gate status goes back to the drafter; after the budget it comes to you with its probe report. Nothing is edited on any remote: a catalog card change is a proposal a person applies.",
+ "start": "draft",
+ "max_rounds": 3,
+ "boundaries": {
+  "max_wall_min": 90,
+  "max_jobs": 24
+ },
+ "protect": [
+  "rubric.probes.json"
+ ],
+ "nodes": [
+  {
+   "id": "draft",
+   "role": "writer",
+   "task": "{goal}\n\nRound {round}. Read the shared notes first. rubric.json holds the questions Jev is asked; rubric.probes.json holds labelled cases (do not edit them: they are the test). Previous step said: {prev_summary}\nEdit rubric.json so each question follows the checklist: one judgment, the whole question in its instructions, options and levels written as situations, a none option on every choice, phrased so that yes is good, no policy words without the situation that counts, nothing code should decide. Change only what the failure calls for. Claim with rubric.json and one line per question you changed and why."
+  },
+  {
+   "id": "lint",
+   "role": "check",
+   "run": [
+    "pong jev lint --rubric rubric.json"
+   ],
+   "timeout_min": 2
+  },
+  {
+   "id": "probe",
+   "role": "check",
+   "run": [
+    "pong jev probe --rubric rubric.json --cases rubric.probes.json --repeats 3 --require ranker"
+   ],
+   "timeout_min": 10
+  },
+  {
+   "id": "review",
+   "role": "critic",
+   "family": "different",
+   "task": "Review the edit to rubric.json ({prev_artifacts}) against the goal: {goal}\nThe engine has already linted it and probed it live (its report is in the check results). Say `win` if every changed question is clearer, asks one thing, and fixes the failure the drafter named without weakening what a line checks; otherwise `fail` with the question and what to change. Do not edit the files."
+  },
+  {
+   "id": "me",
+   "role": "human"
+  },
+  {
+   "id": "end",
+   "role": "end"
+  }
+ ],
+ "edges": [
+  {
+   "from": "draft",
+   "to": "lint",
+   "on": "done"
+  },
+  {
+   "from": "lint",
+   "to": "probe",
+   "on": "win"
+  },
+  {
+   "from": "lint",
+   "to": "draft",
+   "on": "fail"
+  },
+  {
+   "from": "lint",
+   "to": "me",
+   "on": "bounded"
+  },
+  {
+   "from": "probe",
+   "to": "review",
+   "on": "win"
+  },
+  {
+   "from": "probe",
+   "to": "draft",
+   "on": "fail"
+  },
+  {
+   "from": "probe",
+   "to": "me",
+   "on": "bounded"
+  },
+  {
+   "from": "review",
+   "to": "me",
+   "on": "win"
+  },
+  {
+   "from": "review",
+   "to": "draft",
+   "on": "fail"
+  },
+  {
+   "from": "review",
+   "to": "me",
+   "on": "abstain"
+  },
+  {
+   "from": "review",
+   "to": "me",
+   "on": "bounded"
+  },
+  {
+   "from": "me",
+   "to": "end",
+   "on": "approved"
+  },
+  {
+   "from": "me",
+   "to": "draft",
+   "on": "rejected"
+  }
+ ]
+}

@@ -8,6 +8,19 @@ from typing import Any
 
 from .base import TransportResult
 
+#: What a temporary CyberPong home says instead of pasting (``dispatch`` says the same).
+ISOLATED_DETAIL = "not pasted: a temporary CyberPong home types into no Terminal window"
+
+
+def _isolated_home() -> bool:
+    """A temporary CyberPong home (a test, a preview, a dry run), as ``tmux_paste`` checks it."""
+    try:
+        from ..groups import isolated_home
+
+        return isolated_home()
+    except Exception:
+        return True  # can't tell: type nothing
+
 
 def _osascript(script: str) -> tuple[bool, str]:
     try:
@@ -77,6 +90,10 @@ def send(job: dict[str, Any], worker: dict[str, Any], state: dict[str, Any]) -> 
             False,
             "no numeric worker window_id (refusing state.claude_window_id fallback)",
         )
+    # Terminal windows, like tmux panes, are the Mac's own: a temporary home that registered a window id
+    # could name a live seat's window. Nothing is focused, copied or typed from there.
+    if _isolated_home():
+        return TransportResult("window_paste", False, f"{ISOLATED_DETAIL} (window {wid})")
     prompt = job.get("_prompt") or ""
     session = str(job.get("session") or state.get("session") or "")
 

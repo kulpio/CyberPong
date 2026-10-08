@@ -27,6 +27,6 @@ Goal: <GOAL>. Implement step 1 only. When done, print ##CLAUDE_DONE## and propos
 
 ## Autonomy
 
-- Every = ask Dylan after each Claude reply
+- Every = ask the person after each Claude reply
 - Done = ask after ##CLAUDE_DONE##
 - Full = minimal human intervention; Hermes keeps looping

@@ -114,6 +114,60 @@ def _local_date_line() -> str:
     return now.strftime("%Y-%m-%d %H:%M") + f" ({_tz_name()})"
 
 
+def default_archive_title(display_name: str) -> str:
+    """Stable default archive title: ``{display_name} · {local datetime}``.
+
+    Used by CLI ``continuity save`` (no --title), UI empty-title save, and
+    New session+recap compress. Always includes the team display name.
+    """
+    name = (display_name or "").strip() or "team"
+    return f"{name} · {_local_date_line()}"
+
+
+def archive_matches_team(
+    meta: dict[str, Any],
+    *,
+    source_session: str | None = None,
+    display_name: str | None = None,
+) -> bool:
+    """Return True if *meta* belongs to the requested team scope.
+
+    Filters (OR when both are provided):
+      - **source_session**: exact match on ``meta.source_session`` (pair id is stable).
+      - **display_name**: case-insensitive equality on ``meta.display_name``.
+
+    Rename edge case: if the live team was *renamed* (display_name changed),
+    archives still match via ``source_session``. If only ``display_name`` is
+    supplied and the team was renamed, older archives under the prior name
+    will not match until re-saved — prefer both filters from a live context.
+    When neither filter is set, always matches (unscoped list).
+    """
+    sess = (source_session or "").strip()
+    team = (display_name or "").strip()
+    if not sess and not team:
+        return True
+    if sess:
+        src = str(meta.get("source_session") or "").strip()
+        if src == sess:
+            return True
+        if not team:
+            return False
+    # display_name filter (alone, or OR second chance after session miss)
+    dn = str(meta.get("display_name") or "").strip()
+    return bool(team) and dn.casefold() == team.casefold()
+
+
+def archive_row_label(meta: dict[str, Any]) -> str:
+    """Human list/picker label: title, with team name if title lacks it."""
+    title = str(meta.get("title") or meta.get("id") or "").strip()
+    team = str(meta.get("display_name") or "").strip()
+    if not team:
+        return title
+    if team.casefold() in title.casefold():
+        return title
+    return f"{title} · {team}"
+
+
 def _truncate(s: str, max_chars: int) -> str:
     t = (s or "").strip()
     if len(t) <= max_chars:
@@ -364,7 +418,8 @@ def save_archive(
     entry_dir = archive_dir(aid)
     if entry_dir is None:
         raise RuntimeError("refusing to write archive outside session-archive root")
-    t = (title or f"{display} · {_local_date_line()}").strip()
+    # Empty / whitespace title → always include team display name
+    t = (title or "").strip() or default_archive_title(display)
     now = time.time()
     recap = build_recap_markdown(session, title=t)
 
@@ -435,7 +490,20 @@ def _prune_timestamped(sess_dir: Path) -> None:
             pass
 
 
-def list_archives() -> list[dict[str, Any]]:
+def list_archives(
+    *,
+    source_session: str | None = None,
+    display_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """List archives, newest first.
+
+    Optional team scope (see :func:`archive_matches_team`):
+      - ``source_session``: filter by ``meta.source_session`` (pair id)
+      - ``display_name``: filter by ``meta.display_name`` (case-insensitive)
+
+    When both are set, an archive matches if **either** field matches (OR).
+    Default (no filters) returns every team.
+    """
     root = archive_root()
     out: list[dict[str, Any]] = []
     if not root.exists():
@@ -457,6 +525,10 @@ def list_archives() -> list[dict[str, Any]]:
         meta["id"] = mid
         meta["_dir"] = str(d)
         meta["_recap_path"] = str(d / "recap.md")
+        if not archive_matches_team(
+            meta, source_session=source_session, display_name=display_name
+        ):
+            continue
         out.append(meta)
     out.sort(key=lambda m: float(m.get("updated_at") or m.get("created_at") or 0), reverse=True)
     return out

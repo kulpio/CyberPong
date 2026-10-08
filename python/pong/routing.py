@@ -67,8 +67,10 @@ def _tmux_current_session() -> str | None:
     if not os.environ.get("TMUX"):
         return None
     try:
+        from .groups import tmux_bin  # Homebrew's tmux, even off the shell's PATH
+
         r = subprocess.run(
-            ["tmux", "display-message", "-p", "#{session_name}"],
+            [tmux_bin() or "tmux", "display-message", "-p", "#{session_name}"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -254,6 +256,19 @@ def register_worker_pane(
     }
     write_json(path, data)
     return path
+
+
+def forget_worker_pane(session: str, worker_id: str) -> bool:
+    """Drop a seat's pane registration (the pane was closed on purpose)."""
+    from .jsonutil import read_json, write_json
+
+    path = sessions_dir(session) / "panes.json"
+    data = read_json(path) if path.exists() else {}
+    if not isinstance(data, dict) or str(worker_id) not in data:
+        return False
+    data.pop(str(worker_id), None)
+    write_json(path, data)
+    return True
 
 
 def load_pane_registration(session: str, worker_id: str) -> dict[str, Any] | None:

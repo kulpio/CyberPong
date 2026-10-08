@@ -1,0 +1,82 @@
+{
+  "id": "code",
+  "title": "Code work",
+  "version": 1,
+  "summary": "The bar for anything that changes code in the repo: fixes, features, refactors.",
+  "scale": {
+    "min": 1,
+    "max": 5,
+    "labels": {
+      "1": "Does not clear the bar. Claim is unsupported or the change is wrong.",
+      "2": "Something real is there, but a reviewer has to redo the verification.",
+      "3": "Works, and is honestly reported. Thin somewhere.",
+      "4": "Solid. Would ship without rework.",
+      "5": "Anchor quality. Root cause named and proven, minimal diff, evidence a stranger could re-run."
+    }
+  },
+  "pass": {
+    "min_each": 3,
+    "min_mean": 4.0,
+    "note": "One dimension below 3 fails the whole claim regardless of the mean."
+  },
+  "scope": {
+    "reviewer_seats": [],
+    "reviewer_roles": ["reviewer"],
+    "seats": [],
+    "mission_roles": ["coder"]
+  },
+  "dimensions": [
+    {
+      "id": "root_cause",
+      "name": "Root cause, not symptom",
+      "weight": 1.0,
+      "five": "Names the actual mechanism — file, function, why it fails — and proves it, including disproving a plausible wrong theory when one was in play.",
+      "one": "Describes the symptom, or repeats the theory it was handed without testing it. Catches or suppresses the error instead of removing the cause."
+    },
+    {
+      "id": "evidence",
+      "name": "Evidence a stranger could re-run",
+      "weight": 1.0,
+      "five": "States the exact commands and their real output. Verification touches the thing that actually ships. Failures are shown, not summarised.",
+      "one": "Asserts success. No command, no output, or output from something other than what shipped."
+    },
+    {
+      "id": "scope",
+      "name": "Only what was asked",
+      "weight": 1.0,
+      "five": "Diff is the smallest change that fixes it. Anything extra found is reported, not silently done.",
+      "one": "Unrelated edits, drive-by refactors, or files touched that the job never mentioned."
+    },
+    {
+      "id": "failure_handling",
+      "name": "Behaviour when things go wrong",
+      "weight": 1.0,
+      "five": "Bad input degrades safely and visibly. No new crash path. Risky calls are guarded on a real precondition rather than wrapped in a catch.",
+      "one": "Happy path only, or an exception swallowed so the failure becomes silent."
+    },
+    {
+      "id": "legibility",
+      "name": "Reads like the code around it",
+      "weight": 1.0,
+      "five": "Matches local idiom and comment density. Comments explain why, especially where the code looks surprising.",
+      "one": "Foreign style, commented-out code, or comments that restate what the line already says."
+    }
+  ],
+  "references": [
+    {
+      "file": "code-5-island-crash.md",
+      "score": 5,
+      "why": "Disproved the briefed root cause with a runnable experiment, named the real mechanism, fixed the cause rather than catching the exception, and verified the shipped artifact."
+    },
+    {
+      "file": "code-3-works-thin-evidence.md",
+      "score": 3,
+      "why": "Correct fix, honestly reported, but verification stopped at 'it compiles' and never exercised the failure it claims to fix."
+    },
+    {
+      "file": "code-1-unsupported-claim.md",
+      "score": 1,
+      "why": "Claim asserts success with no command output, and the crash is silenced with a catch instead of removed."
+    }
+  ]
+}

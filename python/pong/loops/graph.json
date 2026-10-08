@@ -1,0 +1,8 @@
+{
+  "kind": "graph",
+  "version": 1,
+  "max_rounds": 3,
+  "notes": "A graph you describe: nodes with roles, edges with conditions (done | fail | win | route:<label> | approved | *), cycles bounded by max_rounds, a human node as a gate. Attach one with `pong graph attach --file topology.json`; examples in loops/graphs/.",
+  "nodes": [],
+  "edges": []
+}

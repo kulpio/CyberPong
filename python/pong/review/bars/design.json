@@ -1,0 +1,82 @@
+{
+  "id": "design",
+  "title": "UX / UI work",
+  "version": 1,
+  "summary": "The bar for interface work: layout, states, motion, and the words on screen.",
+  "scale": {
+    "min": 1,
+    "max": 5,
+    "labels": {
+      "1": "Does not clear the bar. Invented conventions, or unreadable to someone who did not build it.",
+      "2": "An idea is there, but a reviewer has to redesign it to ship it.",
+      "3": "Works and is honestly reported. Thin somewhere — usually a state nobody drew.",
+      "4": "Solid. Would ship without rework.",
+      "5": "Anchor quality. Reads at a glance, cites the platform it borrows from, and every state is drawn."
+    }
+  },
+  "pass": {
+    "min_each": 3,
+    "min_mean": 4.0,
+    "note": "One dimension below 3 fails the whole claim regardless of the mean. Contrast below 3 is never waived — it is not a matter of taste."
+  },
+  "scope": {
+    "reviewer_seats": ["w30"],
+    "reviewer_roles": [],
+    "seats": ["w29", "w31"],
+    "mission_roles": []
+  },
+  "dimensions": [
+    {
+      "id": "hierarchy",
+      "name": "Hierarchy — the eye lands in the right place",
+      "weight": 1.0,
+      "five": "The one thing that matters is the first thing seen, and the order after it is deliberate. Weight, size and spacing do that work; colour is not carrying it alone.",
+      "one": "Everything competes. Equal weight on a heading, a control and a caption, so the reader has to search for the point."
+    },
+    {
+      "id": "coherence",
+      "name": "Coherence with what already exists",
+      "weight": 1.0,
+      "five": "Reuses the product's own spacing scale, radii, type ramp and colour roles. A new element looks like it was always there.",
+      "one": "A one-off: novel radius, a colour outside the palette, a fifth font size, spacing picked by eye."
+    },
+    {
+      "id": "sourcing",
+      "name": "Guideline sourcing",
+      "weight": 1.0,
+      "five": "Platform behaviour is cited, not guessed — Apple HIG or the framework's own docs, named, with the specific rule and how this follows it. Measured values come from the system where the system publishes them.",
+      "one": "Asserts what the platform does from memory, or invents a convention and presents it as standard."
+    },
+    {
+      "id": "efficiency",
+      "name": "Efficiency — steps and cost to the user",
+      "weight": 1.0,
+      "five": "The common path is the shortest one. Nothing asks twice, nothing waits without saying so, and the affordance is where a hand already is.",
+      "one": "Extra clicks with no reason, hidden state, or a control placed where it is convenient to build rather than to reach."
+    },
+    {
+      "id": "accessibility",
+      "name": "Contrast and reach",
+      "weight": 1.0,
+      "five": "Text meets WCAG AA against its ACTUAL background (4.5:1 body, 3:1 large), computed rather than eyeballed. Targets are hittable, focus is visible, and nothing depends on colour alone. Works in both appearances.",
+      "one": "Low-contrast grey on grey, colour as the only signal, invisible focus, or a target too small to hit."
+    }
+  ],
+  "references": [
+    {
+      "file": "design-5-notch-silhouette.md",
+      "score": 5,
+      "why": "Took its geometry from the host system rather than a screenshot, named which value the OS does and does not publish, and made collapsed and expanded one shape so the transition could not pop."
+    },
+    {
+      "file": "design-3-readable-but-unsourced.md",
+      "score": 3,
+      "why": "Sensible layout that reads well, but the platform behaviour it leans on was recalled rather than checked, and the empty state was never drawn."
+    },
+    {
+      "file": "design-1-invisible-on-the-menu-bar.md",
+      "score": 1,
+      "why": "Shipped a truncated label and low-contrast text on an unknown background; contrast was never computed and the failing state was the one the user actually saw."
+    }
+  ]
+}

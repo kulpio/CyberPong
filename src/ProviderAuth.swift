@@ -104,9 +104,10 @@ enum ProviderAuth {
         }
     }
 
-    /// Clear ready flag and open login Terminal (sequential multi-account switch).
+    /// Open the login Terminal again (sequential multi-account switch). The ready flag is left
+    /// as it was until the person says they're signed in: Cancel must not make an AI that was
+    /// signed in look signed out.
     static func switchAccount(typeId: String, completion: @escaping (GateResult) -> Void) {
-        markReady(typeId: typeId, ready: false)
         ensureLoggedIn(typeId: typeId, reason: "switch account", forcePrompt: true, completion: completion)
     }
 
@@ -224,11 +225,14 @@ enum ProviderAuth {
         completion(.ok)
     }
 
+    /// - Parameter command: the AI's own sign-in command (`claude auth login`, from `pong
+    ///   doctor`); nil runs its interactive CLI, which signs in on first use.
     @discardableResult
-    static func openLoginTerminal(typeId: String) -> String? {
+    static func openLoginTerminal(typeId: String, command: String? = nil) -> String? {
         closeLoginTerminal()
         let label = displayLabel(for: typeId)
-        let cmd = interactiveCmd(for: typeId)
+        let cmd = command.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
+            ?? interactiveCmd(for: typeId)
         let bin0 = cmd.split(separator: " ").first.map(String.init) ?? cmd
         let resolved = AppAIRuntime.resolveBinary(bin0)
         let execLine: String = {
@@ -251,11 +255,10 @@ enum ProviderAuth {
         printf '\\033]0;\(safeTitle)\\007'
         clear
         echo ""
-        echo "  CyberPong — \(label) login"
-        echo "  Sign in / pick account here."
-        echo "  After you sign in, it is SAFE to close this window."
-        echo "  Prefer: return to CyberPong → tap I'm signed in (we close it for you)."
-        echo "  Closing does not log you out — the CLI keeps your session."
+        echo "  CyberPong — \(label) sign-in"
+        echo "  Sign in here, with the account CyberPong should use."
+        echo "  When you're done, go back to CyberPong."
+        echo "  Closing this window afterwards does not sign you out."
         echo ""
         exec \(execLine)
         """

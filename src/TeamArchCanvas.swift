@@ -70,7 +70,7 @@ final class TeamArchCanvas: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.backgroundColor = PongColor.void.cgColor
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -267,14 +267,14 @@ final class TeamArchCanvas: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        NSColor.black.setFill()
+        PongColor.void.setFill()
         bounds.fill()
 
         let ink = NSColor.white
         let bands: [(String, CGFloat)] = [
-            ("BOSS", 12),
-            ("AGENTS", bandH + 12),
-            ("HELPERS", bandH * 2 + 12),
+            ("LEAD", 12),
+            ("HELPERS", bandH + 12),
+            ("THEIR HELPERS", bandH * 2 + 12),
         ]
         for (idx, band) in bands.enumerated() {
             let (name, y) = band
@@ -386,12 +386,13 @@ final class TeamArchCanvas: NSView {
                 .foregroundColor: NSColor.white,
             ]
             (n.title as NSString).draw(in: NSRect(x: r.minX + 10, y: r.minY + 8, width: r.width - 36, height: 16), withAttributes: tAttrs)
-            let modelLabel = n.role == "conductor" ? "orch" : WorkerType.resolved(n.modelId).label
+            // what it is and which AI, in words (no seat ids): "Lead", "Helper · Claude"
+            let modelLabel = WorkerType.resolved(n.modelId).label
             let sAttrs: [NSAttributedString.Key: Any] = [
-                .font: PongTheme.labelFont(9),
-                .foregroundColor: PongTheme.textSecondary,
+                .font: PongType.secondary,
+                .foregroundColor: PongColor.textSecondary,
             ]
-            ("\(n.id) · \(modelLabel)" as NSString).draw(
+            (n.role == "conductor" ? "Lead" : "\(n.role == "subagent" ? "Their helper" : "Helper") · \(modelLabel)" as NSString).draw(
                 in: NSRect(x: r.minX + 10, y: r.minY + 28, width: r.width - 36, height: 14),
                 withAttributes: sAttrs)
 

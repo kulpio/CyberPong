@@ -1,8 +1,9 @@
 import AppKit
 import CoreText
 
-/// Defense schematic design system (Anduril / isometric blueprint).
-/// Black void · lime line work · blue orch / magenta agents as role chips only.
+/// CyberPong's look (1.9, "Sodium & Neon"). The values live in `PongTokens.swift`;
+/// these older names stay so every screen keeps compiling while it moves over.
+/// Night only: there is no light mode.
 enum PongTheme {
     // MARK: - Product identity (public name)
     /// Product name — always CyberPong in UI / About / menus.
@@ -10,216 +11,155 @@ enum PongTheme {
     /// Short tagline for About / tooltips
     static let productTagline = "Local agent mission control"
 
-    /// Blueprint lime (isometric defense diagrams)
-    static var lime: NSColor { PongSheetChrome.lime }
-    static var limeSoft: NSColor { PongSheetChrome.limeSoft }
+    /// Old accent name. It meant "running" on the Graphs page, so it is the live cyan now.
+    static var lime: NSColor { PongColor.live }
+    static var limeSoft: NSColor { PongColor.tintLive }
     enum Appearance: String { case dark, light }
 
     static let appearanceDidChange = Notification.Name("PongThemeAppearanceDidChange")
-    private static let prefsPath = { Pong.stateDir + "/ui-prefs.json" }()
 
-    private static var _appearance: Appearance = {
-        let raw = (Pong.loadJSON(Pong.stateDir + "/ui-prefs.json")["appearance"] as? String) ?? "dark"
-        return Appearance(rawValue: raw) ?? .dark
-    }()
-
+    /// Always Night (decided 29 Sep 2026: dark only).
     static var appearance: Appearance {
-        get { _appearance }
-        set {
-            guard newValue != _appearance else { return }
-            _appearance = newValue
-            var prefs = Pong.loadJSON(prefsPath)
-            prefs["appearance"] = newValue.rawValue
-            prefs["updated"] = Date().timeIntervalSince1970
-            Pong.writeJSON(prefsPath, prefs)
-            NotificationCenter.default.post(name: appearanceDidChange, object: nil)
+        get { .dark }
+        set { }
+    }
+
+    static func toggleAppearance() { }
+
+    // MARK: - Launch / wizard chrome
+
+    /// Wizards and sheets used their own always-dark palette; it is the Night palette now.
+    enum Launch {
+        static var appearance: NSAppearance? { NSAppearance(named: .darkAqua) }
+        static let bg = PongColor.base
+        static let bgElevated = PongColor.raised
+        static let bgHover = PongColor.overlay
+        static let bgInput = PongColor.field
+        static let textPrimary = PongColor.textPrimary
+        static let textSecondary = PongColor.textSecondary
+        static let textTertiary = PongColor.textTertiary
+        static let line = PongColor.control
+        static let lineSoft = PongColor.hairline
+        static let ink = PongColor.ink
+        /// Was the lime primary; the primary button is ink now.
+        static let lime = PongColor.ink
+        static let blue = PongColor.live
+        static let magenta = PongColor.architect
+
+        static func styleWindow(_ win: NSWindow) {
+            win.appearance = appearance
+            win.backgroundColor = bg
         }
     }
 
-    static func toggleAppearance() {
-        appearance = appearance == .dark ? .light : .dark
-    }
+    // MARK: - Surfaces
 
-    // MARK: - Surfaces (void black / clean white)
+    static var bg: NSColor { PongColor.base }
+    static var bgElevated: NSColor { PongColor.raised }
+    static var bgHover: NSColor { PongColor.overlay }
+    static var bgInput: NSColor { PongColor.field }
+    static var bgFooter: NSColor { PongColor.base }
+    static var bgMetric: NSColor { PongColor.raised }
+    static var bgRail: NSColor { PongColor.frame }
+    static var bgChrome: NSColor { PongColor.frame }
 
-    /// Stage void — pure black in dark (Lattice map behind HUD)
-    static var bg: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.0, alpha: 1)           // #000
-            : NSColor(calibratedWhite: 0.97, alpha: 1)
-    }
-    /// Floating panel fill (Tracking list)
-    static var bgElevated: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.06, alpha: 0.94)       // glass black
-            : NSColor(calibratedWhite: 1.0, alpha: 0.96)
-    }
-    static var bgHover: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.12, alpha: 1)
-            : NSColor(calibratedWhite: 0.93, alpha: 1)
-    }
-    static var bgInput: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.04, alpha: 1)
-            : NSColor(calibratedWhite: 0.95, alpha: 1)
-    }
-    static var bgFooter: NSColor { bg }
-    static var bgMetric: NSColor { bgElevated }
-    /// Left rail / chrome strip — solid black
-    static var bgRail: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.0, alpha: 1)
-            : NSColor(calibratedWhite: 1.0, alpha: 1)
-    }
-    static var bgChrome: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.0, alpha: 1)
-            : NSColor(calibratedWhite: 1.0, alpha: 1)
-    }
+    static var spaceGlow: NSColor { PongColor.hover }
+    static var ink: NSColor { PongColor.textPrimary }
+    static var gridDot: NSColor { PongColor.mark.withAlphaComponent(0.55) }
+    static var gridDotMajor: NSColor { PongColor.mark }
 
-    static var spaceGlow: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.03)
-            : NSColor(calibratedWhite: 0, alpha: 0.03)
-    }
-    static var ink: NSColor {
-        appearance == .dark ? NSColor.white : NSColor.black
-    }
-    static var gridDot: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.08)
-            : NSColor(calibratedWhite: 0, alpha: 0.07)
-    }
-    static var gridDotMajor: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.16)
-            : NSColor(calibratedWhite: 0, alpha: 0.14)
-    }
+    // MARK: - Type colours
 
-    // MARK: - Type
+    static var textPrimary: NSColor { PongColor.textPrimary }
+    static var textSecondary: NSColor { PongColor.textSecondary }
+    static var textTertiary: NSColor { PongColor.textTertiary }
+    static var textMono: NSColor { PongColor.textSecondary }
 
-    /// Light mode: near-black primary + mid greys that stay readable on white chrome.
-    static var textPrimary: NSColor {
-        appearance == .dark ? NSColor.white : NSColor(calibratedWhite: 0.06, alpha: 1)
-    }
-    static var textSecondary: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.62, alpha: 1)
-            : NSColor(calibratedWhite: 0.28, alpha: 1) // was ~0.40 — low contrast on white
-    }
-    static var textTertiary: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 0.42, alpha: 1)
-            : NSColor(calibratedWhite: 0.38, alpha: 1) // was ~0.55 — captions vanished
-    }
-    static var textMono: NSColor { textSecondary }
+    // MARK: - Lines
 
-    // MARK: - Line work (white on black / black on light — never role color)
+    /// Control edges and graph edges (≥3:1).
+    static var line: NSColor { PongColor.control }
+    /// Dividers.
+    static var lineSoft: NSColor { PongColor.hairline }
+    static var lineStrong: NSColor { PongColor.textSecondary }
 
-    /// Structural hairlines, frames, graph edges, grid
-    static var line: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.55)
-            : NSColor(calibratedWhite: 0, alpha: 0.45)
-    }
-    static var lineSoft: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.22)
-            : NSColor(calibratedWhite: 0, alpha: 0.16)
-    }
-    static var lineStrong: NSColor {
-        appearance == .dark
-            ? NSColor(calibratedWhite: 1, alpha: 0.85)
-            : NSColor(calibratedWhite: 0, alpha: 0.75)
-    }
+    static var border: NSColor { PongColor.hairline }
+    static var borderStrong: NSColor { PongColor.control }
+    static var borderAccent: NSColor { PongColor.textSecondary }
 
-    static var border: NSColor { lineSoft }
-    static var borderStrong: NSColor { line }
-    static var borderAccent: NSColor { lineStrong }
+    // MARK: - Signals (old role names → one colour, one job)
 
-    // MARK: - Role accents (map redesign tokens)
-    // cyan orch · magenta agent · violet sub · amber human · lime setup
+    /// Was the orchestrator's blue: machines at work.
+    static var blue: NSColor { PongColor.live }
+    static var blueSoft: NSColor { PongColor.tintLive }
+    static var blueGlow: NSColor { PongColor.live.withAlphaComponent(0.35) }
+    static var cyanBright: NSColor { PongColor.live }
 
-    /// Conductor / orchestrator — design cyan `#35d6ff`
-    static let blue = NSColor(calibratedRed: 0.208, green: 0.839, blue: 1.0, alpha: 1)
-    static let blueSoft = NSColor(calibratedRed: 0.208, green: 0.839, blue: 1.0, alpha: 0.16)
-    static let blueGlow = NSColor(calibratedRed: 0.494, green: 0.902, blue: 1.0, alpha: 0.45)
-    static let cyanBright = NSColor(calibratedRed: 0.494, green: 0.902, blue: 1.0, alpha: 1)
+    /// Magenta belongs to the architect.
+    static var magenta: NSColor { PongColor.architect }
+    static var magentaSoft: NSColor { PongColor.tintArchitect }
 
-    /// Worker / agent — design magenta `#ff53c8`
-    static let magenta = NSColor(calibratedRed: 1.0, green: 0.325, blue: 0.784, alpha: 1)
-    static let magentaSoft = NSColor(calibratedRed: 1.0, green: 0.325, blue: 0.784, alpha: 0.16)
+    /// Violet is retired: sub-agents are neutral.
+    static var violet: NSColor { PongColor.textSecondary }
+    static var violetSoft: NSColor { PongColor.raised }
 
-    /// Sub-agent — design violet `#a98bff`
-    static let violet = NSColor(calibratedRed: 0.663, green: 0.545, blue: 1.0, alpha: 1)
-    static let violetSoft = NSColor(calibratedRed: 0.663, green: 0.545, blue: 1.0, alpha: 0.16)
+    /// Needs you, only.
+    static var amber: NSColor { PongColor.you }
+    static var amberSoft: NSColor { PongColor.tintYou }
+    static var amberInk: NSColor { PongColor.onInk }
+    static var orange: NSColor { amber }
+    static var orangeSoft: NSColor { amberSoft }
 
-    /// Human needed — design amber `#ffb43a`
-    static let amber = NSColor(calibratedRed: 1.0, green: 0.706, blue: 0.227, alpha: 1)
-    static let amberSoft = NSColor(calibratedRed: 1.0, green: 0.706, blue: 0.227, alpha: 0.16)
-    static let amberInk = NSColor(calibratedWhite: 0.05, alpha: 1)
-    static let orange = amber
-    static let orangeSoft = amberSoft
+    /// Was the lime primary action: the primary is ink ("Wallace white") now.
+    static var limeAction: NSColor { PongColor.ink }
 
-    /// Setup / primary actions — design lime `#c7f24d`
-    static let limeAction = NSColor(calibratedRed: 0.780, green: 0.949, blue: 0.302, alpha: 1)
+    static var mapGrid: NSColor { PongColor.mark }
+    static var mapNodeBody: NSColor { PongColor.base }
 
-    /// Map plane grid (neutral)
-    static let mapGrid = NSColor(calibratedRed: 0.165, green: 0.216, blue: 0.259, alpha: 1)
-    /// Solid body fill `#0a1016` (glass ~0.9 applied in unlitBody).
-    static let mapNodeBody = NSColor(calibratedRed: 0.039, green: 0.063, blue: 0.086, alpha: 1.0)
+    static var accent: NSColor { PongColor.textSecondary }
+    static var accentSoft: NSColor { PongColor.hairline }
+    static var accentGlow: NSColor { PongColor.live.withAlphaComponent(0.35) }
+    static let accentInk = PongColor.onInk
+    static var live: NSColor { PongColor.live }
+    static var liveSoft: NSColor { PongColor.tintLive }
+    static var warn: NSColor { PongColor.you }
+    static var warnSoft: NSColor { PongColor.tintYou }
+    static var danger: NSColor { PongColor.fail }
+    static var idle: NSColor { PongColor.textTertiary }
+    static var idleSoft: NSColor { PongColor.raised }
 
-    /// Generic UI chrome uses white line work — not blue/magenta
-    static var accent: NSColor { lineStrong }
-    static var accentSoft: NSColor { lineSoft }
-    static var accentGlow: NSColor { line.withAlphaComponent(0.4) }
-    static let accentInk = NSColor.black
-    static let live = blue          // orchestrator live signal only
-    static let liveSoft = blueSoft
-    static let warn = amber
-    static let warnSoft = amberSoft
-    static let danger = NSColor(calibratedRed: 0.90, green: 0.28, blue: 0.28, alpha: 1)
-    static let idle = NSColor(calibratedWhite: 0.45, alpha: 1)
-    static let idleSoft = NSColor(calibratedWhite: 0.45, alpha: 0.12)
-
-    static let tabSelected = NSColor(calibratedWhite: 1, alpha: 0.08)
+    static let tabSelected = PongColor.overlay
     static let tabIdle = NSColor.clear
 
-    // Clean geometry — slightly soft, not cyber-sharp
-    static let radiusCard: CGFloat = 6
-    static let radiusPill: CGFloat = 4
-    static let radiusBtn: CGFloat = 4
-    static let radiusRail: CGFloat = 6
+    static let radiusCard: CGFloat = PongRadius.card
+    static let radiusPill: CGFloat = PongRadius.control
+    static let radiusBtn: CGFloat = PongRadius.control
+    static let radiusRail: CGFloat = PongRadius.control
     static let hairline: CGFloat = 1
 
-    /// Style NSPopUpButton to match CyberPong chrome (not default aqua textured).
-    /// Light mode: dark text on light fill (never white-on-white).
+    /// A pop-up button in our colours (never the Mac's accent).
     static func stylePopUp(_ pop: NSPopUpButton) {
         pop.bezelStyle = .rounded
         pop.isBordered = true
         pop.wantsLayer = true
-        pop.layer?.cornerRadius = radiusPill
-        pop.layer?.backgroundColor = bgElevated.cgColor
+        pop.layer?.cornerRadius = PongRadius.control
+        pop.layer?.backgroundColor = PongColor.secondaryFill.cgColor
         pop.layer?.borderWidth = hairline
-        pop.layer?.borderColor = border.cgColor
-        pop.font = labelFont(11)
+        pop.layer?.borderColor = PongColor.control.cgColor
+        pop.font = PongType.control
         pop.contentTintColor = textPrimary
-        // Follow app appearance so system doesn't force white labels on light chrome
-        pop.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
+        pop.appearance = NSAppearance(named: .darkAqua)
         if let cell = pop.cell as? NSPopUpButtonCell {
             cell.arrowPosition = .arrowAtBottom
-            // .emphasized often forces light labels — use normal in light mode
-            cell.backgroundStyle = appearance == .dark ? .emphasized : .normal
+            cell.backgroundStyle = .emphasized
         }
         stylePopUpItemTitles(pop)
     }
 
-    /// Attributed titles for every menu item + selected title (readable in light).
     static func stylePopUpItemTitles(_ pop: NSPopUpButton) {
         let attrs: [NSAttributedString.Key: Any] = [
             .foregroundColor: textPrimary,
-            .font: labelFont(11),
+            .font: PongType.control,
         ]
         for item in pop.itemArray {
             let t = item.title
@@ -234,19 +174,18 @@ enum PongTheme {
         }
     }
 
-    /// Compact top-nav tab button (Map / Mission / Setup).
+    /// A segment of a segmented control: `bg.overlay` and Semibold when selected.
     static func styleTopTab(_ b: NSButton, selected: Bool) {
         b.bezelStyle = .inline
         b.isBordered = false
         b.wantsLayer = true
-        b.layer?.cornerRadius = radiusPill
-        b.layer?.backgroundColor = (selected ? lime.withAlphaComponent(0.22) : NSColor.clear).cgColor
-        b.layer?.borderWidth = selected ? hairline : 0
-        b.layer?.borderColor = selected ? lime.withAlphaComponent(0.55).cgColor : nil
+        b.layer?.cornerRadius = PongRadius.control
+        b.layer?.backgroundColor = (selected ? PongColor.overlay : NSColor.clear).cgColor
+        b.layer?.borderWidth = 0
         let title = b.attributedTitle.string.isEmpty ? b.title : b.attributedTitle.string
         b.attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: selected ? textPrimary : textSecondary,
-            .font: font(11, weight: selected ? .semibold : .medium),
+            .font: font(13, weight: selected ? .semibold : .medium),
         ])
     }
 
@@ -256,7 +195,7 @@ enum PongTheme {
         case humanNeeded
     }
 
-    // MARK: - Fonts (Space Grotesk + IBM Plex Mono — design must-haves)
+    // MARK: - Fonts (SF for the UI, IBM Plex Mono for data and terminals)
 
     private static var fontsRegistered = false
 
@@ -264,11 +203,7 @@ enum PongTheme {
     static func registerBundledFonts() {
         guard !fontsRegistered else { return }
         fontsRegistered = true
-        let names = [
-            "SpaceGrotesk-Variable", "SpaceGrotesk-Regular", "SpaceGrotesk-Medium",
-            "SpaceGrotesk-SemiBold", "SpaceGrotesk-Bold",
-            "IBMPlexMono-Regular", "IBMPlexMono-Medium", "IBMPlexMono-SemiBold", "IBMPlexMono-Bold",
-        ]
+        let names = ["IBMPlexMono-Regular", "IBMPlexMono-Medium", "IBMPlexMono-SemiBold", "IBMPlexMono-Bold"]
         for name in names {
             guard let url = Bundle.main.url(forResource: name, withExtension: "ttf", subdirectory: "fonts")
                     ?? Bundle.main.url(forResource: name, withExtension: "ttf") else { continue }
@@ -283,19 +218,15 @@ enum PongTheme {
         return "Regular"
     }
 
-    /// Display / UI — Space Grotesk (falls back to system).
+    /// UI text: the system font, never under 11 pt.
     static func font(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        registerBundledFonts()
-        let w = weightName(weight)
-        for name in ["SpaceGrotesk-\(w)", "Space Grotesk \(w)", "SpaceGrotesk", "Space Grotesk"] {
-            if let f = NSFont(name: name, size: size) { return f }
-        }
-        return .systemFont(ofSize: size, weight: weight)
+        PongType.sf(size, weight)
     }
 
-    /// Data / HUD / faces — IBM Plex Mono.
+    /// Data, paths and terminals: IBM Plex Mono, never under 11 pt.
     static func mono(_ size: CGFloat, weight: NSFont.Weight = .medium) -> NSFont {
         registerBundledFonts()
+        let size = max(PongType.floor, size)
         let w = weightName(weight)
         for name in ["IBMPlexMono-\(w)", "IBM Plex Mono \(w)", "IBMPlexMono-Regular", "IBM Plex Mono"] {
             if let f = NSFont(name: name, size: size) { return f }
@@ -325,12 +256,13 @@ enum PongTheme {
 
     // MARK: - Apply
 
+    /// Cards are borderless raised fills (radius 10); `accentBorder` keeps a control edge.
     static func applyCard(_ v: NSView, elevated: Bool = true, accentBorder: Bool = false) {
         v.wantsLayer = true
-        v.layer?.backgroundColor = (elevated ? bgElevated : bgInput).cgColor
-        v.layer?.cornerRadius = radiusCard
-        v.layer?.borderWidth = hairline
-        v.layer?.borderColor = (accentBorder ? borderAccent : border).cgColor
+        v.layer?.backgroundColor = (elevated ? PongColor.raised : PongColor.field).cgColor
+        v.layer?.cornerRadius = PongRadius.card
+        v.layer?.borderWidth = accentBorder ? hairline : 0
+        v.layer?.borderColor = accentBorder ? PongColor.control.cgColor : nil
         v.layer?.masksToBounds = true
     }
 
@@ -338,17 +270,17 @@ enum PongTheme {
         applyCard(v, elevated: true)
     }
 
-    /// Floating HUD panel (Lattice tracking list)
+    /// Level 2: popovers, toasts, overlays. Overlay fill, soft shadow, a 1 pt top edge.
     static func applyFloating(_ v: NSView) {
         v.wantsLayer = true
-        v.layer?.backgroundColor = bgElevated.cgColor
-        v.layer?.cornerRadius = radiusCard
+        v.layer?.backgroundColor = PongColor.overlay.cgColor
+        v.layer?.cornerRadius = PongRadius.card
         v.layer?.borderWidth = hairline
-        v.layer?.borderColor = border.cgColor
+        v.layer?.borderColor = PongColor.hairline.cgColor
         v.layer?.shadowColor = NSColor.black.cgColor
-        v.layer?.shadowOpacity = appearance == .dark ? 0.55 : 0.10
-        v.layer?.shadowRadius = 20
-        v.layer?.shadowOffset = CGSize(width: 0, height: -2)
+        v.layer?.shadowOpacity = 0.5
+        v.layer?.shadowRadius = 12
+        v.layer?.shadowOffset = CGSize(width: 0, height: -8)
     }
 
     static func drawCornerBrackets(in rect: NSRect, color: NSColor, arm: CGFloat = 12, line: CGFloat = 1) {
@@ -527,9 +459,7 @@ enum PongTheme {
     /// Loads the glow **PNG only** (never SVG). Does **not** re-draw/re-export the asset —
     /// only sets the layout size; NSImageView scales the original 3048×720 bitmap.
     static func wordmarkImage(height: CGFloat = 38) -> NSImage {
-        let name = appearance == .dark
-            ? "cyberpong-wordmark-dark"
-            : "cyberpong-wordmark-light"
+        let name = "cyberpong-wordmark-dark"
         if let img = loadWordmarkPNG(named: name) {
             // Keep original bitmap representations (glow intact). Point size is for layout only.
             let aspect = img.size.width / max(img.size.height, 1)

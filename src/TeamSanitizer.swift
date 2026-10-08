@@ -64,7 +64,9 @@ enum TeamSanitizer {
             }
             let removed = ws.remove(at: idx)
             if let ti = removed["tmux_index"] as? Int {
-                let view = "\(pair)-w\(ti - 1)"
+                // Kill the seat's own wrapper, named for the seat id. Deriving
+                // it from the window index removed the *previous* seat's view.
+                let view = TerminalTheme.viewToken(pair: pair, role: workerId)
                 Pong.sh("tmux kill-session -t \(view) 2>/dev/null || true")
                 Pong.sh("tmux kill-window -t \(pair):\(ti) 2>/dev/null || true")
             }

@@ -16,10 +16,22 @@ enum SessionArchive {
         var createdAt: TimeInterval
         var updatedAt: TimeInterval
         var recapPath: String
+
+        /// Picker / list label: always surface team name when title is custom.
+        var rowLabel: String {
+            let team = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if team.isEmpty { return title }
+            if title.range(of: team, options: .caseInsensitive) != nil {
+                return title
+            }
+            return "\(title) · \(team)"
+        }
     }
 
     /// Prefer installed control plane (`~/bin/pong` → `~/.pong/lib`), then app-bundle Resources.
-    private static func pongPrefix() -> String {
+    /// Shared with ReviewBarSetup: the app must be able to reach the control
+    /// plane from its own bundle when ~/bin/pong is not installed.
+    static func pongPrefix() -> String {
         let home = NSHomeDirectory()
         // App bundle path (CyberPong.app Resources/python) if present
         let bundlePy: String = {
@@ -70,8 +82,22 @@ enum SessionArchive {
         return obj
     }
 
-    static func loadAll() -> [Entry] {
-        runJSON("continuity list --json").compactMap { row in
+    /// Load continuity archives. Optional team scope (OR when both set):
+    /// - `displayName` → CLI `--team` (case-insensitive on meta.display_name)
+    /// - `sourceSession` → CLI `-s` (exact meta.source_session)
+    /// Rename edge: prefer both from live context so session id still matches after display rename.
+    static func loadAll(displayName: String? = nil, sourceSession: String? = nil) -> [Entry] {
+        var parts: [String] = []
+        let sess = (sourceSession ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sess.isEmpty {
+            parts.append("-s \(shellQuote(sess))")
+        }
+        parts.append("continuity list --json")
+        let team = (displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !team.isEmpty {
+            parts.append("--team \(shellQuote(team))")
+        }
+        return runJSON(parts.joined(separator: " ")).compactMap { row in
             guard let id = row["id"] as? String, !id.isEmpty else { return nil }
             return Entry(
                 id: id,
@@ -270,7 +296,7 @@ enum SessionContinuity {
             parts.append("export PONG_ROLE=conductor")
             parts.append("export HERMES_PONG_ROLE=orchestra")
         }
-        if !token.isEmpty { parts.append("export PONG_TOKEN=\(token)") }
+        if !token.isEmpty { parts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(session)/token' 2>/dev/null)\"") }
         parts.append("printf \"\\n  \(banner)\\n\\n\"")
         parts.append("exec \(safeCmd)")
         let shellLine = TerminalTheme.joinShell(parts)
@@ -302,41 +328,30 @@ enum SessionContinuityUI {
     static func confirmSaveSession(session: String, displayName: String, onDone: (() -> Void)? = nil) {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
-        a.messageText = "Save session (compress)?"
-        a.informativeText =
-            "Smart-compress control-plane state for “\(displayName)” into a **Saved session** (continuity package).\n\n" +
-            "Includes: date, goals, decisions & rationale, done, open/next.\n" +
-            "Does **not** kill Terminals or the live pair.\n\n" +
-            "Session: \(session)\n" +
-            "This is different from **Save team** (roster template only)."
+        a.messageText = "Save a recap of “\(displayName)”?"
+        a.informativeText = "A recap keeps the goals, decisions, what is done and what is next, so the team can pick up later. Nothing stops."
         a.alertStyle = .informational
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
         let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
         field.stringValue = "\(displayName) · \(stamp)"
-        field.placeholderString = "Archive title"
+        field.placeholderString = "Recap title"
         a.accessoryView = field
-        a.addButton(withTitle: "Save session")
+        a.addButton(withTitle: "Save recap")
         a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = field
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Compressing session…")
+        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Writing the recap…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = SessionArchive.saveFromLive(session: session, title: title.isEmpty ? nil : title)
             DispatchQueue.main.async {
+                // Always clear spinner (success or failure)
                 PongLoadingOverlay.hide()
-                let done = NSAlert()
                 if result.ok {
-                    done.messageText = "Session saved"
-                    done.informativeText =
-                        "Archive id: \(result.id)\n\n" +
-                        "Open later via **Saved sessions…** or **Start with continuity…** when spawning a team."
+                    Toast.show("Recap saved.")
                 } else {
-                    done.messageText = "Save failed"
-                    done.informativeText = result.message
+                    Toast.show("The recap wasn't saved. " + String(result.message.prefix(120)), warn: true)
                 }
-                done.addButton(withTitle: "OK")
-                done.runModal()
                 onDone?()
             }
         }
@@ -346,30 +361,20 @@ enum SessionContinuityUI {
     static func confirmNewSessionWithRecap(session: String, displayName: String, onDone: (() -> Void)? = nil) {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
-        a.messageText = "New session + recap?"
-        a.informativeText =
-            "This will:\n" +
-            "1. Smart-compress the current story into a **Saved session**\n" +
-            "2. Restart agent TUIs **in the same pair** `\(session)` (fresh context)\n" +
-            "3. Re-prime conductor + workers with the continuity recap\n\n" +
-            "Mission roles, architecture edges, and pair id stay the same.\n" +
-            "This is **not** Kill team — Terminal windows stay; model context is reset.\n\n" +
-            "Team: \(displayName)"
+        a.messageText = "Give “\(displayName)” a fresh start?"
+        a.informativeText = "Its AIs restart with an empty memory and read a recap of the work so far. Their terminals stay open."
         a.alertStyle = .warning
-        a.addButton(withTitle: "New session + recap")
+        a.addButton(withTitle: "Fresh start")
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
-        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Compressing & re-priming…")
+        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Writing the recap and restarting…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = SessionContinuity.newSessionWithRecap(session: session)
             DispatchQueue.main.async {
                 PongLoadingOverlay.hide()
-                let done = NSAlert()
-                done.messageText = result.ok ? "Session reset with recap" : "Reset incomplete"
-                done.informativeText = result.message
-                done.addButton(withTitle: "OK")
-                done.runModal()
+                Toast.show(result.ok ? "Fresh start done: the team read its recap." : "The fresh start didn't finish. " + String(result.message.prefix(120)),
+                           warn: !result.ok)
                 PanelController.shared.refreshUI()
                 onDone?()
             }
@@ -377,38 +382,50 @@ enum SessionContinuityUI {
     }
 
     /// Pick an archive (nil = cancel, empty string = no continuity).
-    static func pickArchive(allowNone: Bool, message: String) -> String? {
+    /// When `displayName` and/or `sourceSession` are set, only that team's archives appear
+    /// (OR match — see `SessionArchive.loadAll` / CLI `archive_matches_team`).
+    static func pickArchive(
+        allowNone: Bool,
+        message: String,
+        displayName: String? = nil,
+        sourceSession: String? = nil
+    ) -> String? {
         NSApp.activate(ignoringOtherApps: true)
-        let archives = SessionArchive.loadAll()
+        let teamHint = (displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessHint = (sourceSession ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let scoped = !teamHint.isEmpty || !sessHint.isEmpty
+        let archives = SessionArchive.loadAll(
+            displayName: teamHint.isEmpty ? nil : teamHint,
+            sourceSession: sessHint.isEmpty ? nil : sessHint
+        )
         if archives.isEmpty {
+            let teamLabel = !teamHint.isEmpty ? teamHint : (!sessHint.isEmpty ? sessHint : "this team")
             if allowNone {
                 let a = NSAlert()
-                a.messageText = "No saved sessions"
-                a.informativeText =
-                    "Saved sessions store continuity (story). Save one from a live team: conductor options → **Save session (compress)**.\n\n" +
-                    "Saved teams (roster templates) are separate under Show Teams."
+                a.messageText = scoped ? "No recaps for \(teamLabel) yet" : "No recaps yet"
+                a.informativeText = "Save one from a running team: its lead's menu › Save recap."
                 a.addButton(withTitle: "Continue without")
                 a.addButton(withTitle: "Cancel")
                 return a.runModal() == .alertFirstButtonReturn ? "" : nil
             }
             let a = NSAlert()
-            a.messageText = "No saved sessions"
-            a.informativeText = "Compress a live team first (Save session next to Kill)."
+            a.messageText = scoped ? "No recaps for \(teamLabel) yet" : "No recaps yet"
+            a.informativeText = "Save one from a running team: its lead's menu › Save recap."
             a.addButton(withTitle: "OK")
             a.runModal()
             return nil
         }
         let a = NSAlert()
         a.messageText = message
-        a.informativeText =
-            "Saved sessions = compressed story (goals, decisions, next).\n" +
-            "Not the same as Saved teams (who sits where)."
+        a.informativeText = scoped
+            ? "Recaps of “\(!teamHint.isEmpty ? teamHint : sessHint)”: the goals, decisions and what is next."
+            : "A recap holds a team's goals, decisions and what is next."
         if allowNone {
-            a.addButton(withTitle: "No continuity")
+            a.addButton(withTitle: "Start fresh")
         }
         for e in archives.prefix(12) {
             let src = e.sourceSession.isEmpty ? "" : " · \(e.sourceSession)"
-            a.addButton(withTitle: "\(e.title)\(src)")
+            a.addButton(withTitle: "\(e.rowLabel)\(src)")
         }
         a.addButton(withTitle: "Cancel")
         let resp = a.runModal()
@@ -586,13 +603,15 @@ final class SessionsManagerPanel: NSObject {
             row.layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor
             row.layer?.cornerRadius = 8
 
-            let name = NSTextField(labelWithString: e.title)
+            let name = NSTextField(labelWithString: e.rowLabel)
             name.font = .boldSystemFont(ofSize: 12)
             name.textColor = NSColor(calibratedWhite: 0.95, alpha: 1)
             name.frame = NSRect(x: 10, y: 34, width: width - 200, height: 18)
             row.addSubview(name)
 
-            let sub = NSTextField(labelWithString: "from \(e.sourceSession.isEmpty ? "?" : e.sourceSession) · \(e.id)")
+            let teamBit = e.displayName.isEmpty ? "?" : e.displayName
+            let fromBit = e.sourceSession.isEmpty ? "?" : e.sourceSession
+            let sub = NSTextField(labelWithString: "team \(teamBit) · from \(fromBit) · \(e.id)")
             sub.font = .systemFont(ofSize: 10)
             sub.textColor = NSColor(calibratedWhite: 0.55, alpha: 1)
             sub.frame = NSRect(x: 10, y: 14, width: width - 200, height: 14)

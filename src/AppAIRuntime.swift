@@ -66,21 +66,15 @@ enum AppAIRuntime {
         return env
     }
 
-    /// Absolute path for a bare command name, or nil if missing.
+    /// Absolute path for a bare command name, or nil if missing: the folders of `Pong.extraPath`
+    /// (the engine's own list, nvm and the other Node managers included), then the shell's PATH.
     static func resolveBinary(_ name: String) -> String? {
         if name.hasPrefix("/") {
             return FileManager.default.isExecutableFile(atPath: name) ? name : nil
         }
-        let home = NSHomeDirectory()
-        let candidates = [
-            "\(home)/.grok/bin/\(name)",
-            "\(home)/.local/bin/\(name)",
-            "/opt/homebrew/bin/\(name)",
-            "/usr/local/bin/\(name)",
-            "\(home)/bin/\(name)",
-        ]
-        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
-            return c
+        for dir in Pong.extraPath.split(separator: ":") {
+            let c = "\(dir)/\(name)"
+            if FileManager.default.isExecutableFile(atPath: c) { return c }
         }
         let found = Pong.sh("command -v \(name.replacingOccurrences(of: "'", with: "")) 2>/dev/null")
         if !found.isEmpty, FileManager.default.isExecutableFile(atPath: found) {
@@ -135,10 +129,28 @@ enum AppAIRuntime {
 
     // MARK: - Login Terminal
 
+    /// The Guide's AI while none is saved: the one Settings › AI accounts › The Guide shows
+    /// (`SettingsWindow.guideDefault`: on and signed in, Claude first; else Grok). Read on the main
+    /// thread, where the setup model's doctor report is written.
+    static var defaultProvider: AppAISettings.Provider {
+        let pick = { SettingsWindow.guideDefault(SetupModel.shared.doctor) }
+        return Thread.isMainThread ? pick() : DispatchQueue.main.sync(execute: pick)
+    }
+
     /// Open provider CLI in a dedicated Terminal window for login / model pick.
     @discardableResult
     static func openLoginTerminal(provider: AppAISettings.Provider? = nil) -> String? {
-        let p = provider ?? AppAISettings.provider ?? .named("grok")
+        let p: AppAISettings.Provider
+        if let provider {
+            p = provider
+        } else if let saved = AppAISettings.provider {
+            p = saved
+        } else {
+            // none saved yet: sign in the AI Settings shows for the Guide, and keep it (as Settings'
+            // Connect… does), so the check after the sign-in and the Guide's chats run that same AI
+            p = defaultProvider
+            AppAISettings.setProvider(p)
+        }
         closeLoginTerminal()
 
         let dir = NSTemporaryDirectory() + "pong-app-ai/"
@@ -237,7 +249,7 @@ enum AppAIRuntime {
             closeLoginTerminal()
             let probe = probeHeadless()
             DispatchQueue.main.async {
-                let pid = AppAISettings.providerId ?? "grok"
+                let pid = AppAISettings.providerId ?? defaultProvider.id
                 if probe.ok {
                     markHeadlessReady(true)
                     ProviderAuth.markReady(typeId: pid, ready: true)
@@ -447,7 +459,7 @@ enum AppAIRuntime {
             return "New team: New team in the toolbar, or re-run **Guide**.\nDefault road: orch ↔ coder (+ reviewer optional), claims back to orch."
         }
         if m.contains("sub") || m.contains("hermes") || m.contains("dead") {
-            return "Map cubes only mean the seat is in the roster. Live work needs a **tmux pane + Terminal**.\nAdd seats with **+** on the map (not Guide JSON edits). Ghost Hermes seats: remove them, re-add via +."
+            return "Cubes on the Team page only mean the seat is in the roster. Live work needs a **tmux pane + Terminal**.\nAdd seats with **+** on the Team page (not Guide JSON edits). Ghost Hermes seats: remove them, re-add via +."
         }
         return "I’m CyberPong Guide. Ask about roles, claims, architecture edges, or first-team setup.\nShort tips: stay on the architecture road · jobs are truth · `pong gate` when unsure."
     }

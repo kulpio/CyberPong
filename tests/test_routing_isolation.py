@@ -170,6 +170,59 @@ class RoutingIsolationTests(unittest.TestCase):
             or "pane" in r.detail.lower()
         )
 
+    # --- (c2) a temporary home types into no live pane, even one that looks like its own ---
+    def test_c2_tmux_paste_and_the_index_fallback_type_nothing_from_a_temporary_home(self) -> None:
+        from pong import flow
+        from pong.transports import tmux_paste
+
+        # a live team "pong-team-a-11" whose pane %3 a sandbox "pong-team-a" registered: the session
+        # check lets a view session through, so only the home guard stops the paste
+        live = {"pane_id": "%3", "start_command": "claude", "title": "", "session_name": self.team_a + "-11",
+                "window_index": "1", "window_name": "w1"}
+        typed: list[list[str]] = []
+        job = {"session": self.team_a, "_prompt": "do not type me", "id": "job_test"}
+        worker = {"id": "w1", "type": "claude", "pane_id": "%3", "tmux_index": 1}
+        with mock.patch.object(tmux_paste, "_pane_info", return_value=live), \
+                mock.patch.object(tmux_paste, "_run", side_effect=lambda cmd, input_text=None: typed.append(cmd) or (True, "")), \
+                mock.patch("subprocess.run", side_effect=AssertionError("tmux was run from a temporary home")):
+            r = tmux_paste.send(job, worker, {"session": self.team_a})
+            self.assertFalse(r.ok)
+            self.assertIn("temporary CyberPong home", r.detail)
+            self.assertEqual(typed, [], "nothing typed, no status line shown")
+            self.assertFalse(flow._paste_by_index(self.team_a, worker, "do not type me"))
+
+    # --- (c3) every tmux call runs the tmux the engine found (Homebrew's, off the shell's PATH) ---
+    def test_c3_tmux_calls_run_the_tmux_that_was_found(self) -> None:
+        from pong import flow, groups, pane_activity, routing, state
+        from pong.transports import tmux_paste
+
+        fake = Path(self.tmp.name) / "brew" / "tmux"
+        fake.parent.mkdir()
+        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.chmod(0o755)
+        ran: list[str] = []
+
+        def run(argv, *a, **k):
+            ran.append(argv[0])
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        saved = groups._TMUX_BIN
+        groups._TMUX_BIN = str(fake)
+        os.environ["TMUX"] = "/tmp/hg1/default,1,0"
+        try:
+            with mock.patch("subprocess.run", side_effect=run), \
+                    mock.patch.object(groups, "isolated_home", return_value=False):
+                tmux_paste._run(["tmux", "display-message", "-p", "x"])
+                pane_activity._tmux("has-session", "-t", "x")
+                routing._tmux_current_session()
+                state._tmux_current_session()
+                self.assertTrue(flow._paste_by_index("x", {"id": "w1", "tmux_index": 1}, "hello"))
+        finally:
+            groups._TMUX_BIN = saved
+            os.environ.pop("TMUX", None)
+        self.assertEqual(len(ran), 7)
+        self.assertEqual(set(ran), {str(fake)})
+
     # --- (d) window_paste while non-Terminal frontmost ---
     def test_d_window_paste_verify_after_focus(self) -> None:
         from pong.transports import window_paste
@@ -177,8 +230,9 @@ class RoutingIsolationTests(unittest.TestCase):
         job = {"session": self.team_a, "_prompt": "do not type me", "id": "j"}
         worker = {"id": "w1", "window_id": "99999"}
 
-        # Simulate focus "success" but frontmost is Safari (not Terminal / wrong id)
-        with mock.patch.object(
+        # Simulate focus "success" but frontmost is Safari (not Terminal / wrong id); the
+        # home guard is off here so the verify step itself is what refuses
+        with mock.patch.object(window_paste, "_isolated_home", return_value=False), mock.patch.object(
             window_paste, "_osascript", side_effect=self._fake_osascript_focus_ok
         ), mock.patch.object(
             window_paste,
@@ -205,6 +259,27 @@ class RoutingIsolationTests(unittest.TestCase):
             return True, "KEYSTROKE_SHOULD_NOT_RUN"
         return True, ""
 
+    # --- (d3) a temporary home focuses, copies and types into no Terminal window ---
+    def test_d3_window_paste_types_nothing_from_a_temporary_home(self) -> None:
+        from pong.transports import dispatch, window_paste
+
+        job = {"session": self.team_a, "_prompt": "do not type me", "id": "j"}
+        worker = {"id": "w1", "window_id": "4242", "mode": "window"}
+        boom = AssertionError("a Terminal window was touched from a temporary home")
+        with mock.patch.object(window_paste, "_osascript", side_effect=boom), \
+                mock.patch.object(window_paste, "_write_clipboard", side_effect=boom), \
+                mock.patch.object(window_paste, "_read_clipboard", side_effect=boom):
+            r = window_paste.send(job, worker, {"session": self.team_a})
+            self.assertFalse(r.ok)
+            self.assertIn("temporary CyberPong home", r.detail)
+            with mock.patch.object(window_paste, "send", side_effect=boom), \
+                    mock.patch.object(dispatch, "save_job"), \
+                    mock.patch.object(dispatch.traces, "transport_result"):
+                out = dispatch.dispatch_job(dict(job, worker="w1"), worker, {"session": self.team_a},
+                                            plan=["window_paste"], force_paste=True)
+        self.assertEqual([(x.name, x.ok) for x in out], [("window_paste", False)])
+        self.assertIn("temporary CyberPong home", out[0].detail)
+
     def test_d2_window_paste_no_global_fallback(self) -> None:
         from pong.transports import window_paste
 
@@ -226,7 +301,7 @@ class RoutingIsolationTests(unittest.TestCase):
         self.assertEqual(b, f"pong.{self.team_b}.w1")
         self.assertNotEqual(a, b)
         # Fuzzy titles that used to collide must not equal either token
-        fuzzy = "dylandemnard — ✳ Claude Code — /Users/dylandemnard"
+        fuzzy = "sam — ✳ Claude Code — /Users/sam"
         self.assertNotEqual(fuzzy, a)
         self.assertNotIn(a, fuzzy)
         self.assertNotIn(b, fuzzy)

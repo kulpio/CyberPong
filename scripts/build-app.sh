@@ -13,7 +13,7 @@ APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VERSION="1.4.3"
+VERSION="2.0.0"
 
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1
@@ -28,7 +28,7 @@ cd "$ROOT"
 # Compile all Swift sources in src/ (panel split out for maintainability)
 SWIFT_SRCS=(src/*.swift)
 # --dev enables #if DEBUG (local checkout paths). Release builds omit -DDEBUG so
-# Personal/Projects/HermesPong never lands in the Mach-O.
+# the checkout's own folder never lands in the Mach-O.
 SWIFT_FLAGS=(-O)
 if [[ "$DEV" == "1" ]]; then
   SWIFT_FLAGS+=(-DDEBUG)
@@ -98,20 +98,68 @@ if [[ -d "$ROOT/python/pong" ]]; then
     exit 2
   fi
   echo "→ Bundled python/pong into Resources (source only, no bytecode)"
+  for need in review_init.py review_bar.py ticker.py groups.py; do
+    if [[ ! -f "$RES/python/pong/$need" ]]; then
+      echo "error: bundle missing $need" >&2
+      exit 2
+    fi
+  done
+  # Which build this engine is: at launch the app re-seeds ~/.pong/lib/pong when the copy
+  # there came from another build of the same version (and never over a newer engine).
+  PY_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$RES/python/pong/__init__.py" | head -1)"
+  printf "version=%s\nbuilt_at=%s\n" "$PY_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RES/python/pong/BUILD_STAMP"
+  # The graph kit next to the engine (dry runs, the limit guard, Perplexity research, the
+  # watcher): the app copies it to ~/.pong/lib/graph-kit.
+  rm -rf "$RES/graph-kit"
+  mkdir -p "$RES/graph-kit"
+  for kit in dryrun.py limit-guard.py pplx.py watch.py; do
+    if [[ -f "$ROOT/scripts/graph-kit/$kit" ]]; then
+      cp "$ROOT/scripts/graph-kit/$kit" "$RES/graph-kit/$kit"
+      chmod 755 "$RES/graph-kit/$kit"
+    else
+      echo "error: graph kit missing $kit" >&2
+      exit 2
+    fi
+  done
+  echo "→ Bundled graph-kit into Resources/graph-kit"
   # Also refresh ~/.pong/lib so live `pong` CLI matches this build (app Save session uses it).
   if [[ -f "$ROOT/scripts/install-control-plane.sh" ]]; then
     bash "$ROOT/scripts/install-control-plane.sh" || echo "  (warn: control-plane install failed — app still built)"
   fi
 fi
+# The island ships INSIDE this app.
+#
+# It stays its own process — it is an accessory app that owns a borderless panel
+# pinned to the notch, and folding that into the map process would mean one
+# window server client doing two unrelated jobs. But it is not a second thing to
+# find and launch: it lives in Contents/Helpers, CyberPong starts it, and there
+# is one icon in the Dock.
+if [[ -x "$ROOT/island/build.sh" ]]; then
+  echo "→ Building the island helper …"
+  bash "$ROOT/island/build.sh" >/dev/null
+  if [[ -d "$ROOT/dist/PongIsland.app" ]]; then
+    mkdir -p "$CONTENTS/Helpers"
+    rm -rf "$CONTENTS/Helpers/PongIsland.app"
+    cp -R "$ROOT/dist/PongIsland.app" "$CONTENTS/Helpers/PongIsland.app"
+    echo "  bundled Helpers/PongIsland.app"
+  else
+    echo "error: island build produced no app" >&2
+    exit 2
+  fi
+fi
+
 # Abstract tactical module textures (Imagine — conductor / worker / canvas void)
 cp "$ROOT/resources/tex-conductor.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/tex-worker.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/tex-canvas.png" "$RES/" 2>/dev/null || true
-# Design fonts (Space Grotesk + IBM Plex Mono)
+# Design fonts: IBM Plex Mono for data and terminals (the UI uses the system's SF Pro), with its licence
 if [[ -d "$ROOT/resources/fonts" ]]; then
   mkdir -p "$RES/fonts"
   cp "$ROOT/resources/fonts/"*.ttf "$RES/fonts/" 2>/dev/null || true
+  cp "$ROOT/resources/fonts/"*.txt "$RES/fonts/" 2>/dev/null || true
 fi
+# The About panel's credits (fonts and their licences)
+cp "$ROOT/resources/Credits.rtf" "$RES/" 2>/dev/null || true
 # Team install wizard templates (SOUL / SKILL / TEAM / POLICY)
 if [[ -d "$ROOT/share/team-scaffold" ]]; then
   mkdir -p "$RES/team-scaffold"
@@ -119,12 +167,18 @@ if [[ -d "$ROOT/share/team-scaffold" ]]; then
 fi
 # Bridge CLIs bundled so the app works without relying only on ~/bin.
 # (Stdlib-only Python — used by the Hermes side and the window relay.)
-for f in claude-delegate.py pong-delegate.py claude-window-relay.py pong-ledger.py hermes_pong.py; do
+for f in claude-delegate.py pong-delegate.py claude-window-relay.py pong-ledger.py hermes_pong.py pong-pbcopy; do
   if [[ -f "$ROOT/scripts/$f" ]]; then
     cp "$ROOT/scripts/$f" "$RES/$f"
     chmod 755 "$RES/$f"
   fi
 done
+# Also keep ~/bin UTF-8 clipboard helper in sync (tmux copy-pipe)
+if [[ -f "$ROOT/scripts/pong-pbcopy" ]]; then
+  mkdir -p "$HOME/bin"
+  cp "$ROOT/scripts/pong-pbcopy" "$HOME/bin/pong-pbcopy"
+  chmod 755 "$HOME/bin/pong-pbcopy"
+fi
 # project_root embeds an absolute local path — dev builds only.
 if [[ "$DEV" == "1" ]]; then
   echo "$ROOT" > "$RES/project_root"
@@ -167,15 +221,17 @@ echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
 # Ad-hoc sign for local open (executable name MUST match CFBundleExecutable).
 # Fail the build if signing fails — unsigned/mismatched bundles show as "damaged".
+# --deep reaches the island in Contents/Helpers; ad hoc is fine on this Mac only.
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
-echo "hint: ad-hoc signed (dev). Release builds: bash scripts/sign-notarize.sh"
+echo "hint: ad-hoc signed (this Mac only). Release builds: bash scripts/sign-notarize.sh"
+echo "      (signs the island helper, then the app, with Developer ID; notarizes; makes the zip)"
 
-# Release bundles must not leak the local user path.
+# Release bundles must not leak the local user path (the home folder this was built in).
 if [[ "$DEV" != "1" ]]; then
-  if grep -r "dylandemnard" "$APP" >/dev/null 2>&1; then
+  if grep -rF -- "$HOME" "$APP" >/dev/null 2>&1; then
     echo "FAIL: release bundle contains local user path strings:" >&2
-    grep -rl "dylandemnard" "$APP" >&2
+    grep -rlF -- "$HOME" "$APP" >&2
     exit 1
   fi
 fi

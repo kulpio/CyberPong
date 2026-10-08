@@ -1,0 +1,105 @@
+{
+  "name": "tournament-evolve",
+  "notes": "K candidates → rank → evolve → meta-review (T5, co-scientist-lite). For open-ended design. Candidates are new files, never edits of a parent; the meta-review appends lessons to the shared notes and never rewrites them. The ranker claims route:plateau when the best has not improved for two rounds.",
+  "start": "gen",
+  "max_rounds": 4,
+  "boundaries": {
+    "max_wall_min": 240,
+    "max_jobs": 40
+  },
+  "nodes": [
+    {
+      "id": "gen",
+      "role": "researcher",
+      "count": 4,
+      "pins": [
+        "claude",
+        "grok",
+        "claude",
+        "grok"
+      ],
+      "task": "{goal}\n\nPropose ONE new candidate (you are {copy}). Read the lessons in the shared notes first and do not repeat anything already listed there. Write it to candidates/round-{round}-gen-{copy}.md."
+    },
+    {
+      "id": "pool",
+      "role": "join",
+      "wait": "all"
+    },
+    {
+      "id": "rank",
+      "role": "researcher",
+      "task": "Rank every candidate in {prev_artifacts} against the goal, comparing similar ones first and swapping the order of each pair. Write the ranking with reasons to candidates/ranking-round-{round}.md. Claim `route:plateau` if the best has not improved on the last round's best, otherwise claim done.\n\nGoal: {goal}",
+      "fresh": true,
+      "sees": [
+        "artifacts",
+        "notes"
+      ]
+    },
+    {
+      "id": "evolve",
+      "role": "builder",
+      "count": 2,
+      "task": "From the top of the latest ranking (in {prev_artifacts}), make ONE new candidate: combine two, simplify one, or fix the weakest point of the best. Never edit a parent. Write candidates/round-{round}-evolve-{copy}.md."
+    },
+    {
+      "id": "meta",
+      "role": "writer",
+      "sees": [
+        "artifacts",
+        "notes"
+      ],
+      "task": "Read this round's rankings and candidates ({prev_artifacts}). Append 3-5 dated lessons to the shared notes: what wins, what keeps losing. Do not rewrite old lines. Claim done.",
+      "fresh": true
+    },
+    {
+      "id": "pick",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "gen",
+      "to": "pool",
+      "on": "*"
+    },
+    {
+      "from": "pool",
+      "to": "rank",
+      "on": "*"
+    },
+    {
+      "from": "rank",
+      "to": "evolve",
+      "on": "done"
+    },
+    {
+      "from": "rank",
+      "to": "pick",
+      "on": "route:plateau"
+    },
+    {
+      "from": "evolve",
+      "to": "meta",
+      "on": "*"
+    },
+    {
+      "from": "meta",
+      "to": "gen",
+      "on": "done"
+    },
+    {
+      "from": "meta",
+      "to": "pick",
+      "on": "bounded"
+    },
+    {
+      "from": "pick",
+      "to": "end",
+      "on": "approved"
+    }
+  ]
+}

@@ -128,6 +128,11 @@ def collect_ephemeral_subs(
     for j in open_job_list:
         if j.get("status") in TERMINAL_STATUSES:
             continue
+        if j.get("work_node"):
+            # A graph node's job: the Graphs page draws it with its graph. Listing
+            # it here too drew every running node twice, the copy under the
+            # conductor instead of the graph's owner.
+            continue
         jid = str(j.get("id") or "")
         worker = str(j.get("worker") or "")
         parent = (

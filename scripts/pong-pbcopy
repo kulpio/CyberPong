@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""UTF-8 clipboard sink for tmux copy-pipe (CyberPong).
+
+stdin → cleaned text → pbcopy
+
+Fixes:
+1) tmux server often has no LANG/LC_* → bare pbcopy tags pasteboard MacRoman
+   (│ → ‚îÇ, → → ‚Üí). Always invoke pbcopy under en_US.UTF-8.
+2) Agent TUIs paint box borders through the pane. Drag-select grabs chrome
+   (trailing │, leading \" │ \" gutters, ─── rules). Strip box-drawing /
+   block chrome and width padding so paste is prose/code, not the frame.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+
+# Box drawing (U+2500–257F) + block elements used as bars/cursors (U+2580–259F)
+BOX = r"[\u2500-\u257F\u2580-\u259F]"
+BOX_RE = re.compile(BOX)
+
+
+def clean(text: str) -> str:
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        # Right border + padding: "…exist,                  │"
+        line = re.sub(rf"\s*{BOX}+\s*$", "", line)
+        # Left gutter: " │ content" / "│ content" — border + one padding space.
+        # Further spaces stay so indented code inside the box survives.
+        line = re.sub(rf"^\s*{BOX}+\s?", "", line)
+        # Leftover chrome mid-line (rare) — drop char, collapse only the hole
+        # left by that char (one extra space), never touch leading indent.
+        def _mid(m: re.Match) -> str:
+            return ""
+
+        line = BOX_RE.sub(_mid, line)
+        line = line.rstrip()
+        # Drop pure frame/rule/blank lines. Keep arrows/symbols (→ etc.) —
+        # alnum-only would throw away "→" / "✓" paste fragments.
+        stripped = line.strip()
+        if stripped == "":
+            out_lines.append("")
+            continue
+        if re.fullmatch(r"[\s\-_=/*#]+", stripped):
+            continue
+        out_lines.append(line)
+
+    cleaned: list[str] = []
+    blank_run = 0
+    for line in out_lines:
+        if line.strip() == "":
+            blank_run += 1
+            if blank_run <= 1:
+                cleaned.append("")
+        else:
+            blank_run = 0
+            cleaned.append(line)
+    while cleaned and cleaned[0] == "":
+        cleaned.pop(0)
+    while cleaned and cleaned[-1] == "":
+        cleaned.pop()
+
+    result = "\n".join(cleaned)
+    if text.endswith("\n") and result:
+        result += "\n"
+    return result
+
+
+def main() -> int:
+    raw = sys.stdin.buffer.read()
+    text = raw.decode("utf-8", "replace")
+    result = clean(text)
+
+    env = os.environ.copy()
+    env["LANG"] = "en_US.UTF-8"
+    env["LC_ALL"] = "en_US.UTF-8"
+    env["LC_CTYPE"] = "en_US.UTF-8"
+
+    p = subprocess.run(
+        ["/usr/bin/pbcopy"],
+        input=result.encode("utf-8"),
+        env=env,
+        check=False,
+    )
+    return int(p.returncode)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

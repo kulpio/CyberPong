@@ -419,7 +419,7 @@ final class FlowDesignSheetController: NSObject {
         if window == nil { build() }
         rebuildTeamMenu()
         reloadCanvas()
-        window?.title = "Architecture · \(teamDisplayName(session))"
+        window?.title = "Team layout · \(teamDisplayName(session))"
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -448,62 +448,62 @@ final class FlowDesignSheetController: NSObject {
 
     private func build() {
         let w: CGFloat = 720
-        let h: CGFloat = 580
+        let h: CGFloat = 640
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        win.title = "Architecture"
+        win.title = "Team layout"
+        win.titlebarAppearsTransparent = true
+        win.appearance = NSAppearance(named: .darkAqua)
         win.center()
         win.isReleasedWhenClosed = false
-        win.backgroundColor = PongTheme.bg
-        win.minSize = NSSize(width: 560, height: 440)
+        win.backgroundColor = PongColor.base
+        win.minSize = NSSize(width: 560, height: 620)
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
         root.wantsLayer = true
-        root.layer?.backgroundColor = PongTheme.bg.cgColor
+        root.layer?.backgroundColor = PongColor.base.cgColor
         win.contentView = root
 
-        titleLabel = NSTextField(labelWithString: "Architecture")
-        titleLabel.font = PongTheme.font(18, weight: .semibold)
-        titleLabel.textColor = PongTheme.textPrimary
-        titleLabel.frame = NSRect(x: 24, y: h - 42, width: 200, height: 26)
+        // 1.9: the new chrome and plain words; the link canvas itself is unchanged
+        titleLabel = PongUI.label("Team layout", PongType.question, PongColor.textPrimary)
+        titleLabel.frame = NSRect(x: 24, y: h - 58, width: 300, height: 24)
         titleLabel.autoresizingMask = [.minYMargin]
         root.addSubview(titleLabel)
 
-        let teamL = NSTextField(labelWithString: "Team")
-        teamL.font = PongTheme.mono(10, weight: .medium)
-        teamL.textColor = PongTheme.textTertiary
-        teamL.frame = NSRect(x: w - 280, y: h - 40, width: 40, height: 14)
+        let teamL = PongUI.eyebrow("Team")
+        teamL.frame = NSRect(x: w - 290, y: h - 54, width: 50, height: 16)
         teamL.autoresizingMask = [.minXMargin, .minYMargin]
         root.addSubview(teamL)
 
-        teamPop = NSPopUpButton(frame: NSRect(x: w - 236, y: h - 48, width: 212, height: 28), pullsDown: false)
-        teamPop.font = PongTheme.font(12)
+        teamPop = NSPopUpButton(frame: NSRect(x: w - 236, y: h - 62, width: 212, height: 28), pullsDown: false)
         teamPop.target = self
         teamPop.action = #selector(teamChanged(_:))
         teamPop.autoresizingMask = [.minXMargin, .minYMargin]
-        teamPop.toolTip = "Which live team to edit"
+        teamPop.toolTip = "Which running team to lay out"
+        PongTheme.stylePopUp(teamPop)
         root.addSubview(teamPop)
 
-        hintLabel = NSTextField(wrappingLabelWithString:
-            "Pick a team. Link seats… → source then destination (existing only). " +
-            "Drag dotted ends to rewire. × or Delete removes an agent. Mid-arrow sets kind.")
-        hintLabel.font = PongTheme.font(11)
-        hintLabel.textColor = PongTheme.textSecondary
-        hintLabel.frame = NSRect(x: 24, y: h - 96, width: w - 180, height: 40)
+        hintLabel = PongUI.label(
+            "The lead gives work to its helpers and results come back. To link two AIs, press " +
+            "Link two AIs, then click one and then the other. Drag a link's middle to bend it.",
+            PongType.secondary, PongColor.textSecondary, lines: 2)
+        hintLabel.frame = NSRect(x: 24, y: h - 110, width: w - 190, height: 34)
         hintLabel.autoresizingMask = [.width, .minYMargin]
         root.addSubview(hintLabel)
 
-        let linkBtn = NSButton(title: "Link seats…", target: self, action: #selector(toggleLinkMode))
-        linkBtn.bezelStyle = .rounded
-        linkBtn.frame = NSRect(x: w - 140, y: h - 90, width: 116, height: 28)
+        let linkBtn = PongButton(title: "Link two AIs", style: .secondary)
+        linkBtn.target = self
+        linkBtn.action = #selector(toggleLinkMode)
+        let lw = linkBtn.intrinsicContentSize.width
+        linkBtn.frame = NSRect(x: w - 24 - lw, y: h - 108, width: lw, height: 28)
         linkBtn.autoresizingMask = [.minXMargin, .minYMargin]
-        linkBtn.toolTip = "Click source seat, then destination — does not create a new agent"
+        linkBtn.toolTip = "Click one AI, then the other: work goes from the first to the second. No new AI is made."
         root.addSubview(linkBtn)
 
-        canvas = TeamArchCanvas(frame: NSRect(x: 16, y: 52, width: w - 32, height: h - 160))
+        canvas = TeamArchCanvas(frame: NSRect(x: 16, y: 60, width: w - 32, height: h - 196))
         canvas.autoresizingMask = [.width, .height]
         canvas.allowAddSeats = false
         canvas.onChanged = { [weak self] in
@@ -515,17 +515,17 @@ final class FlowDesignSheetController: NSObject {
         }
         root.addSubview(canvas)
 
-        let done = NSButton(title: "Done", target: self, action: #selector(donePressed))
-        done.bezelStyle = .rounded
+        let done = PongButton(title: "Done", style: .primary, size: .large)
+        done.target = self
+        done.action = #selector(donePressed)
         done.keyEquivalent = "\r"
-        done.frame = NSRect(x: w - 108, y: 14, width: 84, height: 28)
+        let dw = done.intrinsicContentSize.width
+        done.frame = NSRect(x: w - 24 - dw, y: 14, width: dw, height: 32)
         done.autoresizingMask = [.minXMargin, .maxYMargin]
         root.addSubview(done)
 
-        let tip = NSTextField(labelWithString: "Boss gives work → agents. Agents send results back. Drag the middle of a link to bend it — it sticks.")
-        tip.font = PongTheme.mono(10)
-        tip.textColor = PongTheme.textTertiary
-        tip.frame = NSRect(x: 24, y: 18, width: w - 150, height: 16)
+        let tip = PongUI.label("Changes save as you make them.", PongType.secondary, PongColor.textTertiary)
+        tip.frame = NSRect(x: 24, y: 22, width: w - 150, height: 16)
         tip.autoresizingMask = [.width, .maxYMargin]
         root.addSubview(tip)
 
@@ -536,14 +536,13 @@ final class FlowDesignSheetController: NSObject {
         teamPop.removeAllItems()
         let sessions = availableSessions()
         if sessions.isEmpty {
-            teamPop.addItem(withTitle: "(no live teams)")
+            teamPop.addItem(withTitle: "No team is running")
             teamPop.isEnabled = false
             return
         }
         teamPop.isEnabled = true
         for s in sessions {
-            let title = "\(teamDisplayName(s))  ·  \(s)"
-            teamPop.addItem(withTitle: title)
+            teamPop.addItem(withTitle: teamDisplayName(s))
             teamPop.lastItem?.representedObject = s
             if s == session {
                 teamPop.select(teamPop.lastItem)
@@ -566,8 +565,8 @@ final class FlowDesignSheetController: NSObject {
         if seats.isEmpty {
             seats = syntheticSeats(for: session)
         }
-        window?.title = "Architecture · \(teamDisplayName(session))"
-        titleLabel.stringValue = "Architecture"
+        window?.title = "Team layout · \(teamDisplayName(session))"
+        titleLabel.stringValue = "Team layout"
         reloadCanvas()
         window?.makeFirstResponder(canvas)
     }
@@ -610,7 +609,7 @@ final class FlowDesignSheetController: NSObject {
         if let win = window, let content = win.contentView {
             let w = content.bounds.width
             let h = content.bounds.height
-            canvas.frame = NSRect(x: 16, y: 52, width: max(400, w - 32), height: max(280, h - 160))
+            canvas.frame = NSRect(x: 16, y: 60, width: max(400, w - 32), height: max(280, h - 196))
         }
         let teamSeats = seats.isEmpty ? syntheticSeats(for: session) : seats
         canvas.load(seats: teamSeats, flowEdges: edges, session: session)

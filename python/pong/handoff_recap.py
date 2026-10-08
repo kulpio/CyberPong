@@ -53,6 +53,7 @@ def architecture_recap_for_seat(
     state: dict[str, Any],
     seat_id: str,
     *,
+    role: str | None = None,
     max_lines: int = 28,
 ) -> str:
     """Short imperative recap for *seat_id* based on architecture edges."""
@@ -60,7 +61,12 @@ def architecture_recap_for_seat(
     if not sid:
         return ""
     edges = effective_edges(state)
-    role = _mission_role(state, sid)
+    if role:  # a disposable graph seat: the job's role, as its identity block says
+        from .role_identity import normalize_role
+
+        role = normalize_role(role)
+    else:
+        role = _mission_role(state, sid)
     label = _seat_label(state, sid)
 
     claim_targets: list[str] = []

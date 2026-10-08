@@ -1,0 +1,25 @@
+{
+  "kind": "fan",
+  "version": 1,
+  "cap": 4,
+  "nodes": [
+    {
+      "id": "fan",
+      "kind": "fan",
+      "role": "fan"
+    },
+    {
+      "id": "join",
+      "kind": "join",
+      "role": "join"
+    }
+  ],
+  "edges": [
+    {
+      "from": "fan",
+      "to": "join",
+      "on": "done"
+    }
+  ],
+  "notes": "Spawn N<=4 subs under owner; join waits on their mailbox items."
+}

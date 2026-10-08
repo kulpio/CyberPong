@@ -1,0 +1,189 @@
+{
+ "rubric": "@document",
+ "notes": "Labelled probe cases for pong jev probe. Made-up documents, no client material. Each line has at least two passing and two failing cases. Labels written by Claude on 2026-09-24 and reviewed once against Jev's disagreements (two contestable labels dropped); a person should review them before they bind.",
+ "cases": [
+  {
+   "id": "good-brief",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Weekly newsletter brief — Hollow Oak Bakery\nHollow Oak is invented for this brief; the figures below are examples.\n## Goal\nBring regulars in on slow weekday mornings with one short email every Tuesday at 7am.\n## Audience\nExisting customers who gave their email at the till: morning coffee buyers and school-run parents.\n## Three content ideas\n1. What is in the case this week and the day it sells out.\n2. Three questions for one of the bakers.\n3. A batch that went wrong and what we changed.\n## How we measure it\nWeekday transactions before 11am, send week against the week before (example: 40 to 48). Source: the till's day-part export, pulled by the manager each Friday.\n## Next step\nThe manager pulls last week's export first; that is the baseline, and the first send goes out the Tuesday after."
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "sourced": true,
+    "complete_sections": true,
+    "consistent": true,
+    "reader_can_act": true
+   }
+  },
+  {
+   "id": "good-plan",
+   "goal": "Write a one-page plan for moving the bakery's orders from paper to a tablet: what changes, who does what, and the first step.",
+   "documents": [
+    {
+     "file": "plan.md",
+     "text": "# Moving orders from paper to a tablet — Hollow Oak Bakery\n## What changes\nCounter staff enter orders on the tablet instead of the paper pad; the kitchen reads the order screen instead of the spike.\n## Who does what\nMaya (counter lead) sets up the order form; Tom (head baker) tests the kitchen screen for one week.\n## First step\nMaya enters Monday's orders on the tablet alongside the paper pad; if the two match at close, Tuesday is tablet-only. If they do not match, we stay on paper and find why."
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "sourced": true,
+    "complete_sections": true,
+    "consistent": true,
+    "reader_can_act": true
+   }
+  },
+  {
+   "id": "sourced-good",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Newsletter brief — Hollow Oak Bakery\n## Goal\nBring regulars in on slow weekday mornings with one email every Tuesday.\n## Audience\nExisting customers from the till sign-up list (412 addresses in the till's customer export, pulled 2026-09-20).\n## Three content ideas\n1. The week's seasonal item. 2. Three questions for a baker. 3. A failed batch and the fix.\n## How we measure it\nWeekday transactions before 11am; the Mailchimp food-and-drink benchmark open rate is 32% (https://mailchimp.com/resources/email-marketing-benchmarks/). Target, an assumption: 30 extra morning sales a week.\n## Next step\nThe manager pulls last week's till export as the baseline; the owner approves the first issue by Monday."
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "sourced": true,
+    "complete_sections": true,
+    "consistent": true,
+    "reader_can_act": true
+   }
+  },
+  {
+   "id": "placeholders",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Newsletter brief — Hollow Oak Bakery\n## Goal\nBring regulars in on slow weekday mornings with a weekly email.\n## Audience\nTODO\n## Three content ideas\nTo be written.\n## How we measure it\nWeekday transactions before 11am from the till export, send week against the week before.\n## Next step\nThe manager pulls last week's export as the baseline before the first send."
+    }
+   ],
+   "expect": {
+    "complete_sections": false,
+    "does_the_goal": false,
+    "sourced": true,
+    "consistent": true
+   }
+  },
+  {
+   "id": "unsourced-stats",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Newsletter brief — Hollow Oak Bakery\n## Goal\nGrow weekday morning visits. Bakery email newsletters get a 42% open rate in the US, and 70% of bakery customers say email brings them back.\n## Audience\nExisting customers from the till sign-up list.\n## Three content ideas\n1. This week's special. 2. Meet the baker. 3. A recipe.\n## How we measure it\nWeekday transactions before 11am from the till export, send week against the week before.\n## Next step\nThe manager pulls last week's export as the baseline, then we send on Tuesday."
+    }
+   ],
+   "expect": {
+    "sourced": false,
+    "complete_sections": true,
+    "consistent": true
+   }
+  },
+  {
+   "id": "contradiction",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Newsletter brief — Hollow Oak Bakery\n## Goal\nOne email every Tuesday at 7am to bring regulars in on slow mornings.\n## Audience\nExisting customers from the till sign-up list.\n## Three content ideas\n1. What is in the case. 2. Meet a baker. 3. A batch that went wrong.\n## How we measure it\nCompare Thursday and Friday morning transactions after the Friday send with the week before, from the till export.\n## Next step\nThe manager pulls last week's export as the baseline before the first Thursday send."
+    }
+   ],
+   "expect": {
+    "consistent": false,
+    "complete_sections": true,
+    "sourced": true
+   }
+  },
+  {
+   "id": "plan-not-brief",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "brief.md",
+     "text": "# Plan for the newsletter brief\nWe will write the brief next week. First we will interview the owner about goals, then look at who is on the email list, then brainstorm content ideas with the staff, and finally decide how to measure success. The brief itself will be about one page."
+    }
+   ],
+   "expect": {
+    "does_the_goal": false,
+    "consistent": true
+   }
+  },
+  {
+   "id": "vague",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "notes.md",
+     "text": "# Newsletter thoughts\nA newsletter could be nice for the bakery. People like bread and like hearing about bakeries. There are many things one could write about, and many ways it could go. It depends on a lot of things. Overall it seems promising."
+    }
+   ],
+   "expect": {
+    "does_the_goal": false,
+    "reader_can_act": false
+   }
+  },
+  {
+   "id": "placeholder-plan",
+   "goal": "Write a one-page plan for moving the bakery's orders from paper to a tablet: what changes, who does what, and the first step.",
+   "documents": [
+    {
+     "file": "plan.md",
+     "text": "# Moving orders from paper to a tablet — Hollow Oak Bakery\n## What changes\nCounter staff enter orders on the tablet instead of the paper pad; the kitchen reads the order screen instead of the spike.\n## Who does what\nMaya (counter lead) sets up the order form; TBD\n## First step\nMaya enters Monday's orders on the tablet alongside the paper pad; if the two match at close, Tuesday is tablet-only. If they do not match, we stay on paper and find why."
+    }
+   ],
+   "expect": {
+    "complete_sections": false
+   }
+  },
+  {
+   "id": "unsourced-competitor",
+   "goal": "Write a one-page plan for moving the bakery's orders from paper to a tablet: what changes, who does what, and the first step.",
+   "documents": [
+    {
+     "file": "plan.md",
+     "text": "# Moving orders to a tablet — Hollow Oak Bakery\n## Why now\nRise & Crumb down the road moved to tablets last spring and now serves 300 customers a day, 40% more than before, and Square says bakeries on tablets cut order errors by half.\n## What changes\nCounter staff enter orders on the tablet; the kitchen reads the order screen.\n## Who does what\nMaya sets up the order form; Tom tests the kitchen screen for a week.\n## First step\nMaya runs Monday on tablet and paper side by side and compares them at close."
+    }
+   ],
+   "expect": {
+    "sourced": false,
+    "complete_sections": true,
+    "consistent": true
+   }
+  },
+  {
+   "id": "contradiction-2",
+   "goal": "Write a one-page plan for moving the bakery's orders from paper to a tablet: what changes, who does what, and the first step.",
+   "documents": [
+    {
+     "file": "plan.md",
+     "text": "# Moving orders to a tablet — Hollow Oak Bakery\n## What changes\nCounter staff enter orders on the tablet; the kitchen reads the order screen.\n## Who does what\nMaya (counter lead) sets up the order form. Tom (head baker) tests the kitchen screen.\n## First step\nPriya, our counter lead, enters Monday's orders on the tablet alongside the paper pad, and Tom checks them at close. We go tablet-only on Wednesday once Monday and Tuesday both match."
+    }
+   ],
+   "expect": {
+    "consistent": false,
+    "complete_sections": true,
+    "sourced": true
+   }
+  },
+  {
+   "id": "facts-no-next-step",
+   "goal": "Write a one-page brief for a made-up neighbourhood bakery that wants a weekly email newsletter: goal, audience, three content ideas, and how success is measured.",
+   "documents": [
+    {
+     "file": "notes.md",
+     "text": "# Notes on the newsletter\n## What we know\nThe till export lists 412 customer addresses (pulled 2026-09-20). Tuesday and Wednesday mornings are the slowest. The owner likes the idea of a newsletter. Some customers asked about gluten-free bread.\n## Open\nSeveral things are still open."
+    }
+   ],
+   "expect": {
+    "reader_can_act": false,
+    "does_the_goal": false,
+    "sourced": true
+   }
+  }
+ ]
+}

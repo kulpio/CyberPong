@@ -1,0 +1,13 @@
+{
+  "kind": "router",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "router",
+      "kind": "router",
+      "role": "router"
+    }
+  ],
+  "edges": [],
+  "notes": "Read claim.next or a label; take the matching work-graph edge."
+}

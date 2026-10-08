@@ -1,0 +1,47 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+  canvas{display:block;background:transparent}
+</style></head><body>
+<canvas id="c"></canvas>
+<script type="module">
+// Their engine, unmodified. We only choose the mode, feed it time, and tint the
+// result — the geometry is entirely theirs.
+import { MODE_DRAWS, STATE_TO_MODE, resolvePreset } from './engine.es.js';
+
+const q = new URLSearchParams(location.search);
+const state = q.get('state') || 'composing';
+const size  = parseInt(q.get('size') || '26', 10);
+const color = '#' + (q.get('color') || '5FBDB2');
+const dpr   = Math.min(2, window.devicePixelRatio || 1);
+
+const cv = document.getElementById('c');
+cv.width = size * dpr; cv.height = size * dpr;
+cv.style.width = size + 'px'; cv.style.height = size + 'px';
+const ctx = cv.getContext('2d');
+ctx.scale(dpr, dpr);
+
+// Their preset table is keyed by the two sizes they actually tuned — 64 and 20 —
+// not by the playground's names for those columns. Passing 'inline' read fine
+// and resolved to undefined, so resolvePreset threw on the very first call: the
+// module died before requestAnimationFrame was ever reached and the canvas was
+// never painted at all. That empty canvas is half of the white square.
+const preset = size >= 40 ? 64 : 20;
+// An unknown state name would throw the same way. Fall back to their resting
+// motion rather than let one bad string blank the orb.
+const safeState = STATE_TO_MODE[state] ? state : 'composing';
+const { mode, speed, opts } = resolvePreset(safeState, preset);
+const draw = MODE_DRAWS[mode];
+
+function frame(ms) {
+  ctx.clearRect(0, 0, size, size);
+  draw(ctx, size, (ms / 1000) * speed, true, opts);
+  // Tint: keep their alpha, replace the hue. source-atop paints only where
+  // they already drew, so the dot shapes and depth fade survive intact.
+  ctx.globalCompositeOperation = 'source-atop';
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, size, size);
+  ctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

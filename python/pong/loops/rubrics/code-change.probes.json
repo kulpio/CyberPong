@@ -1,0 +1,138 @@
+{
+ "rubric": "@code-change",
+ "notes": "Labelled probe cases for pong jev probe: small made-up diffs.",
+ "cases": [
+  {
+   "id": "good",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def main(argv):\n-    args = parse(argv)\n-    write_files(collect(args))\n+    args = parse(argv)\n+    files = collect(args)\n+    if args.dry_run:  # print the plan, touch nothing\n+        for f in files:\n+            print(f\"would write {f.path} ({len(f.data)} bytes)\")\n+        return 0\n+    write_files(files)\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", action=\"store_true\", help=\"print what would be written; write nothing\")\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_dry_run_writes_nothing(tmp_path, capsys):\n+    main([\"--out\", str(tmp_path), \"--dry-run\"])\n+    assert list(tmp_path.iterdir()) == []\n+    assert \"would write\" in capsys.readouterr().out"
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "nothing_unrelated": true,
+    "tested": true,
+    "reviewable": true
+   }
+  },
+  {
+   "id": "good-2",
+   "goal": "Make the export command skip empty files, and log how many it skipped.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def write_files(files):\n+    skipped = 0\n     for f in files:\n+        if not f.data:  # an empty file is skipped, not written\n+            skipped += 1\n+            continue\n         write(f)\n+    log.info(\"skipped %d empty file(s)\", skipped)\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_empty_files_are_skipped(tmp_path, caplog):\n+    write_files([File(\"a\", b\"\"), File(\"b\", b\"x\")], out=tmp_path)\n+    assert [p.name for p in tmp_path.iterdir()] == [\"b\"]\n+    assert \"skipped 1 empty\" in caplog.text"
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "nothing_unrelated": true,
+    "tested": true,
+    "reviewable": true
+   }
+  },
+  {
+   "id": "no-test",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def main(argv):\n-    write_files(collect(args))\n+    files = collect(args)\n+    if args.dry_run:  # print the plan, touch nothing\n+        for f in files:\n+            print(f\"would write {f.path}\")\n+        return 0\n+    write_files(files)\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", action=\"store_true\", help=\"print what would be written; write nothing\")"
+    }
+   ],
+   "expect": {
+    "does_the_goal": true,
+    "nothing_unrelated": true,
+    "tested": false
+   }
+  },
+  {
+   "id": "unrelated",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def main(argv):\n+    if args.dry_run:\n+        for f in files:\n+            print(f\"would write {f.path}\")\n+        return 0\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", action=\"store_true\")\ndiff --git a/billing.py b/billing.py\n-TAX_RATE = 0.07\n+TAX_RATE = 0.065\n-def invoice_total(items):\n-    return sum(i.price for i in items) * (1 + TAX_RATE)\n+def invoice_total(items, discount=0):\n+    return sum(i.price for i in items) * (1 + TAX_RATE) - discount\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_dry_run(tmp_path):\n+    main([\"--out\", str(tmp_path), \"--dry-run\"])\n+    assert list(tmp_path.iterdir()) == []"
+    }
+   ],
+   "expect": {
+    "nothing_unrelated": false,
+    "tested": true
+   }
+  },
+  {
+   "id": "weakened-test",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def main(argv):\n+    if args.dry_run:\n+        print(\"dry run\")\n+        return 0\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", action=\"store_true\")\ndiff --git a/tests/test_export.py b/tests/test_export.py\n-def test_export_writes_every_file(tmp_path):\n-    main([\"--out\", str(tmp_path)])\n-    assert len(list(tmp_path.iterdir())) == 3\n+def test_export_writes_every_file(tmp_path):\n+    main([\"--out\", str(tmp_path)])\n+    assert True  # flaky on CI"
+    }
+   ],
+   "expect": {
+    "nothing_unrelated": false,
+    "tested": false
+   }
+  },
+  {
+   "id": "wrong-feature",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def parse(argv):\n+    p.add_argument(\"--verbose\", action=\"store_true\", help=\"print each file as it is written\")\n@@ def write_files(files, verbose=False):\n+        if verbose:\n+            print(f\"wrote {f.path}\")\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_verbose_prints(tmp_path, capsys):\n+    main([\"--out\", str(tmp_path), \"--verbose\"])\n+    assert \"wrote\" in capsys.readouterr().out"
+    }
+   ],
+   "expect": {
+    "does_the_goal": false,
+    "tested": true,
+    "reviewable": true
+   }
+  },
+  {
+   "id": "tangled",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n-import os, sys\n+import os, sys, json, re, itertools, functools\n@@\n-def main(argv):\n-    args = parse(argv)\n-    write_files(collect(args))\n+def main(argv, _x=None, **kw):\n+    a = parse(argv); z = collect(a); q = [y for y in z if y]; w = functools.reduce(lambda p, c: p + [c], q, [])\n+    if getattr(a, \"dry_run\", None) or kw.get(\"d\") or (_x and _x[0]):\n+        list(map(lambda t: sys.stdout.write(json.dumps({\"p\": t.path}) + \"\\n\"), w)); return 0 if w else 0\n+    [write_files([t]) for t in itertools.chain(w)]\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", \"-n\", \"--noop\", \"--simulate\", dest=\"dry_run\", action=\"store_true\")\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_dr(tmp_path):\n+    main([\"--out\", str(tmp_path), \"-n\"]); assert not list(tmp_path.iterdir())"
+    }
+   ],
+   "expect": {
+    "reviewable": false,
+    "does_the_goal": true
+   }
+  },
+  {
+   "id": "tangled-2",
+   "goal": "Make the export command skip empty files, and log how many it skipped.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@\n-def write_files(files):\n-    for f in files:\n-        write(f)\n+def write_files(files, _s=[0], *a, **k):\n+    [(_s.__setitem__(0, _s[0] + (0 if f.data else 1)), f.data and write(f)) for f in files]; k.get(\"q\") or log.info(str(_s[0]) + \" \" + \"\".join(map(chr, [115, 107, 105, 112, 112, 101, 100])))\ndiff --git a/util.py b/util.py\n-def write(f): open(f.path, \"wb\").write(f.data)\n+def write(f, *x): (lambda p, d: open(p, \"wb\").write(d))(f.path, f.data) if f.data else None"
+    }
+   ],
+   "expect": {
+    "reviewable": false
+   }
+  },
+  {
+   "id": "flag-does-nothing",
+   "goal": "Add a --dry-run flag to the export command so it prints what it would write without writing any file.",
+   "documents": [
+    {
+     "file": "change.diff",
+     "text": "diff --git a/export.py b/export.py\n@@ def parse(argv):\n+    p.add_argument(\"--dry-run\", action=\"store_true\", help=\"print what would be written; write nothing\")\n@@ def main(argv):\n     args = parse(argv)\n+    if args.dry_run:\n+        print(\"dry run: writing files\")\n     write_files(collect(args))\ndiff --git a/tests/test_export.py b/tests/test_export.py\n+def test_dry_run_prints(tmp_path, capsys):\n+    main([\"--out\", str(tmp_path), \"--dry-run\"])\n+    assert \"dry run\" in capsys.readouterr().out"
+    }
+   ],
+   "expect": {
+    "does_the_goal": false,
+    "nothing_unrelated": true,
+    "reviewable": true
+   }
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+{
+  "kind": "cycle",
+  "version": 1,
+  "max_rounds": 3,
+  "nodes": [
+    {
+      "id": "builder",
+      "kind": "cycle",
+      "role": "builder"
+    }
+  ],
+  "edges": [
+    {
+      "from": "builder",
+      "to": "builder",
+      "on": "cycle"
+    }
+  ],
+  "notes": "Re-dispatch builder until done or max_rounds."
+}

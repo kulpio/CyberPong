@@ -11,7 +11,12 @@ final class TeamFocusController: NSObject {
     private let W: CGFloat = 440
     private let H: CGFloat = 580
 
+    /// 1.9: the conversation opens in the new sheet; this window's pills, pipeline and digest are retired.
     func show(session: String) {
+        TeamConversationSheet.present(session: session, on: PanelController.shared.sheetHost)
+    }
+
+    private func showLegacy(session: String) {
         self.session = session
         if window == nil { build() }
         reload()
@@ -812,6 +817,12 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         let team = ((snap["teams"] as? [[String: Any]]) ?? []).first { ($0["session"] as? String) == session }
         let openJobs = ((team?["jobs"] as? [String: Any])?["open"] as? [[String: Any]]) ?? []
         let workers = (team?["workers"] as? [[String: Any]]) ?? []
+        // Soft claim inbox — never interrupts TUI; human sees depth while orch busy
+        let waitQ = (team?["waitroom_queued"] as? Int)
+            ?? (team?["waitroom_queued"] as? Double).map { Int($0) }
+            ?? 0
+        let condState = ((team?["conductor"] as? [String: Any])?["seat_state"] as? String) ?? ""
+        let condReason = ((team?["conductor"] as? [String: Any])?["seat_reason"] as? String) ?? ""
 
         var asks: [String] = []
         for w in workers {
@@ -835,9 +846,21 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         currentAsk = Self.loadPendingAsk(session: session)
         updateAskBar()
 
+        if waitQ > 0 {
+            lines.append("")
+            lines.append("CLAIMS WAITING · \(waitQ)")
+            let busyNote = condState == "busy"
+                ? "Orchestrator is busy (\(condReason.isEmpty ? "work" : condReason)) — will auto-deliver when free (no TUI interrupt)."
+                : "Queued for orchestrator — auto-delivers when available (panel poll flushes)."
+            lines.append(busyNote)
+            lines.append("Inspect: pong waitroom list · force: pong waitroom drain --force")
+        }
+
         if asks.isEmpty && currentAsk == nil {
             lines.append("")
-            lines.append("No open asks. You can still send a prompt to the orchestrator below.")
+            if waitQ == 0 {
+                lines.append("No open asks. You can still send a prompt to the orchestrator below.")
+            }
         } else {
             lines.append("")
             lines.append("NEEDS YOU")
@@ -858,6 +881,9 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         inboxView.string = lines.joined(separator: "\n")
         if currentAsk != nil {
             statusLabel.stringValue = "Decision required · Deny / Accept once / Always accept"
+            statusLabel.textColor = PongTheme.amber
+        } else if waitQ > 0 {
+            statusLabel.stringValue = "Claims waiting: \(waitQ) — deliver when orchestrator available"
             statusLabel.textColor = PongTheme.amber
         } else if asks.isEmpty {
             statusLabel.stringValue = "Ready · ⌘↩ send"
@@ -1298,6 +1324,13 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             tmux send-keys -t '\(target)' Enter
             echo OK
             """)
+        // Mark orchestrator busy while handling human message (auto-frees after TTL)
+        if out.contains("OK") {
+            _ = Pong.sh("""
+                export PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+                pong -s '\(session)' seat busy --seat c1 --reason human >/dev/null 2>&1 || true
+                """)
+        }
         try? FileManager.default.removeItem(at: tmp)
         Pong.log("human console deliver session=\(session) target=\(target) out=\(out.prefix(120))")
         let ok = out.contains("OK")
@@ -1371,6 +1404,292 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             seatId: "c1"
         )
         Pong.log("human orch capture ASK card session=\(session) chars=\(digest.count)")
+    }
+
+    // MARK: Chief recaps (settled pane prose → Conversation)
+
+    private static var recapBaseline: [String: String] = [:]
+    private static var recapPending: [String: String] = [:]
+    private static var recapPendingSince: [String: TimeInterval] = [:]
+    private static var recapLastEmit: [String: TimeInterval] = [:]
+    private static var recapTimer: DispatchSourceTimer?
+
+    /// Shortest run of prose worth calling a recap.
+    private static let recapMinChars = 60
+    private static let recapMinWords = 10
+    /// A reply must sit unchanged this long before it counts as finished.
+    private static let recapSettleSeconds: TimeInterval = 6
+    /// Floor between two recaps. This is what makes it regular instead of a feed.
+    private static let recapMinGap: TimeInterval = 45
+
+    /// Watch the chief's pane for the whole life of the app.
+    ///
+    /// The panel's own poll is gated on the human console being expanded and
+    /// skips whenever the window is occluded or the app is inactive — which is
+    /// every moment the person is actually looking at the island. Nothing was writing
+    /// cards, so Conversation had nothing to show. This runs regardless of what
+    /// is on screen, and is cheap: one snapshot read and one pane capture.
+    static func startChiefRecapWatch() {
+        guard recapTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now() + 12, repeating: 20.0, leeway: .seconds(3))
+        t.setEventHandler {
+            let active = Pong.loadJSON(PairState.activePath)
+            guard let session = active["session"] as? String, !session.isEmpty else { return }
+            _ = syncOrchFeedback(session: session)
+        }
+        recapTimer = t
+        t.resume()
+        Pong.log("human chief recap watch start")
+    }
+
+    /// Turn a *settled* chief reply into one human card in Conversation.
+    ///
+    /// The pane is a live TUI that repaints on every token, so anything emitted
+    /// the moment text appears is half a sentence. The newest prose is instead
+    /// held as pending and only becomes a card once a later poll finds the pane
+    /// unchanged — the reply has stopped growing. Settle + a floor on the gap
+    /// between recaps + content dedup is what keeps this from being a stream.
+    static func syncChiefRecap(session: String) {
+        guard !session.isEmpty, let raw = captureConductorPaneRaw(session: session) else { return }
+        let now = Date().timeIntervalSince1970
+        let previous = recapBaseline[session]
+        recapBaseline[session] = raw
+        // First sight of this pane teaches the baseline and says nothing.
+        guard let previous else { return }
+
+        if raw != previous {
+            let mine = loadCards(session: session, limit: 20)
+                .filter { $0.kind == .fromYou }
+                .suffix(4)
+                .map { normalizedForEcho($0.text) }
+            let prose = chiefProse(paneDelta(old: previous, new: raw), excluding: mine)
+            if prose.count >= recapMinChars {
+                recapPending[session] = prose
+                recapPendingSince[session] = now
+            }
+            return
+        }
+
+        // Pane is quiet — anything pending has finished being written.
+        guard let digest = recapPending[session] else { return }
+        guard now - (recapPendingSince[session] ?? now) >= recapSettleSeconds else { return }
+        recapPending[session] = nil
+        recapPendingSince[session] = nil
+
+        guard digest.split(separator: " ").count >= recapMinWords else { return }
+        guard now - (recapLastEmit[session] ?? 0) >= recapMinGap else { return }
+        guard !looksLikeHumanEcho(session: session, digest) else {
+            Pong.log("human chief recap skipped (echo of your own message)")
+            return
+        }
+        // Share one namespace with the ask path so the same words cannot land twice.
+        let fp = stableFingerprint(digest)
+        var seen = loadFeedbackSigs(session: session)
+        guard !seen.contains("chief-recap-\(fp)"), !seen.contains("pane-ask-\(fp)") else { return }
+        seen.insert("chief-recap-\(fp)")
+        saveFeedbackSigs(session: session, seen: seen)
+        recapLastEmit[session] = now
+        _ = appendCard(session: session, kind: .fromOrch, text: digest, seatId: "c1")
+        Pong.log("human chief recap card session=\(session) chars=\(digest.count)")
+    }
+
+    /// Reduce a chief pane delta to the paragraph a person would actually read.
+    ///
+    /// The pane is a full TUI: box rules, a spinner, a token meter, "Worked for
+    /// 2m11s" and a model footer all repaint constantly, and none of it is the
+    /// message. Keep the lines that read like prose and drop the furniture.
+    ///
+    /// `excluding` carries the person's own recent messages, normalized. The pane
+    /// renders their turn as well as the reply, and a recap that quotes their
+    /// question back at them is worse than no recap — so their lines are dropped
+    /// here, line by line, rather than by throwing away the whole paragraph.
+    static func chiefProse(_ raw: String, excluding humanTexts: [String] = []) -> String {
+        let chrome = [
+            "shift+tab", "ctrl+x", "ctrl+c", "esc to interrupt", "always-approve",
+            "worked for ", "bypass permissions", "auto-approve", "pong job ",
+            "##claude_done##", "##worker_done##", "claim:", "acceptance:",
+            "mission_role:", "project_root:", "job_2026", "tokens/s", "context left",
+        ]
+        let frame = CharacterSet(charactersIn: "│┃|╭╮╰╯├┤┌┐└┘─━┈┆⏺⎿●◆▪•▸>❯$ \t")
+        let lines = raw.components(separatedBy: "\n")
+
+        // Prefer the runtime's own turn structure over any heuristic. Hermes
+        // draws the assistant's turn behind a vertical bar and the person's behind
+        // "❯", which separates the two exactly — and people often type straight
+        // into this pane, so there is no from_you card to recognise their words by.
+        let barred = lines.filter { l in
+            guard let c = l.trimmingCharacters(in: .whitespaces).unicodeScalars.first
+            else { return false }
+            return "┃▌▎┋".unicodeScalars.contains(c)
+        }
+        let structured = barred.count >= 2
+        let source = structured
+            ? barred
+            : Array(lines.suffix(from: afterLastHumanTurn(lines)))
+        // Inside a reply block the short lines are wrapped prose ("pane."), not
+        // chrome, so the length floor that guards the unstructured path would
+        // just clip the last word off every recap.
+        let minLine = structured ? 4 : 12
+
+        var kept: [String] = []
+        for rawLine in source {
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
+            line = line.trimmingCharacters(in: frame).trimmingCharacters(in: .whitespaces)
+            // Drop the clock the TUI stamps on a turn. It is chrome, and leaving
+            // it in also breaks the match that recognises the person's own words.
+            line = line.replacingOccurrences(
+                of: "\\b\\d{1,2}:\\d{2}\\s*(AM|PM|am|pm)\\b",
+                with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            guard line.count >= minLine else { continue }
+            let lower = line.lowercased()
+            if chrome.contains(where: { lower.contains($0) }) { continue }
+            // Rules, spinners and meters ("185K / 500K") are mostly not letters.
+            let scalars = Array(line.unicodeScalars)
+            let letters = scalars.filter { CharacterSet.letters.contains($0) }.count
+            guard !scalars.isEmpty,
+                  Double(letters) / Double(scalars.count) >= 0.6 else { continue }
+            // A banner shouts; prose has lower case in it.
+            guard line.rangeOfCharacter(from: .lowercaseLetters) != nil else { continue }
+            // The person's own turn, rendered back in the pane.
+            let norm = normalizedForEcho(line)
+            if norm.count >= 12, humanTexts.contains(where: { $0.contains(norm) }) { continue }
+            kept.append(line)
+        }
+        guard !kept.isEmpty else { return "" }
+        var joined = kept.suffix(14).joined(separator: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        // Runtimes label the block ("◆ Recap"). The person wants the paragraph, not
+        // its heading.
+        for header in ["Recap", "Summary", "Update", "Answer", "Result", "Plan"] {
+            if joined.hasPrefix(header + " ") {
+                joined = String(joined.dropFirst(header.count + 1))
+                break
+            }
+        }
+        return String(joined.prefix(420))
+    }
+
+    /// What this console has recently published, so the seat pulse can refuse to
+    /// read its own words back in as agent activity.
+    static func recentCardTexts(session: String, limit: Int = 12) -> [String] {
+        loadCards(session: session, limit: 40)
+            .filter { $0.kind == .fromOrch }
+            .suffix(limit)
+            .map { $0.text.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static var lastAmbient: [String: String] = [:]
+    private static var lastAmbientAt: [String: TimeInterval] = [:]
+    /// These are read and written from two threads — the panel's poll on main
+    /// and the background recap timer — so the "have we said this already"
+    /// check and the write that follows it have to be one atomic step. Without
+    /// it, two ticks landing together can both pass the gate and post the same
+    /// ambient line twice, which is precisely the flood the gate exists to stop.
+    private static let ambientLock = NSLock()
+    /// Floor under how often the island speaks. Ambient means glanceable, not
+    /// a feed scrolling past.
+    private static let ambientMinGap: TimeInterval = 90
+
+    /// The island's ambient channel: one short line when the seat that most
+    /// needs a person actually changes state.
+    ///
+    /// This is event-driven rather than polled — the sentence only moves when
+    /// reality moves — and it stays quiet when the whole team is idle, because
+    /// "everyone is free" is not worth a card.
+    static func syncSeatPulseAmbient(session: String) {
+        guard let top = SeatPulseEngine.top(session: session, limit: 5).first,
+              top.urgency > SeatPulseEngine.urgencyIdle else { return }
+        let text = top.ambient
+        let now = Date().timeIntervalSince1970
+        // Claim the slot under the lock: check and write together, so a second
+        // thread arriving mid-check cannot also decide it is allowed to speak.
+        ambientLock.lock()
+        let alreadySaid = lastAmbient[session] == text
+        let tooSoon = now - (lastAmbientAt[session] ?? 0) < ambientMinGap
+        if !alreadySaid, !tooSoon {
+            lastAmbient[session] = text
+            lastAmbientAt[session] = now
+        }
+        ambientLock.unlock()
+        guard !alreadySaid, !tooSoon else { return }
+        let fp = stableFingerprint(text)
+        var seen = loadFeedbackSigs(session: session)
+        guard !seen.contains("pulse-\(fp)") else { return }
+        seen.insert("pulse-\(fp)")
+        saveFeedbackSigs(session: session, seen: seen)
+        _ = appendCard(session: session, kind: .fromOrch, text: text, seatId: "c1")
+        Pong.log("human pulse card session=\(session) seat=\(top.seat)")
+    }
+
+    /// Index of the first line after the person's most recent turn.
+    ///
+    /// Their message starts at the "❯" marker and runs to the blank line that
+    /// closes the block; the reply is everything after it. The empty input box
+    /// at the bottom carries the same marker with no text, so it is not a turn.
+    private static func afterLastHumanTurn(_ lines: [String]) -> Int {
+        var start = -1
+        for (i, l) in lines.enumerated() {
+            let t = l.trimmingCharacters(in: CharacterSet(charactersIn: "│┃| \t"))
+                .trimmingCharacters(in: .whitespaces)
+            guard let first = t.unicodeScalars.first,
+                  "❯>›❭".unicodeScalars.contains(first) else { continue }
+            let rest = String(t.dropFirst()).trimmingCharacters(in: .whitespaces)
+            if rest.count >= 8 { start = i }
+        }
+        guard start >= 0 else { return 0 }
+        var i = start + 1
+        while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).isEmpty { i += 1 }
+        return min(i, lines.count)
+    }
+
+    /// The pane also renders what the person typed. Never hand their own words back to
+    /// them as though the orchestrator had said them.
+    private static func looksLikeHumanEcho(session: String, _ digest: String) -> Bool {
+        let d = normalizedForEcho(digest)
+        guard !d.isEmpty else { return true }
+        let mine = loadCards(session: session, limit: 20)
+            .filter { $0.kind == .fromYou }
+            .suffix(4)
+            .map { normalizedForEcho($0.text) }
+        for m in mine where m.count >= 24 {
+            if d.contains(m) || m.contains(d) { return true }
+            let probe = String(m.prefix(48))
+            if probe.count >= 24, d.contains(probe) { return true }
+        }
+        return false
+    }
+
+    private static func normalizedForEcho(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A job's own words, trimmed to the headline a person would say out loud.
+    /// Previews arrive as the whole job card ("FEATURE — do the thing. You are
+    /// **w16** …"), so cut at the brief and drop the routing tag.
+    static func humanTaskLine(_ preview: String) -> String {
+        var s = preview.replacingOccurrences(of: "\u{2026}", with: " ")
+        for cut in ["You are **", "You are ", "### ", "Repo:", "Acceptance:"] {
+            if let r = s.range(of: cut) { s = String(s[s.startIndex..<r.lowerBound]) }
+        }
+        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        // Drop a leading routing tag: "FIX — ", "FEATURE — ", "FIX FIRST — ".
+        if let r = s.range(of: "^[A-Z][A-Z ]{1,20}[—-]\\s*", options: .regularExpression) {
+            s = String(s[r.upperBound...])
+        }
+        // One sentence is enough for a recap line.
+        if let dot = s.firstIndex(where: { $0 == "." }), s.distance(from: s.startIndex, to: dot) > 24 {
+            s = String(s[s.startIndex...dot])
+        }
+        s = s.trimmingCharacters(in: CharacterSet(charactersIn: " .·—-"))
+        return String(s.prefix(120))
     }
 
     /// Heuristic: only free-text pane deltas that look like questions for the human.
@@ -1501,36 +1820,30 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             if h.contains("running") || h.contains("busy") { building += 1 }
         }
 
+        // A sentence, not a field. "Stage: idle" told the person nothing they wanted.
         let stage: String = {
-            if needsYou { return "Stage: needs you" }
-            if building > 0 { return "Stage: workers building" }
-            if waitingClaim > 0 { return "Stage: waiting on claims / workers" }
-            if !allOpen.isEmpty { return "Stage: planning / in flight" }
-            return "Stage: idle"
+            if needsYou { return "Someone is waiting on you." }
+            if building == 1 { return "One seat is working." }
+            if building > 1 { return "\(building) seats are working." }
+            if waitingClaim > 0 { return "Work is out, waiting to be picked up." }
+            if !allOpen.isEmpty { return "Planning — nothing running yet." }
+            return "All quiet."
         }()
 
-        var lines: [String] = []
-        lines.append("Open jobs: \(allOpen.count)" + (open.count != allOpen.count ? " (\(open.count) active)" : ""))
-        if let top = allOpen.first {
-            let w = (top["worker"] as? String) ?? "?"
-            let st = (top["status"] as? String) ?? "?"
-            let prev = (top["task_preview"] as? String) ?? (top["task"] as? String) ?? ""
-            let one = prev.isEmpty ? st : String(prev.prefix(48))
-            lines.append("Top: \(w) · \(st) · \(one)")
-        }
-        if let last = ledger["last"] as? [String: Any] {
-            let v = (last["verdict"] as? String) ?? (last["status"] as? String) ?? ""
-            let jid = (last["job_id"] as? String) ?? (last["id"] as? String) ?? ""
-            if !v.isEmpty {
-                lines.append("Last verdict: \(v)" + (jid.isEmpty ? "" : " · \(jid)"))
+        // The fuller picture: the five seats most worth your attention, each as
+        // a sentence with its age on it. This used to read "Open jobs: 0 · Last
+        // verdict: accept", which tells you nothing you wanted to know.
+        var lines: [String] = SeatPulseEngine.top(session: session, limit: 5)
+            .map { $0.detailed }
+        if lines.isEmpty {
+            lines.append("Open jobs: \(allOpen.count)")
+            if let reply = readLastReplyDigest(session: session), !reply.isEmpty {
+                lines.append("Orchestrator last said: \(reply)")
+            } else if let claim = latestClaimOneLiner(session: session, snap: snap) {
+                lines.append(claim)
             }
         }
-        // last-reply digest
-        if let reply = readLastReplyDigest(session: session), !reply.isEmpty {
-            lines.append("Orchestrator last said: \(reply)")
-        } else if let claim = latestClaimOneLiner(session: session, snap: snap) {
-            lines.append(claim)
-        }
+        _ = ledger
         // Cheap drift warning: orch busy but no worker jobs open
         if building > 0 || stage.contains("planning") {
             let workerOpen = allOpen.contains { j in
@@ -1548,8 +1861,8 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
                 }
             }
         }
-        // Cap strip
-        if lines.count > 3 { lines = Array(lines.prefix(3)) }
+        // Five seats is the whole point of the panel — do not clip it to three.
+        if lines.count > 5 { lines = Array(lines.prefix(5)) }
         _ = now
         return OrchStatusStrip(stage: stage, lines: lines)
     }
@@ -1559,7 +1872,7 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
     static func syncOrchFeedback(session: String) -> OrchStatusStrip {
         let strip = orchStatusStrip(session: session)
         guard !session.isEmpty else { return strip }
-        Pong.log("human orch strip session=\(session) stage=\(strip.stage)")
+        // Hot poll path — do not log every strip refresh (was flooding Pong.log)
 
         var seen = loadFeedbackSigs(session: session)
         var dirty = false
@@ -1571,6 +1884,7 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             dirty = true
             emitted += 1
             _ = appendCard(session: session, kind: kind, text: text, jobId: jobId, seatId: seatId ?? "c1")
+            // Log only when a new card lands (not every poll)
             Pong.log("human orch card kind=\(kind.rawValue) sig=\(sig) session=\(session)")
         }
 
@@ -1593,43 +1907,59 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             guard !jid.isEmpty else { continue }
             let needsHuman = st.contains("human") || st.contains("ask") || (j["human_takeover"] as? Bool) == true
             if needsHuman {
-                let q = prev.isEmpty ? "needs your input" : String(prev.prefix(120))
+                let label = (j["worker_label"] as? String) ?? w
+                let q = humanTaskLine(prev)
+                // seat c1, not the worker: Conversation only shows the chief, so
+                // a question filed under the worker's id was invisible to the person.
                 emit(
                     sig: "job-\(jid)-human",
                     kind: .fromOrch,
-                    text: "Question · \(w): \(q)",
+                    text: q.isEmpty ? "\(label) needs you."
+                                    : "\(label) needs you — \(q).",
                     jobId: jid,
-                    seatId: w
+                    seatId: "c1"
                 )
             }
             // intentionally no notified/running pipeline cards
         }
 
-        // Terminal jobs → one final recap each
-        for j in recent.prefix(12) {
+        // Terminal jobs → one human line each, in the chief's voice.
+        //
+        // These used to read "Done · w16 finished: FIX — …" and were filed under
+        // the worker's seat, so Conversation dropped every one of them and the
+        // few that got through read like a job runner. Now they are a sentence
+        // naming the agent by label, filed as c1 so the person actually sees them.
+        // Capped per sync so a batch of finishes cannot arrive as a wall.
+        var jobCards = 0
+        for j in recent.prefix(12) where jobCards < 3 {
             let jid = (j["id"] as? String) ?? ""
             let st = ((j["status"] as? String) ?? "").lowercased()
             let w = (j["worker"] as? String) ?? "?"
+            let label = (j["worker_label"] as? String) ?? w
             let prev = (j["task_preview"] as? String) ?? (j["task"] as? String) ?? ""
             guard !jid.isEmpty else { continue }
-            let oneLine = prev.isEmpty ? jid : String(prev.prefix(100))
+            let line = humanTaskLine(prev)
+            let before = emitted
             if st == "done" || st == "accepted" {
                 emit(
                     sig: "job-\(jid)-done",
                     kind: .fromOrch,
-                    text: "Done · \(w) finished: \(oneLine)",
+                    text: line.isEmpty ? "\(label) finished a job."
+                                       : "\(label) finished — \(line).",
                     jobId: jid,
-                    seatId: w
+                    seatId: "c1"
                 )
             } else if st == "failed" || st == "rejected" || st == "cancelled" {
                 emit(
                     sig: "job-\(jid)-\(st)",
                     kind: .fromOrch,
-                    text: "\(st.capitalized) · \(w): \(oneLine)",
+                    text: line.isEmpty ? "\(label) could not finish a job."
+                                       : "\(label) could not finish — \(line).",
                     jobId: jid,
-                    seatId: w
+                    seatId: "c1"
                 )
             }
+            if emitted > before { jobCards += 1 }
         }
 
         // Ledger verdicts: do **not** echo accept/verified into the human stream
@@ -1652,11 +1982,12 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
                 continue
             }
             if v.contains("reject") {
-                let sum = (e["summary"] as? String) ?? "needs rework"
+                let sum = humanTaskLine((e["summary"] as? String) ?? "")
                 emit(
                     sig: "ev-verdict-\(jid)-\(Int(ts))",
                     kind: .fromOrch,
-                    text: "Failed · \(String(sum.prefix(100)))",
+                    text: sum.isEmpty ? "A job came back rejected and needs rework."
+                                      : "A job came back rejected — \(sum).",
                     jobId: jid.isEmpty ? nil : jid
                 )
             }
@@ -1681,6 +2012,13 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
             }
         }
 
+        // The chief's own recap: a finished reply, in plain language. This is the
+        // line the person reads in the island, so it runs on every sync — the settle
+        // and gap rules inside decide whether anything is actually said.
+        syncChiefRecap(session: session)
+        // Ambient seat line for the island, on the same schedule.
+        syncSeatPulseAmbient(session: session)
+
         if dirty {
             saveFeedbackSigs(session: session, seen: seen)
             Pong.log("human orch sync emitted=\(emitted) session=\(session)")
@@ -1688,14 +2026,17 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         return strip
     }
 
+    /// Read only the last ~256KB of events.jsonl (never load multi-hundred-MB into a String).
+    /// Matches python `events.tail` — seek tail, drop partial first line, filter session.
     private static func loadEventsTail(limit: Int, session: String) -> [[String: Any]] {
         let path = Pong.stateDir + "/events.jsonl"
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8), !raw.isEmpty else {
-            return []
-        }
+        let raw = Pong.readFileTail(path: path, maxBytes: 256_000)
+        guard !raw.isEmpty else { return [] }
         var rows: [[String: Any]] = []
-        for line in raw.split(separator: "\n").suffix(200) {
-            guard let data = String(line).data(using: .utf8),
+        // Cap scan lines within the tail window
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false).suffix(400) {
+            let s = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty, let data = s.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             let sess = (obj["session"] as? String) ?? ""
             if !session.isEmpty, !sess.isEmpty, sess != session { continue }
@@ -1748,6 +2089,9 @@ final class HumanConsoleController: NSObject, NSWindowDelegate, NSTextViewDelega
         }
         return nil
     }
+
+    /// Same escape stripping, for the seat pulse reader.
+    static func stripAnsiPublic(_ s: String) -> String { stripAnsi(s) }
 
     private static func stripAnsi(_ s: String) -> String {
         guard let re = try? NSRegularExpression(pattern: #"\u001B\[[0-9;]*[A-Za-z]"#, options: []) else {

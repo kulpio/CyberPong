@@ -1,0 +1,74 @@
+{
+  "name": "write-review",
+  "notes": "Write ⇄ review for documents (the critic of record from the Jev suite design): a writer drafts, a fresh critic on another model family reviews while Jev scores the same files against the shipped document rubric plus the goal's own line; either may send it back, a win needs the critic; you see the weakest line first.",
+  "start": "draft",
+  "max_rounds": 4,
+  "boundaries": {
+    "max_wall_min": 180,
+    "max_jobs": 12
+  },
+  "nodes": [
+    {
+      "id": "draft",
+      "role": "writer",
+      "task": "{goal}\n\nRound {round}. Read the shared notes first. Previous step said: {prev_summary}\nWrite or revise the document(s); claim with the file paths."
+    },
+    {
+      "id": "review",
+      "role": "critic",
+      "family": "different",
+      "jev": {
+        "rubric": [
+          "@document"
+        ],
+        "mode": "both"
+      },
+      "task": "Review {prev_artifacts} against the goal: {goal}\nSay `win` when it is ready for a person, otherwise `fail` with exactly what to change. Do not edit the files."
+    },
+    {
+      "id": "me",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "review",
+      "on": "done"
+    },
+    {
+      "from": "review",
+      "to": "me",
+      "on": "win"
+    },
+    {
+      "from": "review",
+      "to": "draft",
+      "on": "fail"
+    },
+    {
+      "from": "review",
+      "to": "me",
+      "on": "abstain"
+    },
+    {
+      "from": "review",
+      "to": "me",
+      "on": "bounded"
+    },
+    {
+      "from": "me",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "me",
+      "to": "draft",
+      "on": "rejected"
+    }
+  ]
+}

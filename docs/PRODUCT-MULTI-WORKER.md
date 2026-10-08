@@ -100,4 +100,4 @@ Legacy `claude-delegate.py` becomes a thin alias → default worker (Claude if p
 
 ## Done looks like
 
-Dylan opens Hermes once, links Claude + Kimi + whatever is signed in, and Hermes routes claims/verdicts per worker — local, controlled, no single-vendor lock-in.
+A person opens Hermes once, links Claude + Kimi + whatever is signed in, and Hermes routes claims/verdicts per worker — local, controlled, no single-vendor lock-in.

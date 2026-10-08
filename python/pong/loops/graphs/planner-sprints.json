@@ -1,0 +1,152 @@
+{
+  "name": "planner-sprints",
+  "notes": "Planner → sprint loop with a feature list (T6; Anthropic's long-running harness). A person approves the plan; each sprint takes one failing feature, the engine runs the tests, a fresh critic on another family drives the result. Edit `run` to this project's end-to-end test command. When eval claims the plan complete, Jev grades the whole change against @code-change (the per-sprint verdict stays the critic's: Jev's whole-goal lines would fail every sprint until the last); a fail sends one more sprint, unsure goes to you. features.json is not hash-protected: plan writes it and eval flips its passes, so a hash taken at the start would fail every sprint's tests; the sprint task tells the builder not to change it.",
+  "start": "plan",
+  "max_rounds": 3,
+  "boundaries": {
+    "max_wall_min": 600,
+    "max_jobs": 60
+  },
+  "nodes": [
+    {
+      "id": "plan",
+      "role": "researcher",
+      "task": "Expand {goal} into SPEC.md and features.json ([{id, desc, passes: false}]). Ambitious scope, no low-level technology choices. Claim with both files."
+    },
+    {
+      "id": "gate0",
+      "role": "human"
+    },
+    {
+      "id": "sprint",
+      "role": "builder",
+      "max_visits": 12,
+      "task": "Read the shared notes, git log and features.json. Take ONE failing feature, implement it with an end-to-end test, commit, and append one progress line to the notes. Do not change features.json: the evaluator flips passes."
+    },
+    {
+      "id": "tests",
+      "role": "check",
+      "run": [
+        "make e2e"
+      ],
+      "timeout_min": 20,
+      "max_visits": 12
+    },
+    {
+      "id": "eval",
+      "role": "critic",
+      "family": "different",
+      "max_visits": 12,
+      "task": "Drive the result against SPEC.md. Claim `win` if this sprint's feature now works, `fail` with what must be fixed, or `route:complete` if every feature in features.json works."
+    },
+    {
+      "id": "final",
+      "role": "jev",
+      "ask": "grade",
+      "rubric": [
+        "@code-change"
+      ],
+      "diff": true
+    },
+    {
+      "id": "ship",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan",
+      "to": "gate0",
+      "on": "done"
+    },
+    {
+      "from": "gate0",
+      "to": "sprint",
+      "on": "approved"
+    },
+    {
+      "from": "gate0",
+      "to": "plan",
+      "on": "rejected"
+    },
+    {
+      "from": "sprint",
+      "to": "tests",
+      "on": "done"
+    },
+    {
+      "from": "sprint",
+      "to": "ship",
+      "on": "blocked"
+    },
+    {
+      "from": "tests",
+      "to": "eval",
+      "on": "win"
+    },
+    {
+      "from": "tests",
+      "to": "sprint",
+      "on": "fail"
+    },
+    {
+      "from": "tests",
+      "to": "ship",
+      "on": "bounded"
+    },
+    {
+      "from": "eval",
+      "to": "sprint",
+      "on": "win"
+    },
+    {
+      "from": "eval",
+      "to": "sprint",
+      "on": "fail"
+    },
+    {
+      "from": "eval",
+      "to": "ship",
+      "on": "bounded"
+    },
+    {
+      "from": "ship",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "ship",
+      "to": "sprint",
+      "on": "rejected"
+    },
+    {
+      "from": "eval",
+      "to": "final",
+      "on": "route:complete"
+    },
+    {
+      "from": "final",
+      "to": "ship",
+      "on": "win"
+    },
+    {
+      "from": "final",
+      "to": "ship",
+      "on": "abstain"
+    },
+    {
+      "from": "final",
+      "to": "sprint",
+      "on": "fail"
+    },
+    {
+      "from": "final",
+      "to": "ship",
+      "on": "bounded"
+    }
+  ]
+}

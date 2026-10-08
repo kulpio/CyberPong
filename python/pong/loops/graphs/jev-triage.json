@@ -1,0 +1,103 @@
+{
+  "name": "jev-triage",
+  "notes": "Triage with Jev choosing the path: a scout looks, Jev picks among the route edges (asked in two option orders; a quick fix at 0.7, a rework at 0.9), and anything it is not sure of comes to you with the same routes as buttons. Nothing leaves the Mac without the last gate.",
+  "start": "look",
+  "max_rounds": 3,
+  "boundaries": {
+    "max_wall_min": 120,
+    "max_jobs": 10
+  },
+  "nodes": [
+    {
+      "id": "look",
+      "role": "scout",
+      "task": "{goal}\n\nFind out what is wrong and how big it is. Write findings.md with what you saw, where, and what you would do. Claim with the file path."
+    },
+    {
+      "id": "route",
+      "role": "jev",
+      "ask": "decide",
+      "task": "Given the findings, which path fits the problem?"
+    },
+    {
+      "id": "quick",
+      "role": "builder",
+      "task": "{goal}\n\nMake the small fix the findings describe ({prev_artifacts}). Claim with the files you changed."
+    },
+    {
+      "id": "rework",
+      "role": "writer",
+      "task": "{goal}\n\nThe findings ({prev_artifacts}) say this needs more than a small fix. Write plan.md: the change, its steps, what could break."
+    },
+    {
+      "id": "choose",
+      "role": "human"
+    },
+    {
+      "id": "me",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "look",
+      "to": "route",
+      "on": "done"
+    },
+    {
+      "from": "route",
+      "to": "quick",
+      "on": "route:quick",
+      "when": "a small, local fix in one or two files, with no design change",
+      "take": 0.7
+    },
+    {
+      "from": "route",
+      "to": "rework",
+      "on": "route:rework",
+      "when": "the design or several parts must change; a plan comes first",
+      "take": 0.9
+    },
+    {
+      "from": "route",
+      "to": "choose",
+      "on": "abstain"
+    },
+    {
+      "from": "choose",
+      "to": "quick",
+      "on": "route:quick",
+      "when": "a small fix"
+    },
+    {
+      "from": "choose",
+      "to": "rework",
+      "on": "route:rework",
+      "when": "a plan first"
+    },
+    {
+      "from": "quick",
+      "to": "me",
+      "on": "done"
+    },
+    {
+      "from": "rework",
+      "to": "me",
+      "on": "done"
+    },
+    {
+      "from": "me",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "me",
+      "to": "look",
+      "on": "rejected"
+    }
+  ]
+}

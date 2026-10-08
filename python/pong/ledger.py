@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import traces
 from .paths import ledger_dir
 from .state import detect_bound_session, load_session_state, workers_from_state
 
@@ -44,6 +45,14 @@ def record(
     vpath, _ = _paths()
     with vpath.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
+    traces.verdict(
+        session=str(sess),
+        task_id=task_id,
+        verdict=verdict,
+        round_n=round_n,
+        evidence=evidence,
+        worker=worker,
+    )
     try:
         from . import events
 

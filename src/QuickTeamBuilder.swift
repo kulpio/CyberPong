@@ -58,9 +58,9 @@ enum QuickTeamBuilder {
 
         var blurb: String {
             switch self {
-            case .solo: return "You + one builder"
-            case .pair: return "Builder + checker"
-            case .squad: return "Builder + checker + runner"
+            case .solo: return "Lead + 1 builder"
+            case .pair: return "Builder + reviewer"
+            case .squad: return "Builder + reviewer + operator"
             }
         }
 
@@ -95,8 +95,8 @@ enum QuickTeamBuilder {
         var labels: [String] {
             switch self {
             case .solo: return ["Builder"]
-            case .pair: return ["Builder", "Checker"]
-            case .squad: return ["Builder", "Checker", "Runner"]
+            case .pair: return ["Builder", "Reviewer"]
+            case .squad: return ["Builder", "Reviewer", "Operator"]
             }
         }
     }
@@ -111,6 +111,8 @@ enum QuickTeamBuilder {
         focusedNameOnStep1 = false
 
         if let w = window {
+            w.appearance = PongTheme.Launch.appearance
+            root?.layer?.backgroundColor = PongTheme.Launch.bgElevated.cgColor
             render()
             NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)
@@ -126,6 +128,8 @@ enum QuickTeamBuilder {
         )
         win.isOpaque = false
         win.backgroundColor = .clear
+        // Always dark chrome — independent of main app light mode
+        win.appearance = PongTheme.Launch.appearance
         win.hasShadow = true
         win.level = .floating
         win.isFloatingPanel = true
@@ -140,10 +144,10 @@ enum QuickTeamBuilder {
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: pillW, height: pillH))
         container.wantsLayer = true
-        container.layer?.backgroundColor = PongTheme.bgElevated.cgColor
+        container.layer?.backgroundColor = PongTheme.Launch.bgElevated.cgColor
         container.layer?.cornerRadius = 28
         container.layer?.borderWidth = 1
-        container.layer?.borderColor = PongTheme.line.withAlphaComponent(0.4).cgColor
+        container.layer?.borderColor = PongTheme.Launch.line.withAlphaComponent(0.4).cgColor
         container.layer?.masksToBounds = true
         win.contentView = NSView(frame: container.bounds)
         win.contentView?.wantsLayer = true
@@ -157,7 +161,8 @@ enum QuickTeamBuilder {
         close.isBordered = false
         close.title = "✕"
         close.font = PongTheme.font(12, weight: .medium)
-        close.contentTintColor = PongTheme.textTertiary
+        close.contentTintColor = PongTheme.Launch.textTertiary
+        close.appearance = PongTheme.Launch.appearance
         close.target = QuickTeamTarget.shared
         close.action = #selector(QuickTeamTarget.dismiss)
         close.autoresizingMask = [.minXMargin, .minYMargin]
@@ -259,7 +264,7 @@ enum QuickTeamBuilder {
         if step == 0 {
             resize(h: 380)
             stack.addArrangedSubview(title("New team"))
-            stack.addArrangedSubview(sub("Pick a shape. 10 seconds."))
+            stack.addArrangedSubview(sub("How big a team? Most people start with a Pair."))
 
             let row = NSStackView()
             row.orientation = .horizontal
@@ -270,18 +275,21 @@ enum QuickTeamBuilder {
             stack.addArrangedSubview(row)
 
             stack.addArrangedSubview(primary("Continue", #selector(QuickTeamTarget.next)))
-            stack.addArrangedSubview(ghost("Advanced wizard…", #selector(QuickTeamTarget.advanced)))
+            stack.addArrangedSubview(ghost("More options…", #selector(QuickTeamTarget.advanced)))
+            if !SavedTeams.loadAll().isEmpty {
+                stack.addArrangedSubview(ghost("Open a saved team…", #selector(QuickTeamTarget.openSaved)))
+            }
         } else if step == 1 {
             resize(h: step1Height())
             stack.addArrangedSubview(title(recipe.title + " team"))
-            stack.addArrangedSubview(sub(recipe.blurb + " · Boss plans. Agents build."))
+            stack.addArrangedSubview(sub(recipe.blurb + ". The lead plans; helpers do the work."))
 
             let name = field("Team name", teamNameDraft.isEmpty ? "My team" : teamNameDraft)
             nameField = name
             stack.addArrangedSubview(name)
 
             // Orchestrator AI (same step/window as team name)
-            stack.addArrangedSubview(rowLabel("Orchestrator AI"))
+            stack.addArrangedSubview(rowLabel("Who leads?"))
             let orchRow = NSStackView()
             orchRow.orientation = .horizontal
             orchRow.spacing = 6
@@ -311,7 +319,7 @@ enum QuickTeamBuilder {
             }
 
             // Roster preview — each seat with its chosen AI
-            var lines: [String] = ["· Orchestrator (\(displayName(conductorType)))"]
+            var lines: [String] = ["· Lead (\(displayName(conductorType)))"]
             for (i, lab) in recipe.labels.enumerated() {
                 let t = i < workerTypes.count ? workerTypes[i] : "claude"
                 lines.append("· \(lab) (\(displayName(t)))")
@@ -322,7 +330,7 @@ enum QuickTeamBuilder {
             nav.orientation = .horizontal
             nav.spacing = 10
             nav.addArrangedSubview(ghost("Back", #selector(QuickTeamTarget.back)))
-            nav.addArrangedSubview(primary("Launch 🚀", #selector(QuickTeamTarget.launch)))
+            nav.addArrangedSubview(primary("Start team", #selector(QuickTeamTarget.launch)))
             stack.addArrangedSubview(nav)
 
             let st = sub("")
@@ -333,7 +341,7 @@ enum QuickTeamBuilder {
         } else {
             resize(h: 220)
             stack.addArrangedSubview(title("Starting…"))
-            let st = sub("Opening terminals · locking roles · drawing the road")
+            let st = sub("Opening terminals and giving each AI its role…")
             statusLabel = st
             stack.addArrangedSubview(st)
         }
@@ -350,7 +358,7 @@ enum QuickTeamBuilder {
     private static func title(_ t: String) -> NSTextField {
         let l = NSTextField(labelWithString: t)
         l.font = PongTheme.font(18, weight: .semibold)
-        l.textColor = PongTheme.textPrimary
+        l.textColor = PongTheme.Launch.textPrimary
         l.alignment = .center
         return l
     }
@@ -358,7 +366,7 @@ enum QuickTeamBuilder {
     private static func sub(_ t: String) -> NSTextField {
         let l = NSTextField(wrappingLabelWithString: t)
         l.font = PongTheme.font(12)
-        l.textColor = PongTheme.textSecondary
+        l.textColor = PongTheme.Launch.textSecondary
         l.alignment = .center
         l.preferredMaxLayoutWidth = pillW - 48
         l.maximumNumberOfLines = 8
@@ -368,7 +376,7 @@ enum QuickTeamBuilder {
     private static func rowLabel(_ t: String) -> NSTextField {
         let l = NSTextField(labelWithString: t)
         l.font = PongTheme.font(11, weight: .semibold)
-        l.textColor = PongTheme.textTertiary
+        l.textColor = PongTheme.Launch.textTertiary
         l.alignment = .center
         return l
     }
@@ -381,11 +389,12 @@ enum QuickTeamBuilder {
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.cornerRadius = 16
-        b.layer?.backgroundColor = (on ? PongSheetChrome.lime : PongTheme.bgHover).cgColor
+        b.layer?.backgroundColor = (on ? PongTheme.Launch.lime : PongTheme.Launch.bgHover).cgColor
         b.layer?.borderWidth = on ? 0 : 1
-        b.layer?.borderColor = PongTheme.line.cgColor
+        b.layer?.borderColor = PongTheme.Launch.line.cgColor
+        b.appearance = PongTheme.Launch.appearance
         b.attributedTitle = NSAttributedString(string: "\(r.emoji)  \(r.title)\n\(r.blurb)", attributes: [
-            .foregroundColor: on ? NSColor.black : PongTheme.textPrimary,
+            .foregroundColor: on ? NSColor.black : PongTheme.Launch.textPrimary,
             .font: PongTheme.font(12, weight: .semibold),
             .paragraphStyle: {
                 let p = NSMutableParagraphStyle()
@@ -414,9 +423,10 @@ enum QuickTeamBuilder {
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.cornerRadius = 12
-        b.layer?.backgroundColor = (selected ? PongSheetChrome.lime : PongTheme.bgHover).cgColor
+        b.layer?.backgroundColor = (selected ? PongTheme.Launch.lime : PongTheme.Launch.bgHover).cgColor
+        b.appearance = PongTheme.Launch.appearance
         b.attributedTitle = NSAttributedString(string: label, attributes: [
-            .foregroundColor: selected ? NSColor.black : PongTheme.textPrimary,
+            .foregroundColor: selected ? NSColor.black : PongTheme.Launch.textPrimary,
             .font: PongTheme.font(11, weight: .semibold),
         ])
         b.translatesAutoresizingMaskIntoConstraints = false
@@ -445,15 +455,16 @@ enum QuickTeamBuilder {
         f.isSelectable = true
         f.isEnabled = true
         f.drawsBackground = true
-        f.backgroundColor = PongTheme.bgInput
-        f.textColor = PongTheme.textPrimary
+        f.backgroundColor = PongTheme.Launch.bgInput
+        f.textColor = PongTheme.Launch.textPrimary
+        f.appearance = PongTheme.Launch.appearance
         f.focusRingType = .exterior
         f.refusesFirstResponder = false
         f.cell?.isScrollable = true
         f.cell?.wraps = false
         f.wantsLayer = true
         f.layer?.cornerRadius = 12
-        f.layer?.backgroundColor = PongTheme.bgInput.cgColor
+        f.layer?.backgroundColor = PongTheme.Launch.bgInput.cgColor
         // Inset text inside the rounded field
         if let cell = f.cell as? NSTextFieldCell {
             cell.usesSingleLineMode = true
@@ -470,8 +481,9 @@ enum QuickTeamBuilder {
         b.isBordered = false
         b.wantsLayer = true
         b.layer?.cornerRadius = 16
-        b.layer?.backgroundColor = PongSheetChrome.lime.cgColor
+        b.layer?.backgroundColor = PongTheme.Launch.lime.cgColor
         b.layer?.masksToBounds = true
+        b.appearance = PongTheme.Launch.appearance
         b.attributedTitle = NSAttributedString(string: t, attributes: [
             .foregroundColor: NSColor.black,
             .font: PongTheme.font(14, weight: .semibold),
@@ -490,7 +502,8 @@ enum QuickTeamBuilder {
         b.bezelStyle = .inline
         b.isBordered = false
         b.font = PongTheme.font(11)
-        b.contentTintColor = PongTheme.textTertiary
+        b.contentTintColor = PongTheme.Launch.textTertiary
+        b.appearance = PongTheme.Launch.appearance
         return b
     }
 
@@ -555,10 +568,11 @@ enum QuickTeamBuilder {
             missionRoles: recipe.roles,
             workerLabels: recipe.labels
         )
-        // Optional continuity package (Saved session story)
+        // Optional continuity package (Saved session story) — team-scoped by intended name
         let archivePick = SessionContinuityUI.pickArchive(
             allowNone: true,
-            message: "Start with continuity?"
+            message: "Start with continuity?",
+            displayName: teamName
         )
         if archivePick == nil {
             // User cancelled continuity picker — abort launch
@@ -651,6 +665,12 @@ final class QuickTeamTarget: NSObject {
     @objc func launch() { QuickTeamBuilder.launch() }
     @objc func dismiss() { QuickTeamBuilder.dismiss() }
     @objc func advanced() { QuickTeamBuilder.openAdvanced() }
+    @objc func openSaved() {
+        QuickTeamBuilder.dismiss()
+        DispatchQueue.main.async {
+            if AppDelegate.pickAndSpawnSavedTeam() { PanelController.shared.refreshUI() }
+        }
+    }
 
     @objc func pickRecipe(_ sender: NSButton) {
         QuickTeamBuilder.pickRecipe(sender.identifier?.rawValue ?? "pair")

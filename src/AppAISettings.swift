@@ -8,7 +8,7 @@ enum AppAISettings {
         let id: String
         let label: String
         let cmd: String
-        /// Shown on onboarding cards
+        /// Shown as the tooltip of its choice in Settings › AI accounts › The Guide
         let blurb: String
 
         static let all: [Provider] = [
@@ -41,13 +41,9 @@ enum AppAISettings {
         Pong.loadJSON(path)
     }
 
+    /// Same lock, merge and 0600 file as every other settings.json write (`AppSettings.update`).
     static func save(_ mut: (inout [String: Any]) -> Void) {
-        PairWriteLock.withLock {
-            var root = Pong.loadJSON(path)
-            mut(&root)
-            root["updated"] = Date().timeIntervalSince1970
-            Pong.writeJSON(path, root)
-        }
+        AppSettings.update(mut)
     }
 
     private static func appAI() -> [String: Any] {

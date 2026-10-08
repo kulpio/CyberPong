@@ -1,0 +1,63 @@
+{
+  "name": "brain-loop",
+  "notes": "Turn recorded evidence into a persona that improves each round: gather \u2192 synthesize \u21c4 grade \u2192 a person reviews \u2192 done.",
+  "start": "gather",
+  "max_rounds": 3,
+  "nodes": [
+    {
+      "id": "gather",
+      "role": "operator",
+      "task": "{goal}\n\nRound {round}. Gather: bring every new source into the corpus and extract evidence from it. When done, claim with the counts and the paths you produced."
+    },
+    {
+      "id": "synthesize",
+      "role": "writer",
+      "task": "{goal}\n\nRound {round}. Synthesize: from the evidence digests, write or revise the persona. Previous step said: {prev_summary}\nArtifacts: {prev_artifacts}\nClaim with the file paths and a summary of what moved."
+    },
+    {
+      "id": "grade",
+      "role": "critic",
+      "task": "{goal}\n\nRound {round}. Grade the persona in {prev_artifacts} against the exemplar sources and the ratings. Say `win` if it would pass someone who knows the subject well, otherwise `fail` with exactly what falls short. Do not edit the files."
+    },
+    {
+      "id": "review",
+      "role": "human"
+    },
+    {
+      "id": "done",
+      "role": "join"
+    }
+  ],
+  "edges": [
+    {
+      "from": "gather",
+      "to": "synthesize",
+      "on": "done"
+    },
+    {
+      "from": "synthesize",
+      "to": "grade",
+      "on": "done"
+    },
+    {
+      "from": "grade",
+      "to": "synthesize",
+      "on": "fail"
+    },
+    {
+      "from": "grade",
+      "to": "review",
+      "on": "win"
+    },
+    {
+      "from": "review",
+      "to": "done",
+      "on": "approved"
+    },
+    {
+      "from": "review",
+      "to": "synthesize",
+      "on": "rejected"
+    }
+  ]
+}

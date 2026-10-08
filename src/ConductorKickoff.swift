@@ -111,7 +111,14 @@ enum ConductorKickoff {
         let brief = (entry["team_brief"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let cond = entry["conductor"] as? [String: Any] ?? [:]
-        let condType = (cond["id"] as? String) ?? (cond["type"] as? String) ?? "grok"
+        // Prefer `type` (grok/claude/hermes). Seat id is stored in `id` ("c1"), not the CLI.
+        let condType: String = {
+            let t = (cond["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !t.isEmpty { return t }
+            let legacy = (cond["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if ["grok", "claude", "hermes"].contains(legacy) { return legacy }
+            return "grok"
+        }()
         let rawCondLabel = (cond["label"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let condLabel = rawCondLabel.isEmpty ? condType : rawCondLabel
@@ -263,6 +270,14 @@ enum ConductorKickoff {
         - Human goals → **decompose → `pong job create --worker w1|w2|w3…` along architecture edges** → verify claims.
         - If you catch yourself writing code or fixing bugs: **stop**, create/assign a job to a worker, stand by.
         - Refuse to edit product files. Your tools are jobs, ledger verdicts, and routing — not the codebase.
+
+        ### Seat availability (delivery waitroom — no mid-task interrupts)
+        - System pastes only when the target seat is **available**. Busy seats **queue** — no TUI interrupt.
+        - Job paste → worker **busy** until claim/done. Claim digests do **not** stick you busy forever.
+        - Pending claims **auto-deliver** when free (panel poll / `try_deliver`). Human need not ask “any updates?”
+        - Soft inbox: human YOU panel shows “Claims waiting: N” while you work — still no paste until free.
+        - Optional: `##SEAT_AVAILABLE##` / `pong seat available --seat c1` after a long verify batch.
+        - `pong seat status` · `pong waitroom list` · `pong waitroom drain`
 
         Keep replies short and operational. Confirm team name + session + that you remain Orchestrator in your first status line.
         """
@@ -425,6 +440,11 @@ enum ConductorKickoff {
         \(playbook)
         Never leave this role mid-team:
         \(neverLines)
+
+        ### Seat availability (waitroom)
+        - When a job is pasted to you, you are **busy** — do not expect peer pastes mid-task.
+        - When you claim/done (`##WORKER_DONE##`), you become **available** for the next job.
+        - Optional markers: `##SEAT_BUSY##` / `##SEAT_AVAILABLE##` (system also sets busy on paste, available on claim).
 
         ### Architecture road
         Every job wrapper includes **SEAT IDENTITY** + **ARCHITECTURE ROAD**.

@@ -249,8 +249,20 @@ def assert_assign_allowed(
 def claim_notify_targets(state: dict[str, Any], worker_id: str) -> list[str]:
     """Seats that should receive a claim notification (claim edges worker→seat).
 
-    Uses effective edges so claim path is always defined.
+    Work-graph seats bubble to the goal owner only — never a silent walk to c1.
+    Org-graph seats stay one hop on claim edges.
     """
+    session = str(state.get("session") or "")
+    wid = str(worker_id).strip()
+    if session and wid:
+        try:
+            from .work_graph import owner_of_seat
+
+            owner = owner_of_seat(session, wid)
+            if owner and owner != wid:
+                return [owner]
+        except Exception:
+            pass
     edges = effective_edges(state)
     wid = str(worker_id).strip()
     if not edges:
@@ -279,21 +291,93 @@ def notify_claim(
     state: dict[str, Any],
     job: dict[str, Any],
     claim: dict[str, Any],
+    *,
+    immediate: bool = False,
+    paste_fn: Any = None,
 ) -> list[str]:
-    """Paste a short claim recap into claim-edge targets (usually the orchestrator).
+    """Notify claim-edge targets (usually the orchestrator).
 
-    Best-effort: never raises. Returns list of seat ids we attempted.
+    **Default (P0 waitroom):** enqueue a short item and try a cooldown-gated
+    **digest** paste — never firehose full CLAIM blocks into c1 mid-turn.
+
+    **Escape hatch:** ``immediate=True`` or env ``PONG_CLAIM_PASTE=1`` restores
+    the old per-claim full paste (debug/compat only). It still refuses a target
+    whose pane is mid-turn: that claim is enqueued in the waitroom instead and
+    the next drain delivers it.
+
+    Best-effort: never raises. Returns list of seat ids we attempted/enqueued.
     """
     session = str(job.get("session") or state.get("session") or "")
     worker = str(job.get("worker") or "")
     if not session or not worker:
         return []
-    targets = claim_notify_targets(state, worker)
+    # Work-graph child → owner only. Org graph stays one hop.
+    owner = str(job.get("work_owner") or "").strip()
+    targets = [owner] if owner else claim_notify_targets(state, worker)
     summary = (claim.get("summary") or claim.get("raw") or "").strip()
     if not summary:
         summary = f"(claim recorded for job {job.get('id')})"
     files = claim.get("files") or []
-    files_s = ", ".join(str(f) for f in files[:8]) if files else "—"
+    if isinstance(files, str):
+        files = [f.strip() for f in files.split(",") if f.strip()]
+    files_list = [str(f) for f in files] if isinstance(files, list) else []
+
+    # Mailbox FIRST — must succeed (raises on write failure). Paste is a nudge.
+    from .jobs import synthesize_result
+    from .mailbox import post
+
+    result = job.get("result") if isinstance(job.get("result"), dict) else None
+    if result is None:
+        result = synthesize_result(job, claim)
+        job["result"] = result
+    for tid in targets:
+        post(
+            session,
+            tid,
+            kind="claim",
+            from_seat=worker,
+            job_id=str(job.get("id") or ""),
+            summary=summary,
+            result=result,
+            extra={"graph_id": job.get("work_graph_id")},
+        )
+
+    if job.get("graph_node"):
+        # A graph step's claim is the engine's to route: the next node gets it
+        # through the graph, the owner through the mailbox above. Pasting it
+        # into the owner's terminal as well woke the lead seat on every step
+        # and set it acting on the graph's internals (2026-09-24 smoke test:
+        # an always-approve Grok lead started "acknowledging" a judge's claim).
+        return targets
+
+    from .waitroom import enqueue_and_maybe_drain, want_immediate_claim_paste
+
+    # Default path: waitroom + digest (no claim storm)
+    if not want_immediate_claim_paste(flag=immediate):
+        for tid in targets:
+            try:
+                enqueue_and_maybe_drain(
+                    session,
+                    to=tid,
+                    from_worker=worker,
+                    job_id=str(job.get("id") or ""),
+                    summary=summary,
+                    files=files_list,
+                    state=state,
+                    paste_fn=paste_fn,
+                )
+            except Exception:
+                pass
+        return targets
+
+    # Escape hatch: immediate full paste (legacy). It skips the digest and the
+    # seat-state gates on purpose — that is what it is for — but it does not
+    # skip the pane check. Text sent into a live turn is appended to the prompt
+    # that seat is already composing, so a mid-turn target falls back to the
+    # normal waitroom queue and the next drain delivers it.
+    from .waitroom import enqueue_claim, pane_blocks_paste
+
+    files_s = ", ".join(files_list[:8]) if files_list else "—"
     text = (
         f"\n—— CLAIM · {worker} · {job.get('id')} ——\n"
         f"{summary}\n"
@@ -302,15 +386,36 @@ def notify_claim(
     )
     workers = {str(w.get("id")): w for w in _all_seats(state)}
     attempted: list[str] = []
+    pasted: list[str] = []
     for tid in targets:
         seat = workers.get(tid) or {"id": tid}
         # Conductor seat may only live under conductor key
         if tid == conductor_id(state):
             from .state import conductor_from_state
 
-            seat = dict(conductor_from_state(state))
+            seat = dict(conductor_from_state(state) or {})
             seat.setdefault("id", tid)
         attempted.append(tid)
+        if pane_blocks_paste(session, tid):
+            try:
+                enqueue_claim(
+                    session,
+                    to=tid,
+                    from_worker=worker,
+                    job_id=str(job.get("id") or ""),
+                    summary=summary,
+                    files=files_list,
+                )
+            except Exception:
+                pass
+            continue
+        pasted.append(tid)
+        if paste_fn is not None:
+            try:
+                paste_fn(session, tid, text, state)
+            except Exception:
+                pass
+            continue
         try:
             from .transports import tmux_paste
 
@@ -328,18 +433,20 @@ def notify_claim(
                 _paste_by_index(session, seat, text)
             except Exception:
                 pass
-    try:
-        from . import events
+    if pasted:
+        try:
+            from . import events
 
-        events.emit(
-            "claim.notified",
-            session=session,
-            job_id=str(job.get("id")),
-            worker=worker,
-            targets=attempted,
-        )
-    except Exception:
-        pass
+            events.emit(
+                "claim.notified",
+                session=session,
+                job_id=str(job.get("id")),
+                worker=worker,
+                targets=pasted,
+                immediate=True,
+            )
+        except Exception:
+            pass
     return attempted
 
 
@@ -353,10 +460,15 @@ def _all_seats(state: dict[str, Any]) -> list[dict[str, Any]]:
     return seats
 
 
-def _paste_by_index(session: str, seat: dict[str, Any], text: str) -> None:
+def _paste_by_index(session: str, seat: dict[str, Any], text: str) -> bool:
     import subprocess
     import time
 
+    from .groups import isolated_home, tmux_bin
+
+    if isolated_home():  # a temporary home (a test, a preview) shares the live tmux server: type nothing
+        return False
+    tmux = tmux_bin() or "tmux"
     idx = seat.get("tmux_index")
     if idx is None:
         sid = str(seat.get("id") or "")
@@ -365,29 +477,32 @@ def _paste_by_index(session: str, seat: dict[str, Any], text: str) -> None:
         elif sid.startswith("w") and sid[1:].isdigit():
             idx = int(sid[1:])
         else:
-            return
+            return False
     target = f"{session}:{int(idx)}"
     try:
         subprocess.run(
-            ["tmux", "load-buffer", "-"],
+            [tmux, "load-buffer", "-"],
             input=text,
             text=True,
             capture_output=True,
             timeout=10,
             check=False,
         )
-        subprocess.run(
-            ["tmux", "paste-buffer", "-t", target, "-d"],
+        r = subprocess.run(
+            [tmux, "paste-buffer", "-t", target, "-d"],
             capture_output=True,
             timeout=10,
             check=False,
         )
+        if r.returncode != 0:
+            return False
         time.sleep(0.1)
         subprocess.run(
-            ["tmux", "send-keys", "-t", target, "Enter"],
+            [tmux, "send-keys", "-t", target, "Enter"],
             capture_output=True,
             timeout=5,
             check=False,
         )
+        return True
     except Exception:
-        pass
+        return False

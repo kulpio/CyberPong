@@ -236,6 +236,102 @@ class SessionArchiveTests(unittest.TestCase):
         assert ren is not None
         self.assertEqual(ren["title"], "renamed-ok")
 
+    def test_default_title_includes_display_name(self) -> None:
+        from pong.session_archive import default_archive_title, save_archive
+
+        t = default_archive_title("Sam's team")
+        self.assertTrue(t.startswith("Sam's team · "))
+        self.assertIn(" · ", t)
+
+        out = save_archive("pong-team")  # no title
+        self.assertTrue(out["title"].startswith("CyberPong · "))
+        self.assertEqual(out["meta"]["display_name"], "CyberPong")
+        self.assertEqual(out["meta"]["source_session"], "pong-team")
+
+        # Empty / whitespace title must also default
+        out2 = save_archive("pong-team", title="   ")
+        self.assertTrue(out2["title"].startswith("CyberPong · "))
+
+    def test_list_filter_by_team_and_session(self) -> None:
+        from pong.jsonutil import write_json
+        from pong.paths import pairs_path
+        from pong.session_archive import (
+            archive_matches_team,
+            archive_row_label,
+            list_archives,
+            save_archive,
+        )
+
+        # Second live pair under a different team name
+        pairs = {
+            "pong-team": {
+                "schema_version": 2,
+                "display_name": "CyberPong",
+                "project_root": "/tmp/proj",
+                "team_brief": "A",
+                "conductor": {"id": "c1", "type": "grok", "label": "Grok"},
+                "workers": [{"id": "w1", "type": "claude", "label": "B", "mission_role": "coder"}],
+            },
+            "pong-team-sam": {
+                "schema_version": 2,
+                "display_name": "Sam's team",
+                "project_root": "/tmp/d",
+                "team_brief": "B",
+                "conductor": {"id": "c1", "type": "grok", "label": "Grok"},
+                "workers": [{"id": "w1", "type": "claude", "label": "B", "mission_role": "coder"}],
+            },
+        }
+        write_json(pairs_path(), pairs)
+
+        a = save_archive("pong-team", title="Cyber CLI smoke")
+        b = save_archive("pong-team-sam", title="Sam's team · custom")
+        c = save_archive("pong-team-sam", title="custom without team word")
+
+        all_rows = list_archives()
+        self.assertGreaterEqual(len(all_rows), 3)
+
+        by_name = list_archives(display_name="Sam's team")
+        ids = {r["id"] for r in by_name}
+        self.assertIn(b["id"], ids)
+        self.assertIn(c["id"], ids)
+        self.assertNotIn(a["id"], ids)
+
+        # Case-insensitive display_name
+        by_ci = list_archives(display_name="sam's TEAM")
+        self.assertEqual({r["id"] for r in by_ci}, ids)
+
+        by_sess = list_archives(source_session="pong-team")
+        self.assertEqual({r["id"] for r in by_sess}, {a["id"]})
+
+        # OR: source_session miss + display_name hit still matches
+        mixed = list_archives(
+            source_session="nonexistent-pair",
+            display_name="CyberPong",
+        )
+        self.assertIn(a["id"], {r["id"] for r in mixed})
+
+        # Rename edge: display_name filter alone misses after rename in meta...
+        # but source_session still finds the archive.
+        meta = a["meta"]
+        self.assertTrue(
+            archive_matches_team(meta, source_session="pong-team", display_name="Renamed")
+        )
+        self.assertFalse(
+            archive_matches_team(meta, display_name="Renamed")
+        )
+
+        # Row label adds team when title lacks it
+        self.assertEqual(
+            archive_row_label({"title": "CLI smoke", "display_name": "CyberPong"}),
+            "CLI smoke · CyberPong",
+        )
+        self.assertEqual(
+            archive_row_label(
+                {"title": "Sam's team · Aug 5", "display_name": "Sam's team"}
+            ),
+            "Sam's team · Aug 5",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

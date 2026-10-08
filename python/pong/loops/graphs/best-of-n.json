@@ -1,0 +1,77 @@
+{
+  "name": "best-of-n",
+  "notes": "Best-of-N (T3): three attempts on different platforms; Jev ranks the ones that finished, asked in two option orders, and forwards the winner only when it leads clearly (else the top two go to you); a person merges it. Attempts write to their own folders (candidates/attempt-N/); a parallel code change needs its own git worktree, which this template does not create.",
+  "start": "build",
+  "max_rounds": 1,
+  "boundaries": {
+    "max_wall_min": 120,
+    "max_jobs": 8
+  },
+  "nodes": [
+    {
+      "id": "build",
+      "role": "builder",
+      "count": 3,
+      "pins": [
+        "claude",
+        "grok",
+        "claude"
+      ],
+      "task": "{goal}\n\nAttempt {copy}. Write everything under candidates/attempt-{copy}/ and nothing anywhere else. List your files in the claim."
+    },
+    {
+      "id": "pool",
+      "role": "join",
+      "wait": "all"
+    },
+    {
+      "id": "rank",
+      "role": "jev",
+      "ask": "rank",
+      "rubric": [
+        "@document"
+      ],
+      "task": "Which attempt best achieves the goal, judged on its files?"
+    },
+    {
+      "id": "merge",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "build",
+      "to": "pool",
+      "on": "*"
+    },
+    {
+      "from": "pool",
+      "to": "rank",
+      "on": "*"
+    },
+    {
+      "from": "merge",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "rank",
+      "to": "merge",
+      "on": "win"
+    },
+    {
+      "from": "rank",
+      "to": "merge",
+      "on": "abstain"
+    },
+    {
+      "from": "rank",
+      "to": "merge",
+      "on": "fail"
+    }
+  ]
+}

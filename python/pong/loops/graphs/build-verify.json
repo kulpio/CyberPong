@@ -1,0 +1,106 @@
+{
+  "name": "build-verify",
+  "notes": "Build ⇄ verify with an executable gate (docs/research/graph-loops-labs-2026-09.md T1). Tests run by the engine decide first; a fresh critic on another model family grades what passed while Jev scores the same change against the shipped code rubric (either may send it back; a win needs the critic); a person ships and sees the weakest rubric line first. Edit `run` to this project's test command and `protect` to the files a builder must not edit.",
+  "start": "build",
+  "max_rounds": 4,
+  "boundaries": {
+    "max_wall_min": 180,
+    "max_jobs": 16
+  },
+  "protect": [
+    "tests"
+  ],
+  "nodes": [
+    {
+      "id": "build",
+      "role": "builder",
+      "task": "{goal}\n\nRound {round}. Read the shared notes first. What the last check or critic said:\n{prev_summary}\n\nDo not edit the tests or the bar. If the spec and the tests disagree, claim `blocked` and say why."
+    },
+    {
+      "id": "tests",
+      "role": "check",
+      "run": [
+        "make test"
+      ],
+      "timeout_min": 15
+    },
+    {
+      "id": "judge",
+      "role": "critic",
+      "family": "different",
+      "task": "Grade {prev_artifacts} against the goal and the bar. Re-run anything you doubt. Claim `win`, `fail` with what must be fixed, or `abstain` if you were not given enough to judge.\n\nGoal: {goal}",
+      "jev": {
+        "rubric": [
+          "@code-change-spec"
+        ],
+        "mode": "both",
+        "diff": true
+      }
+    },
+    {
+      "id": "ship",
+      "role": "human"
+    },
+    {
+      "id": "end",
+      "role": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "build",
+      "to": "tests",
+      "on": "done"
+    },
+    {
+      "from": "build",
+      "to": "ship",
+      "on": "blocked"
+    },
+    {
+      "from": "tests",
+      "to": "judge",
+      "on": "win"
+    },
+    {
+      "from": "tests",
+      "to": "build",
+      "on": "fail"
+    },
+    {
+      "from": "tests",
+      "to": "ship",
+      "on": "bounded"
+    },
+    {
+      "from": "judge",
+      "to": "ship",
+      "on": "win"
+    },
+    {
+      "from": "judge",
+      "to": "build",
+      "on": "fail"
+    },
+    {
+      "from": "judge",
+      "to": "ship",
+      "on": "abstain"
+    },
+    {
+      "from": "judge",
+      "to": "ship",
+      "on": "bounded"
+    },
+    {
+      "from": "ship",
+      "to": "end",
+      "on": "approved"
+    },
+    {
+      "from": "ship",
+      "to": "build",
+      "on": "rejected"
+    }
+  ]
+}

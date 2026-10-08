@@ -7,8 +7,17 @@ import Foundation
 // MARK: - Shared helpers (shell, AppleScript, state files, logging)
 
 enum Pong {
+    /// A preview (PONG_PREVIEW=1) may read a made-up state folder instead of ~/.pong,
+    /// so a page can be checked on data that is not the person's own (PONG_PREVIEW_STATE=<dir>).
+    private static let previewState: String? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["PONG_PREVIEW"] == "1", let d = env["PONG_PREVIEW_STATE"], !d.isEmpty else { return nil }
+        return d
+    }()
+
     /// Prefer ~/.pong; fall back to legacy ~/.hermes-pong when that tree has data.
     static var stateDir: String {
+        if let d = previewState { return d }
         let primary = NSHomeDirectory() + "/.pong"
         let legacy = NSHomeDirectory() + "/.hermes-pong"
         let fm = FileManager.default
@@ -19,21 +28,34 @@ enum Pong {
         try? fm.createDirectory(atPath: primary, withIntermediateDirectories: true)
         return primary
     }
+    /// One-off boolean from ~/.pong/settings.json, defaulting to false.
+    static func boolSetting(_ key: String) -> Bool {
+        (loadJSON(stateDir + "/settings.json")[key] as? Bool) ?? false
+    }
+
     static var logPath: String { NSHomeDirectory() + "/Library/Logs/Pong.log" }
     /// Rotate when larger than this (bytes).
     private static let logMaxBytes: UInt64 = 2_000_000
     private static let logKeepRotated = 3
-    /// CLI tools for Guide headless + agent panes (Dock-launched apps get a bare PATH).
+    /// CLI tools for Guide headless + agent panes (Dock-launched apps get a bare PATH): the five
+    /// folders the app always searched, then the ones the engine searches for the AI CLIs
+    /// (`models.cli_dirs()`: nvm's node versions, volta, bun, an npm prefix, pnpm, Claude Code's
+    /// local install, mise and asdf shims, and what the person's login shell adds, as the engine
+    /// cached it in <state>/cli-path.json). An npm-installed `claude` under nvm, and the `node` it
+    /// runs on, are found the same way the engine finds them. Looked up again every 30 s at most.
     static var extraPath: String {
-        let home = NSHomeDirectory()
-        return [
-            "\(home)/.grok/bin",
-            "\(home)/.local/bin",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "\(home)/bin",
-        ].joined(separator: ":")
+        extraPathLock.lock()
+        defer { extraPathLock.unlock() }
+        if let c = extraPathCache, Date().timeIntervalSince(c.at) < 30 { return c.value }
+        let dirs = CLIDirs.list(home: NSHomeDirectory(), cliPathFile: stateDir + "/cli-path.json",
+                                nvmDir: ProcessInfo.processInfo.environment["NVM_DIR"])
+        let value = dirs.joined(separator: ":")
+        extraPathCache = (value, Date())
+        return value
     }
+
+    private static let extraPathLock = NSLock()
+    private static var extraPathCache: (value: String, at: Date)?
 
     static func log(_ msg: String) {
         rotateLogIfNeeded()
@@ -83,8 +105,11 @@ enum Pong {
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return "" }
-        p.waitUntilExit()
+        // Read to EOF before waiting: a child that writes more than the pipe
+        // buffer (~64 KB) blocks until someone reads, so waiting first hung the
+        // snapshot poll forever once a busy team's snapshot outgrew the buffer.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -146,6 +171,36 @@ enum Pong {
         return dict
     }
 
+    /// Read only the last *maxBytes* of a file (never load multi-hundred-MB logs).
+    /// Drops a partial first line when the seek lands mid-line. Matches python events.tail.
+    static func readFileTail(path: String, maxBytes: Int = 256_000) -> String {
+        let url = URL(fileURLWithPath: path)
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? fh.close() }
+        let size: UInt64
+        do {
+            size = try fh.seekToEnd()
+        } catch {
+            return ""
+        }
+        if size == 0 { return "" }
+        let maxB = UInt64(max(1, maxBytes))
+        let start: UInt64 = size > maxB ? size - maxB : 0
+        do {
+            try fh.seek(toOffset: start)
+            let data = try fh.readToEnd() ?? Data()
+            guard var text = String(data: data, encoding: .utf8)
+                    ?? String(data: data, encoding: .isoLatin1) else { return "" }
+            // Mid-line seek → drop incomplete first line
+            if start > 0, let nl = text.firstIndex(of: "\n") {
+                text = String(text[text.index(after: nl)...])
+            }
+            return text
+        } catch {
+            return ""
+        }
+    }
+
     static func writeJSON(_ path: String, _ dict: [String: Any]) {
         try? FileManager.default.createDirectory(
             atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
@@ -156,6 +211,26 @@ enum Pong {
 }
 
 // MARK: - Cross-team isolation helpers (Addendum 2)
+
+#if DEBUG
+/// The development checkout a debug build came from, or nil. Debug builds only, so no local
+/// folder ever ships in a release binary. First the tree this file was compiled from (when the
+/// compiler was given absolute paths); else the checkout around `dist/CyberPong.app` when the
+/// app runs from there (build-app.sh --dev compiles relative paths).
+enum DevCheckout {
+    static var root: String? {
+        let isCheckout = { (p: String) in FileManager.default.fileExists(atPath: p + "/python/pong/__init__.py") }
+        let source = #filePath
+        if source.hasPrefix("/") {
+            let r = URL(fileURLWithPath: source).deletingLastPathComponent().deletingLastPathComponent().path
+            if isCheckout(r) { return r }
+        }
+        let r = URL(fileURLWithPath: Bundle.main.bundlePath).deletingLastPathComponent()
+            .deletingLastPathComponent().path
+        return isCheckout(r) ? r : nil
+    }
+}
+#endif
 
 enum Isolation {
     /// PYTHONPATH root that contains the `pong` package.
@@ -169,9 +244,11 @@ enum Isolation {
         ]
         // Dev-tree literal must not appear in release Mach-O (sign-notarize hygiene).
         #if DEBUG
-        let dev = home + "/Personal/Projects/HermesPong/python"
-        if FileManager.default.fileExists(atPath: dev + "/pong/__init__.py") {
-            candidates.append(dev)
+        if let root = DevCheckout.root {
+            let dev = root + "/python"
+            if FileManager.default.fileExists(atPath: dev + "/pong/__init__.py") {
+                candidates.append(dev)
+            }
         }
         #endif
         for c in candidates where !c.isEmpty {
@@ -181,29 +258,6 @@ enum Isolation {
             }
         }
         return Bundle.main.resourcePath.map { $0 + "/python" } ?? (home + "/.pong/lib")
-    }
-
-    /// Seed `~/.pong/lib/pong` from the app bundle on first run (fresh zip installs).
-    static func seedControlPlaneIfNeeded() {
-        let dest = NSHomeDirectory() + "/.pong/lib"
-        let destPkg = dest + "/pong"
-        let src = Bundle.main.resourcePath.map { $0 + "/python/pong" } ?? ""
-        guard !src.isEmpty, FileManager.default.fileExists(atPath: src) else { return }
-        // Refresh if missing or older than bundle package
-        let need: Bool = {
-            if !FileManager.default.fileExists(atPath: destPkg + "/__init__.py") { return true }
-            // Always ensure __init__ exists
-            return false
-        }()
-        guard need else { return }
-        try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(atPath: destPkg)
-        do {
-            try FileManager.default.copyItem(atPath: src, toPath: destPkg)
-            Pong.log("Isolation seeded control plane → \(destPkg)")
-        } catch {
-            Pong.log("Isolation seed failed: \(error)")
-        }
     }
 
     /// Create/read per-session token; returns token string (empty on failure).
@@ -242,6 +296,57 @@ enum Isolation {
     }
 }
 
+// MARK: - The pong command and the engine, kept in step with this app (spec C9)
+
+extension EngineInstall {
+    /// The bundle's Resources when it carries the engine (a loose dev binary doesn't).
+    static var bundleResources: String? {
+        guard let res = Bundle.main.resourcePath,
+              FileManager.default.fileExists(atPath: res + "/python/pong/__init__.py") else { return nil }
+        return res
+    }
+
+    /// Where ~/bin/pong looks for the engine (its PYTHONPATH is ~/.pong/lib, whatever the app's
+    /// own state folder is called).
+    static var engineStateDir: String { NSHomeDirectory() + "/.pong" }
+
+    /// At launch: write ~/bin/pong when it's missing, and put the app's engine (and graph kit)
+    /// in ~/.pong/lib when it is missing or older — never over a newer one. A zip install has
+    /// no other way to get either, and every Graphs and Chats call goes through them. ~/bin/pong
+    /// is written only once a real Python is on this Mac (not Apple's stub): setup's Python row
+    /// says what to install, and the next launch (or Fix) writes it.
+    static func refreshAtLaunch() {
+        let python = LocalChecks.pythonPath() != nil
+        let o = refresh(home: NSHomeDirectory(), stateDir: engineStateDir, bundleResources: bundleResources,
+                        writeLauncher: python, kickstart: kickstartRunnerIfLoaded)
+        Pong.log("setup: launch check — pong command \(o.launcher ? "ok" : (python ? "missing" : "not written (no Python yet)")), engine \(o.decision)"
+                 + (o.kitSeeded ? ", graph kit copied" : ""))
+    }
+
+    /// The runner is one long-lived Python process holding the engine it started with: restart it
+    /// on the new one, but only when it is already loaded (installing it is the setup's job).
+    /// Never from a preview: there is one runner per Mac, and it is the person's.
+    static func kickstartRunnerIfLoaded() {
+        guard !UIPreview.isOn else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let label = "gui/\(getuid())/\(RunnerInstall.label)"
+            func launchctl(_ args: [String]) -> Int32 {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = args
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                do { try p.run() } catch { return -1 }
+                p.waitUntilExit()
+                return p.terminationStatus
+            }
+            guard launchctl(["print", label]) == 0 else { return }
+            let rc = launchctl(["kickstart", "-k", label])
+            Pong.log("setup: restarted the runner on the new engine (exit \(rc))")
+        }
+    }
+}
+
 // MARK: - Pair state (contracts identical to the Python panel)
 
 enum PairState {
@@ -255,6 +360,9 @@ enum PairState {
         if s.hasSuffix("-h") || s.hasSuffix("-c") { return false }
         // *-w0 / *-w2 — worker view sessions
         if s.range(of: #"-w\d+$"#, options: .regularExpression) != nil { return false }
+        // *-c1 / *-c1.b / *-c1.arch — the engine's per-seat view sessions (groups.view_name): opening a
+        // graph step's terminal made "pong-team-90-c1.b" show up as a second team
+        if s.range(of: #"-c\d+(\.[A-Za-z0-9_-]+)*$"#, options: .regularExpression) != nil { return false }
         // Never treat map preview / synthetic ids as teams
         if s == "preview" || s.hasPrefix("preview-") { return false }
         return s == "pong-team" || s.hasPrefix("pong-team-")
@@ -267,6 +375,8 @@ enum PairState {
     /// Cached **visible** pair names — never shell `tmux` on the main-thread hot path.
     private static var pairsCache: [String] = []
     private static var pairsCacheAt: TimeInterval = 0
+    /// Teams that are set up but not running (no tmux session): kept, and listed as stopped.
+    private static var stoppedCache: [String] = []
     private static var pairsRefreshInFlight = false
     private static var lastPruneAt: TimeInterval = 0
 
@@ -274,13 +384,15 @@ enum PairState {
     /// Ghost `pairs.json` keys (no tmux, not stowed) are pruned off the main thread.
     static func listPairs() -> [String] {
         let now = Date().timeIntervalSince1970
-        if now - pairsCacheAt > 4.0 || pairsCache.isEmpty {
+        if now - pairsCacheAt > 4.0 {
             refreshPairsCacheAsync()
         }
-        if !pairsCache.isEmpty {
+        // Once refreshed, the live list is the answer, even when it is empty: no team running is
+        // "no team live", not "not loaded yet" (that read every stopped team as live).
+        if pairsCacheAt > 0 {
             return pairsCache
         }
-        // File-only fallback until async refresh lands: skip hollow non-stowed tombs
+        // File-only fallback until the first refresh lands: skip hollow non-stowed tombs
         return loadPairsDb().keys
             .filter { isPairName($0) && isReasonableDbEntry($0) }
             .sorted()
@@ -288,6 +400,12 @@ enum PairState {
 
     /// Alias — same as `listPairs` (visible live/stowed only after refresh).
     static func listLivePairs() -> [String] { listPairs() }
+
+    /// Teams that are set up but not running: the switcher lists them as stopped (Launch team starts one).
+    static func listStoppedPairs() -> [String] {
+        _ = listPairs()  // refreshes both lists when stale
+        return stoppedCache
+    }
 
     /// Count for status chip — file only, no subprocess; excludes hollow tombs.
     static func pairCountFromDb() -> Int {
@@ -333,6 +451,7 @@ enum PairState {
             if doPrune { lastPruneAt = now }
 
             var visible = Set<String>()
+            var stopped = Set<String>()
 
             // DB entries: keep stowed always; keep live tmux; prune dead ghosts
             for key in db.keys where isPairName(key) {
@@ -359,11 +478,18 @@ enum PairState {
                     visible.insert(key)
                     continue
                 }
-                // No tmux, not stowed → ghost tombstone
-                if doPrune {
-                    db.removeValue(forKey: key)
-                    dbChanged = true
-                    Pong.log("ghost-team-pruned session=\(key) reason=no-tmux")
+                // No tmux, not stowed: a team that is set up but not running (a restart, a closed team).
+                // Its entry IS the team (lead, project folder, brief): deleting it once lost a whole
+                // team's settings. Keep it and list it as stopped; only hollow residue
+                // from a half-created team goes.
+                if isHollowPairEntry(entry) {
+                    if doPrune {
+                        db.removeValue(forKey: key)
+                        dbChanged = true
+                        Pong.log("ghost-team-pruned session=\(key) reason=hollow-no-tmux")
+                    }
+                } else {
+                    stopped.insert(key)
                 }
             }
 
@@ -382,8 +508,10 @@ enum PairState {
             }
 
             let sorted = visible.sorted()
+            let stoppedSorted = stopped.subtracting(visible).sorted()
             DispatchQueue.main.async {
                 pairsCache = sorted
+                stoppedCache = stoppedSorted
                 pairsCacheAt = Date().timeIntervalSince1970
                 pairsRefreshInFlight = false
             }
@@ -782,7 +910,7 @@ enum Workers {
             "export PONG_SEAT=\(id)",
         ]
         if !sessionToken.isEmpty {
-            wParts.append("export PONG_TOKEN=\(sessionToken)")
+            wParts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(pair)/token' 2>/dev/null)\"")
         }
         wParts.append("printf \"\\n  \(roleTag) · \(type.label) · \(pair):\(actualIdx)\\n\\n\"")
         wParts.append("exec \(safeCmd)")
@@ -795,8 +923,10 @@ enum Workers {
         let paneId = Isolation.registerPane(session: pair, workerId: id, tmuxTarget: "\(pair):\(actualIdx)", startCommand: launch)
         _ = seatExact
 
-        // Open Terminal attached to a single-seat view (not the full team group)
-        let view = "\(pair)-w\(actualIdx - 1)"
+        // Open Terminal attached to a single-seat view (not the full team group).
+        // Name it from the seat id via viewToken — deriving it from the window
+        // index here was the second copy of the off-by-one.
+        let view = TerminalTheme.viewToken(pair: pair, role: id)
         Pairing.ensureSeatViewSession(view: view, base: pair, windowIndex: actualIdx)
         let newId = Pairing.openAttachSession(view, displayTitle: seatFriendly)
 
@@ -951,7 +1081,7 @@ enum Workers {
             "export PONG_SEAT=\(workerId)",
         ]
         if !sessionToken.isEmpty {
-            wParts.append("export PONG_TOKEN=\(sessionToken)")
+            wParts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(pair)/token' 2>/dev/null)\"")
         }
         wParts.append("printf \"\\n  WORKER · \(wt.label) · \(pair):\(tmuxIdx) (model switch)\\n\\n\"")
         wParts.append("exec \(safeCmd)")
@@ -1018,6 +1148,198 @@ enum Workers {
         let primed = ConductorKickoff.pasteIntoSeat(session: pair, seatId: workerId, text: prime)
         Pong.log("switchWorkerModel \(pair)/\(workerId) \(oldType)→\(tid) hist=\(includeHistory) prime=\(primed)")
         return (true, "Switched \(workerId) to \(wt.label)")
+    }
+
+    /// Live switch of the **orchestrator** harness (Grok / Claude / Hermes).
+    /// Workers stay up — only c1 pane is respawned. Auto-saves continuity by default.
+    /// Call off the main thread. Auth gate may present UI.
+    @discardableResult
+    static func switchConductorModel(
+        pair: String,
+        newTypeId: String,
+        includeHistory: Bool = true,
+        saveContinuity: Bool = true
+    ) -> (ok: Bool, message: String, archiveId: String) {
+        let tid = newTypeId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Same catalog as New team Orchestrator AI chips (no custom / invent)
+        let allowed = Set(ConductorType.all.map(\.id).filter { $0 != "custom" })
+        guard allowed.contains(tid) else {
+            return (false, "Invalid orchestrator type (use grok, claude, or hermes)", "")
+        }
+        let entry = PairState.loadPairsDb()[pair] as? [String: Any] ?? [:]
+        guard !entry.isEmpty else {
+            return (false, "Team session not found: \(pair)", "")
+        }
+        var cond = entry["conductor"] as? [String: Any] ?? [:]
+        let oldType = ((cond["type"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if oldType == tid {
+            return (false, "Already \(ConductorType.resolved(tid).label)", "")
+        }
+
+        let gate = ProviderAuth.ensureLoggedInBlocking(typeId: tid, reason: "switch orchestrator")
+        switch gate {
+        case .ok: break
+        case .missingCLI(let msg): return (false, msg, "")
+        case .cancelled: return (false, "Login cancelled", "")
+        case .failed(let msg): return (false, msg, "")
+        }
+
+        let ct = ConductorType.resolved(tid)
+        let launch = ct.cmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? tid : ct.cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortLabel = ct.label.replacingOccurrences(of: " (recommended)", with: "")
+        let oldLabel = ((cond["label"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let oldTypeLabel = ConductorType.resolved(oldType.isEmpty ? "grok" : oldType).label
+            .replacingOccurrences(of: " (recommended)", with: "")
+        // Keep custom conductor names; replace auto labels that were the old model name.
+        let nextLabel: String = {
+            if oldLabel.isEmpty || oldLabel == oldTypeLabel || oldLabel == oldType
+                || oldLabel.caseInsensitiveCompare(oldTypeLabel) == .orderedSame {
+                return shortLabel
+            }
+            return oldLabel
+        }()
+
+        // 1) Durable continuity archive before kill/respawn (default path)
+        var archiveId = ""
+        if saveContinuity {
+            let save = SessionArchive.saveFromLive(
+                session: pair,
+                title: "\(nextLabel) harness switch · \(oldTypeLabel)→\(shortLabel)"
+            )
+            if save.ok {
+                archiveId = save.id
+            } else {
+                Pong.log("switchConductorModel continuity save failed: \(save.message)")
+            }
+        }
+
+        // 2) Bounded scrollback from current c1 pane (optional history)
+        let targetBefore = ConductorKickoff.seatTarget(session: pair, seatId: "c1")
+        var historyBlock = ""
+        if includeHistory {
+            let raw = Pong.sh("tmux capture-pane -p -J -t '\(targetBefore)' -S -400 2>/dev/null")
+            historyBlock = Self.boundedHistory(raw, maxBytes: 14_000, maxLines: 220)
+        }
+
+        // 3) Roster update — conductor only; workers / architecture / roles untouched
+        PairState.mutate(pair) { fresh in
+            var c = fresh["conductor"] as? [String: Any] ?? [:]
+            c["id"] = "c1"
+            c["type"] = ct.id
+            c["cmd"] = launch
+            c["label"] = nextLabel
+            c["mode"] = (c["mode"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "tmux"
+            c["tmux_index"] = 0
+            fresh["conductor"] = c
+            // Legacy mirror fields some UI still reads
+            fresh["hermes_window_id"] = c["window_id"] ?? fresh["hermes_window_id"]
+            fresh["updated"] = Date().timeIntervalSince1970
+        }
+
+        // 4) Ensure window 0 exists (recreate conductor window only — never killPair / workers)
+        _ = Pong.sh("""
+            tmux has-session -t '\(pair)' 2>/dev/null || exit 1
+            if ! tmux list-windows -t '\(pair)' -F '#{window_index}' 2>/dev/null | grep -qx 0; then
+              tmux new-window -d -t '\(pair):0' -n 'c1' 'sleep 3600' 2>/dev/null || \
+                tmux new-window -d -t '\(pair)' -n 'c1' 'sleep 3600' 2>/dev/null || true
+            fi
+            echo OK
+            """)
+        let target = ConductorKickoff.seatTarget(session: pair, seatId: "c1")
+
+        // 5) Respawn **only** c1 pane
+        let pathExport = TerminalTheme.panePathExport()
+        let sessionToken = Isolation.ensureToken(session: pair)
+        let safeCmd = launch.replacingOccurrences(of: "'", with: "'\\''")
+        var parts: [String] = [
+            pathExport,
+            "export PONG_SESSION=\(pair)",
+            "export HERMES_PONG_SESSION=\(pair)",
+            "export PONG_SEAT=c1",
+            "export PONG_ROLE=conductor",
+            "export HERMES_PONG_ROLE=orchestra",
+        ]
+        if !sessionToken.isEmpty {
+            parts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(pair)/token' 2>/dev/null)\"")
+        }
+        parts.append("printf \"\\n  CONDUCTOR · \(shortLabel) · \(pair):0 (harness switch)\\n\\n\"")
+        parts.append("exec \(safeCmd)")
+        let shellLine = TerminalTheme.joinShell(parts)
+        let q = shellLine
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let respawn = Pong.sh("""
+            tmux has-session -t '\(pair)' 2>/dev/null || exit 1
+            tmux respawn-pane -k -t '\(target)' \"\(q)\" 2>/dev/null || \
+              (tmux send-keys -t '\(target)' C-c; sleep 0.2; tmux send-keys -t '\(target)' -l '\(shellLine.replacingOccurrences(of: "'", with: "'\\''"))'; sleep 0.05; tmux send-keys -t '\(target)' Enter)
+            echo OK
+            """)
+        if !respawn.contains("OK") {
+            return (false, "tmux respawn failed for conductor (workers left running)", archiveId)
+        }
+
+        let paneId = Isolation.registerPane(
+            session: pair,
+            workerId: "c1",
+            tmuxTarget: "\(pair):0",
+            startCommand: launch
+        )
+        if !paneId.isEmpty {
+            PairState.mutate(pair) { fresh in
+                var c = fresh["conductor"] as? [String: Any] ?? [:]
+                c["pane_id"] = paneId
+                fresh["conductor"] = c
+            }
+        }
+        TerminalTheme.tmuxTitle(baseSession: pair, tmuxIndex: 0, displayTitle: nextLabel)
+        TerminalTheme.applySeatRename(pair: pair, seat: "c1", label: nextLabel)
+        TerminalTheme.applyPair(pair)
+        Pong.sh("python3 $HOME/bin/hermes_pong.py write-bind --session \(pair) >/dev/null 2>&1 || true")
+
+        // Wait for new orchestrator TUI
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.5)
+            if ConductorKickoff.conductorLooksReady(session: pair) { break }
+        }
+
+        // 6) History block (optional) then full conductor prime + continuity recap
+        if includeHistory, !historyBlock.isEmpty {
+            let histText = """
+            ## Previous orchestrator history (user requested)
+
+            Switched from **\(oldTypeLabel)** → **\(shortLabel)** on seat `c1`.
+            Workers were **not** killed. Scrollback below is a bounded capture from the previous conductor.
+
+            ```
+            \(historyBlock)
+            ```
+
+            ---
+            End of previous orchestrator history. Continuity recap + BOOT prime follow.
+
+            """
+            _ = ConductorKickoff.pasteIntoConductor(session: pair, text: histText)
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+
+        var ctx = ConductorKickoff.contextFromPairState(session: pair)
+        if !archiveId.isEmpty {
+            let recap = SessionArchive.loadRecap(id: archiveId)
+            if !recap.isEmpty {
+                ctx.continuityRecap = recap
+            }
+        }
+        let boot = ConductorKickoff.buildPrompt(ctx)
+        let primed = ConductorKickoff.pasteIntoConductor(session: pair, text: boot)
+        let archNote = archiveId.isEmpty ? "no archive" : "archive=\(archiveId)"
+        Pong.log(
+            "switchConductorModel \(pair) \(oldType)→\(tid) hist=\(includeHistory) cont=\(saveContinuity) \(archNote) prime=\(primed)"
+        )
+        let msg = primed
+            ? "Switched orchestrator to \(shortLabel) (workers kept; \(archNote))"
+            : "Switched to \(shortLabel) but prime paste may have failed — check Terminal (\(archNote))"
+        return (true, msg, archiveId)
     }
 
     /// Cap scrollback for paste safety (~14KB / line cap).
@@ -1242,6 +1564,15 @@ enum Workers {
             }
             let ti = (w["tmux_index"] as? Int) ?? 1
             let view = TerminalTheme.viewToken(pair: pair, role: workerId)
+            // Already attached? Raise that window and stop. Falling through to
+            // the reopen path would put a second Terminal on the same seat,
+            // which is exactly what the island's terminal button must not do.
+            if let live = Pairing.windowIdForAttachedTTY(view: view) {
+                Pairing.raiseTerminalWindow(live)
+                setWorkerWindowId(pair: pair, workerId: workerId, windowId: live)
+                Pong.log("frontWorker raised live tty window \(pair)/\(workerId) → \(live)")
+                return
+            }
             // Ignore stored id unless it is a real attach for THIS view
             let stored = "\(w["window_id"] ?? "")"
             let storedOpt: String? = {
@@ -1435,11 +1766,17 @@ enum TerminalTheme {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    /// View-session token always present in Terminal title: "tmux attach-session -t hermes-pair-w0"
+    /// View-session token always present in Terminal title:
+    /// "tmux attach-session -t pong-team-w16"
+    ///
+    /// Named after the SEAT ID. This used to be a 0-based index, so every seat's
+    /// Terminal was labelled with the *previous* seat's id — Engineering (w16)
+    /// opened a window titled w15, which is Deep Research. The base session's
+    /// window indices were always right; only this wrapper name was shifted.
     static func viewToken(pair: String, role: String) -> String {
         if role == "hermes" { return "\(pair)-h" }
         if role.hasPrefix("w"), let n = Int(role.dropFirst()), n >= 1 {
-            return "\(pair)-w\(n - 1)"
+            return "\(pair)-w\(n)"
         }
         return "\(pair)-\(role)"
     }
@@ -1903,7 +2240,7 @@ enum TerminalTheme {
                   force: force, pair: pair)
             let tmuxIdx = (ws[i]["tmux_index"] as? Int) ?? (i + 1)
             tmuxTitle(baseSession: pair, tmuxIndex: tmuxIdx, displayTitle: seatTitle)
-            // Link view sessions are single-window (`pair-w0`, …)
+            // Link view sessions are single-window (`pair-w1`, `pair-w2`, …)
             tmuxTitle(baseSession: token, tmuxIndex: 0, displayTitle: seatTitle)
             if let wid, storedW != wid {
                 ws[i]["window_id"] = wid
@@ -1967,28 +2304,120 @@ enum TerminalTheme {
     }
 }
 
-// MARK: - Tmux scrollback (Terminal scrollbar is blank without this)
+// MARK: - Tmux scrollback + selection (all agent CLIs)
 
 /// Pair windows are `tmux attach`. Tmux owns pane history; Terminal’s scrollbar
-/// only shows its own buffer (often empty under the alternate screen). Enable
-/// Deep history + mouse for wheel scroll; copy-mode friendly for Terminal selection.
+/// only shows its own buffer (often empty under the alternate screen).
+///
+/// ## Select / copy root cause (Hermes / Claude / Codex vs Grok)
+/// Full-screen TUIs enable **SGR mouse reporting**. With default tmux mouse
+/// bindings, `MouseDrag1Pane` is forwarded to the app when `#{mouse_any_flag}`
+/// is set — so Terminal never sees the drag and native selection fails.
+/// Grok often leaves mouse reporting off, which is why Grok “just works”.
+///
+/// ## Fix (CLI-agnostic)
+/// Rebind drag to always enter **tmux copy-mode** and pipe selection into a
+/// UTF-8 `pbcopy` on drag-end (mouse-up already copies — no need to hold and ⌘C).
+/// Bare `pbcopy` under tmux often has **no LANG/LC_*** → MacRoman pasteboard
+/// tagging → mojibake (`│` → `‚îÇ`, `→` → `‚Üí`). Clicks still reach the TUI.
+/// Option-drag remains Terminal.app native selection backup.
 enum TmuxScroll {
+    /// Clipboard command forced to UTF-8. Prefer installed helper, else env+pbcopy.
+    private static var pbcopyCmd: String {
+        let candidates = [
+            NSHomeDirectory() + "/bin/pong-pbcopy",
+            "/Applications/CyberPong.app/Contents/Resources/pong-pbcopy",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return "env LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 /usr/bin/pbcopy"
+    }
+
     static func apply(session: String? = nil) {
+        ensurePongPbcopyHelper()
         // Global defaults (new panes inherit)
         _ = Pong.sh("tmux set-option -g history-limit 100000 2>/dev/null || true")
         _ = Pong.sh("tmux set-option -g mouse on 2>/dev/null || true")
         _ = Pong.sh("tmux set-option -g focus-events on 2>/dev/null || true")
         _ = Pong.sh("tmux set-option -g mode-keys vi 2>/dev/null || true")
-        // Terminal.app: drag-select often works with mouse on + copy-mode; Option-drag always works
-        _ = Pong.sh("tmux set-option -g @terminal-select-hint 1 2>/dev/null || true")
-        // Prefer OSC 52 clipboard when Terminal supports it
+        // Prefer OSC 52 + macOS pbcopy on copy-mode exit
         _ = Pong.sh("tmux set-option -g set-clipboard on 2>/dev/null || true")
+        // tmux server often started without locale — force UTF-8 for copy-pipe children
+        _ = Pong.sh("""
+            tmux set-environment -g LANG en_US.UTF-8 2>/dev/null || true
+            tmux set-environment -g LC_ALL en_US.UTF-8 2>/dev/null || true
+            tmux set-environment -g LC_CTYPE en_US.UTF-8 2>/dev/null || true
+            """)
+        // Clipboard / mouse feature bits for common Terminal.app TERM values
+        _ = Pong.sh("""
+            tmux set-option -ga terminal-overrides ',xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\007' 2>/dev/null || true
+            tmux set-option -ga terminal-overrides ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007' 2>/dev/null || true
+            tmux set-option -ga terminal-overrides ',screen*:Ms=\\E]52;%p1%s;%p2%s\\007' 2>/dev/null || true
+            """)
+        applySelectionBindings()
         if let session, !session.isEmpty {
             let s = session.replacingOccurrences(of: "'", with: "")
             _ = Pong.sh("tmux set-option -t '\(s)' history-limit 100000 2>/dev/null || true")
             _ = Pong.sh("tmux set-option -t '\(s)' mouse on 2>/dev/null || true")
             _ = Pong.sh("tmux set-option -t '\(s)' mode-keys vi 2>/dev/null || true")
         }
+    }
+
+    /// Install ~/bin/pong-pbcopy once so live tmux + app share the same UTF-8 sink.
+    private static func ensurePongPbcopyHelper() {
+        let dest = NSHomeDirectory() + "/bin/pong-pbcopy"
+        if FileManager.default.isExecutableFile(atPath: dest) { return }
+        let script = """
+        #!/bin/bash
+        export LANG="${LANG:-en_US.UTF-8}"
+        export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+        export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
+        exec /usr/bin/pbcopy
+        """
+        do {
+            try FileManager.default.createDirectory(
+                atPath: NSHomeDirectory() + "/bin",
+                withIntermediateDirectories: true
+            )
+            try script.write(toFile: dest, atomically: true, encoding: .utf8)
+            let q = dest.replacingOccurrences(of: "'", with: "")
+            _ = Pong.sh("chmod 755 '\(q)' 2>/dev/null || true")
+        } catch {
+            Pong.log("tmux pong-pbcopy install failed: \(error)")
+        }
+    }
+
+    /// Force drag-select into tmux copy-mode for every CLI (not Grok-only).
+    /// Applied globally so all live pairs pick it up via `apply` / `applyAllLive`.
+    private static func applySelectionBindings() {
+        // copy-pipe runs this via the shell — must force UTF-8 (see pbcopyCmd).
+        // Escape single quotes for embedding inside tmux single-quoted bind strings.
+        let sink = pbcopyCmd.replacingOccurrences(of: "'", with: "'\\''")
+        // Default for bare copy-pipe-and-cancel (Enter, DoubleClick in table, etc.)
+        _ = Pong.sh("tmux set-option -g copy-command '\(sink)' 2>/dev/null || true")
+        // Override default: do NOT forward MouseDrag to app mouse mode.
+        // Drag-end auto-copies via UTF-8 pbcopy and exits copy-mode (no hold+⌘C).
+        _ = Pong.sh("""
+            tmux unbind-key -n MouseDrag1Pane 2>/dev/null || true
+            tmux bind-key -n MouseDrag1Pane 'select-pane ; copy-mode -M' 2>/dev/null || true
+            tmux unbind-key -T copy-mode MouseDragEnd1Pane 2>/dev/null || true
+            tmux unbind-key -T copy-mode-vi MouseDragEnd1Pane 2>/dev/null || true
+            tmux bind-key -T copy-mode MouseDragEnd1Pane 'send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux bind-key -T copy-mode-vi MouseDragEnd1Pane 'send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux unbind-key -n DoubleClick1Pane 2>/dev/null || true
+            tmux bind-key -n DoubleClick1Pane 'select-pane ; copy-mode -M ; send-keys -X select-word ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux unbind-key -n TripleClick1Pane 2>/dev/null || true
+            tmux bind-key -n TripleClick1Pane 'select-pane ; copy-mode -M ; send-keys -X select-line ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux unbind-key -T copy-mode DoubleClick1Pane 2>/dev/null || true
+            tmux unbind-key -T copy-mode-vi DoubleClick1Pane 2>/dev/null || true
+            tmux unbind-key -T copy-mode TripleClick1Pane 2>/dev/null || true
+            tmux unbind-key -T copy-mode-vi TripleClick1Pane 2>/dev/null || true
+            tmux bind-key -T copy-mode DoubleClick1Pane 'select-pane ; send-keys -X select-word ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux bind-key -T copy-mode-vi DoubleClick1Pane 'select-pane ; send-keys -X select-word ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux bind-key -T copy-mode TripleClick1Pane 'select-pane ; send-keys -X select-line ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            tmux bind-key -T copy-mode-vi TripleClick1Pane 'select-pane ; send-keys -X select-line ; send-keys -X copy-pipe-and-cancel "\(sink)"' 2>/dev/null || true
+            """)
     }
 
     static func applyAllLive() {
@@ -1999,7 +2428,8 @@ enum TmuxScroll {
         }
     }
 
-    /// Capture last N lines of a seat pane to the macOS pasteboard (mitigation when drag-select fights mouse scroll).
+    /// Capture last N lines of a seat pane to the macOS pasteboard
+    /// (fallback when drag-select is unavailable; works for any seat/CLI).
     @discardableResult
     static func copyScrollback(session: String, paneTarget: String? = nil, lines: Int = 200) -> Bool {
         let target = (paneTarget?.isEmpty == false) ? paneTarget! : "\(session):0"
@@ -2012,6 +2442,7 @@ enum TmuxScroll {
         return true
     }
 }
+
 
 
 // MARK: - Saved teams (~/.hermes-pong/teams.json)
@@ -2481,8 +2912,58 @@ enum Pairing {
     /// Raise only if the window title is a real `tmux attach-session -t <viewToken>`.
     /// Refuses free `grok ▸` / `hermes ▸` windows that were mis-bound as seat ids.
     @discardableResult
+    /// The Terminal window that is *actually* attached to this view session.
+    ///
+    /// Title matching is how this used to be decided, and it goes stale: a
+    /// window's title still carries the attach command it was launched with, so
+    /// renaming a view session (seat ids, w15→w16) makes every window opened
+    /// before the rename look like somebody else's. The raise is then refused
+    /// and a second window opens beside the first — which is the duplicate the
+    /// island's terminal button must never produce.
+    ///
+    /// tmux knows which tty is attached to the session and Terminal knows which
+    /// window owns a tty. That pairing is a fact about the live connection, so
+    /// it cannot drift the way a remembered command string does.
+    static func windowIdForAttachedTTY(view: String) -> String? {
+        let v = view.replacingOccurrences(of: "'", with: "")
+        let ttys = Set(
+            Pong.sh("tmux list-clients -t '\(v)' -F '#{client_tty}' 2>/dev/null")
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        )
+        guard !ttys.isEmpty else { return nil }
+        let out = Pong.osascript("""
+        tell application "Terminal"
+          set acc to ""
+          repeat with w in windows
+            try
+              set acc to acc & (id of w as string) & "|||" & (tty of selected tab of w) & linefeed
+            end try
+          end repeat
+          return acc
+        end tell
+        """)
+        for line in out.split(separator: "\n") {
+            let parts = line.components(separatedBy: "|||")
+            guard parts.count == 2 else { continue }
+            let wid = parts[0].trimmingCharacters(in: .whitespaces)
+            let tty = parts[1].trimmingCharacters(in: .whitespaces)
+            if Int(wid) != nil, ttys.contains(tty) { return wid }
+        }
+        return nil
+    }
+
     static func raiseOnlyIfPairAttach(_ windowId: String, viewToken: String) -> Bool {
         guard Int(windowId) != nil else { return false }
+        // A live tty attachment outranks the title: it proves this window is on
+        // that session right now, whatever its title still says.
+        if let live = windowIdForAttachedTTY(view: viewToken), live == windowId {
+            raiseTerminalWindow(windowId)
+            usleep(80_000)
+            raiseTerminalWindow(windowId)
+            return true
+        }
         let title = TerminalTheme.listWindows().first(where: { $0.id == windowId })?.title ?? ""
         guard TerminalTheme.isPairAttachTitle(title, viewToken: viewToken) else {
             Pong.log("raiseOnlyIfPairAttach BLOCKED id=\(windowId) token=\(viewToken) title=\(title)")
@@ -2839,9 +3320,11 @@ enum Pairing {
             }
         }()
 
+        // Sweep every wrapper this pair name owns, including any left under the
+        // old 0-based spelling, so a repair does not leave a stale w0 behind.
         var toKill = [name, viewH, "\(name)-c"]
-        for i in 0..<max(list.count, 8) { toKill.append("\(name)-w\(i)") }
-        for s in toKill {
+        toKill.append(contentsOf: viewSessionsFor(name))
+        for s in Set(toKill) {
             Pong.sh("tmux has-session -t \(s) 2>/dev/null && tmux kill-session -t \(s) || true")
         }
 
@@ -2868,7 +3351,7 @@ enum Pairing {
             "export HERMES_PONG_ROLE=orchestra",
         ]
         if !sessionToken.isEmpty {
-            condParts.append("export PONG_TOKEN=\(sessionToken)")
+            condParts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(name)/token' 2>/dev/null)\"")
         }
         condParts.append(writeBind)
         condParts.append("printf \"\\n  \(banner)\\n  skill: \(skillHint) · pong gate · pong job create\\n\\n\"")
@@ -2902,7 +3385,7 @@ enum Pairing {
                 "export PONG_SEAT=\(seatId)",
             ]
             if !sessionToken.isEmpty {
-                wParts.append("export PONG_TOKEN=\(sessionToken)")
+                wParts.append("export PONG_TOKEN=\"$(cat '" + Pong.stateDir + "/sessions/\(name)/token' 2>/dev/null)\"")
             }
             wParts.append("printf \"\\n  \(wbanner)\\n\\n\"")
             wParts.append("exec \(safeCmd)")
@@ -2933,7 +3416,9 @@ enum Pairing {
         ensureSeatViewSession(view: viewH, base: name, windowIndex: 0)
         var viewNames: [String] = []
         for idx in 0..<list.count {
-            let vn = "\(name)-w\(idx)"
+            // Seat id, not the loop index: seat w(idx+1) lives in window idx+1
+            // and its view session must carry the same number as both.
+            let vn = TerminalTheme.viewToken(pair: name, role: "w\(idx + 1)")
             viewNames.append(vn)
             ensureSeatViewSession(view: vn, base: name, windowIndex: idx + 1)
         }
@@ -3192,10 +3677,30 @@ enum Pairing {
         Tips.afterSuccessfulPair()
     }
 
+    /// Every tmux session belonging to a pair: the base, the chief and legacy
+    /// views, and one wrapper per seat.
+    ///
+    /// Asked of tmux rather than guessed from a range, because the range was
+    /// wrong in both directions — it stopped at w11, so a 24-seat roster leaked
+    /// twelve wrappers on every teardown, and it could not know about views
+    /// left behind under the old 0-based names. Matching is deliberately narrow:
+    /// a sibling pair called "\(name)-2" shares the prefix and must not be
+    /// swept up with this one.
+    static func viewSessionsFor(_ name: String) -> [String] {
+        let raw = Pong.sh("tmux list-sessions -F '#{session_name}' 2>/dev/null || true")
+        return raw.split(separator: "\n").map(String.init).filter { s in
+            if s == name { return true }
+            guard s.hasPrefix("\(name)-") else { return false }
+            let suffix = String(s.dropFirst(name.count + 1))
+            if suffix == "h" || suffix == "c" { return true }
+            return suffix.hasPrefix("w") && Int(suffix.dropFirst()) != nil
+        }
+    }
+
     static func killPair(_ name: String) {
         var sessions = [name, "\(name)-h", "\(name)-c"]
-        for i in 0..<12 { sessions.append("\(name)-w\(i)") }
-        for s in sessions {
+        sessions.append(contentsOf: viewSessionsFor(name))
+        for s in Set(sessions) {
             Pong.sh("tmux kill-session -t \(s) 2>/dev/null || true")
         }
         var db = PairState.loadPairsDb()
@@ -3536,19 +4041,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var glowPhase: CGFloat = 0
     private var hasActivePair = false
     private var menuSignal: PongTheme.SystemSignal = .idle
-    private var onboardingWindow: NSWindow?
     private var cachedSessions: [String] = []
     private var lastSessionPoll = Date.distantPast
 
-    private var onboardedFlagPath: String { Pong.stateDir + "/onboarded" }
-    private var isOnboarded: Bool { FileManager.default.fileExists(atPath: onboardedFlagPath) }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        // Night only (1.9): every window, sheet and stock control draws dark.
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         PongTheme.registerBundledFonts()
+        if UIPreview.isOn {
+            // A development preview: no island, no schedules, no menu bar item, no Dock icon.
+            Self.isolatePreviewChildren()
+            NSApp.setActivationPolicy(.accessory)
+            installMainMenu()
+            GraphStore.shared.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                PanelController.shared.show()
+                UIPreview.runSteps()
+            }
+            return
+        }
+        NSApp.setActivationPolicy(.regular)
         installMainMenu()
+        // The ~/bin/pong command and the engine in ~/.pong/lib, in step with this app (C9). First,
+        // before the island, the schedules and the panel, which all run `pong`.
+        EngineInstall.refreshAtLaunch()
         // Existing pair terminals: enable mouse scroll + deep history immediately
         TmuxScroll.applyAllLive()
+        // Chief recaps into the island's Conversation. Independent of any window
+        // being open — the panel's poll stops exactly when the person is looking at
+        // the island instead, which is why that pane had nothing in it.
+        HumanConsoleController.startChiefRecapWatch()
+        // One package: the island comes up with the app rather than being a
+        // second thing to find and open.
+        if !Pong.boolSetting("hide_island") { IslandHelper.ensureRunning() }
+        // Until now nothing ever fired a cron: nextRun() only drew NEXT on the
+        // map and in the Cron Manager, so a schedule was a label. This is the
+        // single clock that turns a due schedule into a real job.
+        CronSchedule.startRunner()
+        // The island asks us to front a seat's Terminal. It cannot do it itself
+        // without its own Automation grant, and we already hold one plus the
+        // open-or-raise path that refuses to spawn a second window for a seat
+        // that already has one.
+        // The island's "New graph" opens the app's own sheet.
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.owi.cyberpong.newGraph"), object: nil, queue: .main
+        ) { _ in
+            PanelController.shared.newGraph()
+        }
+        // The island's working-graph lines open the graph here.
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.owi.cyberpong.openGraph"), object: nil, queue: .main
+        ) { note in
+            guard let key = (note.userInfo as? [String: Any])?["key"] as? String, !key.isEmpty else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            PanelController.shared.openGraph(key)
+        }
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.owi.cyberpong.frontSeat"), object: nil, queue: .main
+        ) { note in
+            let info = note.userInfo as? [String: Any] ?? [:]
+            let session = (info["session"] as? String) ?? ""
+            let seat = (info["seat"] as? String) ?? ""
+            guard !session.isEmpty, !seat.isEmpty else { return }
+            Pong.log("island frontSeat request \(session)/\(seat)")
+            DispatchQueue.global(qos: .userInitiated).async {
+                if seat.contains(".") {
+                    // A graph seat (c1.a, c1.q): not in pairs.json, so frontWorker cannot find
+                    // it. The Graphs page's path: a one-window view, attached by exact name.
+                    let r = GraphCLI.runSync(["-s", session, "graph", "seat-view", "--seat", seat, "--json"], timeout: 20)
+                    guard let data = r.out.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          GJ.bool(obj["ok"]) else {
+                        Pong.log("island frontSeat \(session)/\(seat) failed: \(r.out.isEmpty ? r.err : r.out)")
+                        return
+                    }
+                    GraphCLI.openInTerminal("tmux attach-session -t '=" + GJ.str(obj["view"]) + ":'")
+                } else if seat == "c1" || seat == "hermes" {
+                    Pairing.frontConductor(session)
+                } else {
+                    Workers.frontWorker(pair: session, workerId: seat)
+                }
+            }
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
@@ -3558,8 +4132,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = "\(PongTheme.productName) — agent mission control"
             button.appearsDisabled = false
         }
-        statusItem.isVisible = true
+        // The island covers status at a glance, so the menu bar extra is optional.
+        // Off by default is wrong for anyone who has not built the island, so it
+        // stays opt-out via ~/.pong/settings.json → "hide_menu_bar_item": true.
+        statusItem.isVisible = !Pong.boolSetting("hide_menu_bar_item")
         rebuildMenu()
+        // Questions: a notification each, and the count on the Dock icon and here in the menu bar.
+        Attention.shared.onCount = { [weak self] n in
+            guard let button = self?.statusItem?.button else { return }
+            let t = n > 0 ? " \(n)" : ""
+            if button.title != t {
+                button.title = t
+                button.imagePosition = .imageLeading
+                button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+                self?.statusItem.length = n > 0 ? NSStatusItem.variableLength : NSStatusItem.squareLength
+            }
+            button.toolTip = n > 0 ? "\(n) need\(n == 1 ? "s" : "") you" : "\(PongTheme.productName): nothing needs you"
+        }
+        Attention.shared.start()
 
         // Menu icon: 1s base; idle skips phase animation (power). Was 0.5s always.
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -3569,9 +4159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         timer = t
 
-        // Always open the control panel on 3D first — show the product promise.
-        // App AI onboarding (provider + first team) layers on top when needed.
-        Isolation.seedControlPlaneIfNeeded()
         try? FileManager.default.createDirectory(
             atPath: Pong.stateDir, withIntermediateDirectories: true)
         // Tighten state dir perms (review: world-readable prompts)
@@ -3579,23 +4166,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
+            // Opens on Needs you; the first-run setup (2.0) sits on top on a new Mac. Someone past
+            // it whose graph runner isn't installed is asked once to turn it on.
             self.openPanel()
-            PanelController.shared.ensure3DVisible()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                let needsAI = !AppAISettings.onboardingComplete || AppAISettings.providerId == nil
-                if needsAI {
-                    AppAIOnboarding.presentIfNeeded(force: AppAISettings.providerId == nil)
-                } else if !self.isOnboarded {
-                    // Legacy permissions-only path
-                    self.showOnboarding()
-                } else {
+                let guide = {
                     AppAIChatBubble.shared.attachIfNeeded()
                     if AppAISettings.headlessReady {
-                        AppAIChatBubble.shared.nudge("Guide online")
+                        AppAIChatBubble.shared.nudge("The Guide is online.")
                     }
                     MapCoachMarks.presentIfNeeded()
                 }
+                if FirstRunSetup.present(force: false, afterClose: guide) { return }
+                if !FirstRunSetup.askToTurnOnRunner(afterClose: guide) { guide() }
             }
+        }
+    }
+
+    /// A preview's child processes (`pong`, tmux, python) must never reach the live setup:
+    /// the engine reads the fake state folder, and tmux talks to an empty server of its own,
+    /// so nothing (an architect chat's resize, a snapshot's paste) can touch a live window.
+    private static func isolatePreviewChildren() {
+        let env = ProcessInfo.processInfo.environment
+        if let d = env["PONG_PREVIEW_STATE"], !d.isEmpty { setenv("PONG_HOME", d, 1) }
+        for k in ["TMUX", "TMUX_PANE", "PONG_SESSION", "PONG_SEAT", "PONG_TOKEN", "PONG_SESSION_TOKEN", "HERMES_PONG_SESSION"] {
+            unsetenv(k)
+        }
+        if (env["TMUX_TMPDIR"] ?? "").isEmpty {
+            // short on purpose: tmux sockets fail past 104 characters
+            let dir = "/tmp/cp-preview-\(getpid())"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o700])
+            setenv("TMUX_TMPDIR", dir, 1)
         }
     }
 
@@ -3604,6 +4206,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    private func menuItem(_ title: String, _ sel: Selector?, _ key: String = "", _ mods: NSEvent.ModifierFlags = [.command],
+                          target: AnyObject? = nil) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+        i.keyEquivalentModifierMask = key.isEmpty ? [] : mods
+        i.target = target ?? self
+        return i
+    }
+
+    /// The standard Mac menus (ux-review quick win 2): File, Edit, View, Go, Window, Help,
+    /// with ⌘1–5, ⌘N, ⇧⌘N, ⌘W, ⌘, ⌘K, ⌘J and ⌘R.
     private func installMainMenu() {
         let mainMenu = NSMenu()
 
@@ -3612,37 +4224,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainMenu.addItem(appItem)
         let appMenu = NSMenu(title: "CyberPong")
         appItem.submenu = appMenu
+        appMenu.addItem(menuItem("About CyberPong", #selector(showAbout)))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Settings…", #selector(openSettings), ","))
+        appMenu.addItem(menuItem("Switch AI account…", #selector(switchProviderAccount)))
+        appMenu.addItem(menuItem("Set a quality bar…", #selector(openReviewBarSetup)))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Tip the developer…", #selector(tipDeveloper)))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Hide CyberPong", #selector(NSApplication.hide(_:)), "h", target: NSApp))
+        appMenu.addItem(menuItem("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option], target: NSApp))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Quit CyberPong", #selector(quitAll), "q"))
 
-        let about = NSMenuItem(title: "About CyberPong", action: #selector(showAbout), keyEquivalent: "")
-        about.target = self
-        appMenu.addItem(about)
-        appMenu.addItem(NSMenuItem.separator())
+        // File
+        let fileItem = NSMenuItem()
+        mainMenu.addItem(fileItem)
+        let fileMenu = NSMenu(title: "File")
+        fileItem.submenu = fileMenu
+        fileMenu.addItem(menuItem("New Graph…", #selector(menuNewGraph), "n"))
+        fileMenu.addItem(menuItem("New Team…", #selector(menuNewTeam), "N", [.command, .shift]))
+        fileMenu.addItem(menuItem("New Schedule…", #selector(menuNewSchedule)))
+        fileMenu.addItem(menuItem("Start from a Template…", #selector(menuTemplate)))
+        fileMenu.addItem(.separator())
+        let close = NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        close.keyEquivalentModifierMask = [.command]
+        fileMenu.addItem(close)
 
-        let open = NSMenuItem(title: "Open Control Panel", action: #selector(openPanel), keyEquivalent: "o")
-        open.keyEquivalentModifierMask = [.command]
-        open.target = self
-        appMenu.addItem(open)
-
-        let guide = NSMenuItem(title: "CyberPong Guide…", action: #selector(openGuide), keyEquivalent: "g")
-        guide.keyEquivalentModifierMask = [.command]
-        guide.target = self
-        appMenu.addItem(guide)
-
-        let switchAcct = NSMenuItem(title: "Switch AI account…", action: #selector(switchProviderAccount), keyEquivalent: "")
-        switchAcct.target = self
-        appMenu.addItem(switchAcct)
-
-        let tip = NSMenuItem(title: "Tip developer…", action: #selector(tipDeveloper), keyEquivalent: "")
-        tip.target = self
-        appMenu.addItem(tip)
-        appMenu.addItem(NSMenuItem.separator())
-
-        let quit = NSMenuItem(title: "Quit CyberPong", action: #selector(quitAll), keyEquivalent: "q")
-        quit.keyEquivalentModifierMask = [.command]
-        quit.target = self
-        appMenu.addItem(quit)
-
-        // Edit menu — FirstResponder chain so ⌘C/⌘V work in text fields
+        // Edit — FirstResponder chain so ⌘C/⌘V work in text fields
         let editItem = NSMenuItem()
         mainMenu.addItem(editItem)
         let editMenu = NSMenu(title: "Edit")
@@ -3661,12 +4270,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editMenu.addItem(editCmd("Paste", #selector(NSText.paste(_:)), "v"))
         editMenu.addItem(editCmd("Select All", #selector(NSText.selectAll(_:)), "a"))
 
+        // View
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        viewMenu.addItem(menuItem("Show or Hide Sidebar", #selector(menuToggleSidebar), "s", [.command, .option]))
+        viewMenu.addItem(menuItem("Show or Hide Details", #selector(menuToggleInspector), "i", [.command, .option]))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(menuItem("Steps", #selector(menuTabSteps), "1", [.command, .option]))
+        viewMenu.addItem(menuItem("Plan", #selector(menuTabPlan), "2", [.command, .option]))
+        viewMenu.addItem(menuItem("Screen", #selector(menuTabScreen), "3", [.command, .option]))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(menuItem("Refresh", #selector(menuRefresh), "r"))
+
+        // Go
+        let goItem = NSMenuItem()
+        mainMenu.addItem(goItem)
+        let goMenu = NSMenu(title: "Go")
+        goItem.submenu = goMenu
+        for a in ShellArea.allCases {
+            let i = menuItem(a.title, #selector(menuGoArea(_:)), "\(a.rawValue + 1)")
+            i.tag = a.rawValue
+            goMenu.addItem(i)
+        }
+        goMenu.addItem(.separator())
+        goMenu.addItem(menuItem("Next Question", #selector(menuNextQuestion), "j"))
+        goMenu.addItem(menuItem("Search or Ask…", #selector(menuPalette), "k"))
+        goMenu.addItem(.separator())
+        goMenu.addItem(menuItem("Diagnostics", #selector(menuDiagnostics)))
+
+        // Window
+        let winItem = NSMenuItem()
+        mainMenu.addItem(winItem)
+        let winMenu = NSMenu(title: "Window")
+        winItem.submenu = winMenu
+        winMenu.addItem(menuItem("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m", target: nil))
+        winMenu.addItem(menuItem("Zoom", #selector(NSWindow.performZoom(_:)), target: nil))
+        winMenu.addItem(.separator())
+        winMenu.addItem(menuItem("CyberPong", #selector(openPanel), "0"))
+        NSApp.windowsMenu = winMenu
+
+        // Help
+        let helpItem = NSMenuItem()
+        mainMenu.addItem(helpItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpItem.submenu = helpMenu
+        helpMenu.addItem(menuItem("Ask the Guide…", #selector(menuPalette)))
+        helpMenu.addItem(menuItem("Set up CyberPong…", #selector(openSetup)))
+        NSApp.helpMenu = helpMenu
+
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func openSettings() { PanelController.shared.openSettings() }
+    @objc private func menuNewGraph() { PanelController.shared.newGraph() }
+    @objc private func menuNewTeam() { PanelController.shared.newTeam() }
+    @objc private func menuNewSchedule() { PanelController.shared.newSchedule() }
+    @objc private func menuTemplate() { PanelController.shared.startFromTemplate() }
+    @objc private func menuToggleSidebar() { PanelController.shared.toggleSidebar() }
+    @objc private func menuToggleInspector() { PanelController.shared.toggleInspector() }
+    @objc private func menuTabSteps() { PanelController.shared.setGraphTab(.steps) }
+    @objc private func menuTabPlan() { PanelController.shared.setGraphTab(.plan) }
+    @objc private func menuTabScreen() { PanelController.shared.setGraphTab(.screen) }
+    @objc private func menuRefresh() { PanelController.shared.hardRefresh() }
+    @objc private func menuNextQuestion() { PanelController.shared.nextQuestion() }
+    @objc private func menuPalette() { PanelController.shared.openPalette() }
+    @objc private func menuDiagnostics() { PanelController.shared.goDiagnostics() }
+
+    /// ⌘1–5 go to the areas; with a question card focused, ⌘1–3 answer it instead.
+    @objc private func menuGoArea(_ sender: NSMenuItem) {
+        let pc = PanelController.shared
+        if sender.tag < 3, pc.answerFocused(sender.tag) { return }
+        if let a = ShellArea(rawValue: sender.tag) {
+            pc.goArea(a)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// Settings › General › Menu bar icon.
+    func applyMenuBarVisibility() {
+        statusItem?.isVisible = !Pong.boolSetting("hide_menu_bar_item")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         timer?.invalidate()
         timer = nil
+        // The island came up with us, so it goes down with us — leaving a panel
+        // pinned to the notch with nothing behind it is worse than no island.
+        // Agent panes are tmux and outlive both of us either way. A preview never
+        // started one: the island that is up belongs to the real app.
+        if !UIPreview.isOn { IslandHelper.stop() }
         return .terminateNow
     }
 
@@ -3675,119 +4369,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
+    /// The standard About panel: name, version, and Credits.rtf (the fonts and their licences).
     @objc func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "CyberPong"
-        alert.informativeText = "\(PongTheme.productTagline).\nOrchestrator + multi-CLI workers on a mission map."
-        alert.runModal()
-    }
-
-    // MARK: - First-run onboarding
-
-    @objc func showOnboarding() {
-        if let w = onboardingWindow {
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        func label(_ text: String, bold: Bool = false, size: CGFloat = 13, muted: Bool = false) -> NSTextField {
-            let l = NSTextField(wrappingLabelWithString: text)
-            l.font = bold ? NSFont.boldSystemFont(ofSize: size) : NSFont.systemFont(ofSize: size)
-            if muted { l.textColor = .secondaryLabelColor }
-            l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            return l
-        }
-        func button(_ title: String, _ sel: Selector) -> NSButton {
-            let b = NSButton(title: title, target: self, action: sel)
-            b.bezelStyle = .rounded
-            return b
-        }
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 22, bottom: 18, right: 22)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        stack.addArrangedSubview(label("Two one-time macOS permissions", bold: true, size: 15))
-        stack.addArrangedSubview(label(
-            "CyberPong links orchestrator and worker Terminal windows. macOS asks once for each permission below.",
-            muted: true))
-
-        stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(label("Automation", bold: true))
-        stack.addArrangedSubview(label(
-            "CyberPong can send tasks into Terminal windows. macOS prompts the first time — re-enable in Settings if you decline.",
-            muted: true))
-        stack.addArrangedSubview(button("Open Automation Settings…", #selector(openAutomationSettings)))
-
-        stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(label("Accessibility", bold: true))
-        stack.addArrangedSubview(label(
-            "Needed so paste + Enter lands reliably in the worker terminal window.",
-            muted: true))
-        stack.addArrangedSubview(button("Open Accessibility Settings…", #selector(openAccessibilitySettings)))
-
-        stack.setCustomSpacing(18, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(label(
-            "Everything — teams, jobs, and the verdict ledger — stays on this Mac. Nothing is sent anywhere.",
-            muted: true))
-
-        let done = button("Done", #selector(finishOnboarding))
-        done.keyEquivalent = "\r"
-        stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(done)
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 470, height: 420),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Welcome to CyberPong"
-        window.isReleasedWhenClosed = false
-        guard let content = window.contentView else { return }
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            stack.widthAnchor.constraint(equalToConstant: 470),
-        ])
-        window.setContentSize(stack.fittingSize)
-        window.center()
-
-        onboardingWindow = window
-        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func openAutomationSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    @objc func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    @objc func finishOnboarding() {
-        try? FileManager.default.createDirectory(atPath: Pong.stateDir, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: onboardedFlagPath, contents: Data())
-        onboardingWindow?.close()
-        onboardingWindow = nil
-        openPanel()
-        PanelController.shared.ensure3DVisible()
-        // If App AI provider not chosen yet, continue into guide
-        if AppAISettings.providerId == nil {
-            AppAIOnboarding.present()
-        }
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: PongTheme.productName])
     }
 
     // MARK: - Verdict ledger (read-only monitoring surface)
@@ -3891,7 +4476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func populateMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.addItem(item("Open control panel", #selector(openPanel)))
-        menu.addItem(item("CyberPong Guide…", #selector(openGuide)))
+        menu.addItem(item("Set up CyberPong…", #selector(openSetup)))
         menu.addItem(item("Tip developer…", #selector(tipDeveloper)))
         menu.addItem(.separator())
         menu.addItem(item("Quit CyberPong", #selector(quitAll)))
@@ -3910,15 +4495,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openPanel() {
         PanelController.shared.show()
-        PanelController.shared.ensure3DVisible()
     }
 
-    @objc func openGuide() {
+    /// Help › Set up CyberPong… and the menu bar menu: the first-run setup, any time.
+    @objc func openSetup() {
         openPanel()
-        AppAIOnboarding.present()
+        FirstRunSetup.present(force: true)
     }
 
-    /// Sequential multi-account: clear ready flag, login Terminal, one active account per provider.
+    /// Sequential multi-account: login Terminal, one active account per provider. Cancel keeps
+    /// the AI's ready flag as it was.
     @objc func switchProviderAccount() {
         NSApp.activate(ignoringOtherApps: true)
         let providers: [(String, String)] = [
@@ -3967,55 +4553,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Default: chooser → Create new (Quick Team recipes) or Open saved. Advanced wizard still inside Quick Team.
+    /// New team (⇧⌘N): straight to the one sheet (shape, name, who leads). Saved teams open from
+    /// its own link and from Settings › Advanced; the old "Create new / Open saved" chooser is gone.
     static func launchTeamWithOptionalWizard(completion: (() -> Void)? = nil) {
         NSApp.activate(ignoringOtherApps: true)
-        let hasSaved = !SavedTeams.loadAll().isEmpty
-
-        let chooser = NSAlert()
-        chooser.messageText = "New team"
-        chooser.informativeText = hasSaved
-            ? "Create a new team, or open one you already saved."
-            : "Create a new team. Save one later from an active pair’s Options to reopen it here."
-        chooser.addButton(withTitle: "Create new")
-        if hasSaved {
-            chooser.addButton(withTitle: "Open saved…")
-        }
-        chooser.addButton(withTitle: "Cancel")
-
-        let response = chooser.runModal()
-        let first = NSApplication.ModalResponse.alertFirstButtonReturn
-        if response == first {
-            QuickTeamBuilder.present(completion: completion)
-            return
-        }
-        if hasSaved && response == NSApplication.ModalResponse(rawValue: first.rawValue + 1) {
-            if pickAndSpawnSavedTeam() {
-                completion?()
-            }
-            return
-        }
-        // Cancel — no-op
+        // 1.9: a sheet in the new look (the floating pill and its Launch palette are retired)
+        if PanelController.shared.sheetHost == nil { PanelController.shared.show() }
+        NewTeamSheet.present(on: PanelController.shared.sheetHost, onDone: completion)
     }
 
     /// Pick conductor first (Grok recommended), then workers.
     /// Returns (conductor, workers) or nil if cancelled.
     static func pickTeamLaunch() -> (ConductorType, [WorkerType])? {
         NSApp.activate(ignoringOtherApps: true)
-        let saved = SavedTeams.loadAll()
+        _ = SavedTeams.loadAll()
 
         let condAlert = NSAlert()
-        condAlert.messageText = "New team — conductor"
-        condAlert.informativeText =
-            "Who receives your mission prompts?\n" +
-            "Grok Build is recommended for coding teams. Hermes users can pick Hermes — no Grok required.\n" +
-            "Workers (Claude, etc.) stay separate terminals you can jump into."
+        condAlert.messageText = "Which AI should lead the team?"
+        condAlert.informativeText = "The lead reads your messages and hands out work."
         for c in ConductorType.all where c.id != "custom" {
             condAlert.addButton(withTitle: c.label)
         }
-        condAlert.addButton(withTitle: "Custom…")
-        if !saved.isEmpty {
-            condAlert.addButton(withTitle: "Show Teams")
-        }
+        condAlert.addButton(withTitle: "Other…")
         condAlert.addButton(withTitle: "Cancel")
         let cr = condAlert.runModal()
         let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
@@ -4027,8 +4586,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if idx == fixed.count {
             // Custom conductor cmd
             let a2 = NSAlert()
-            a2.messageText = "Custom conductor command"
-            a2.informativeText = "Shell command for the conductor TUI (e.g. grok, hermes chat)."
+            a2.messageText = "Which command starts the lead?"
+            a2.informativeText = "The command you would type in Terminal, e.g. grok or hermes chat."
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
             field.stringValue = "grok"
             a2.accessoryView = field
@@ -4038,19 +4597,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let cmd = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if cmd.isEmpty { return nil }
             conductor = ConductorType(id: "custom", label: cmd, cmd: cmd, recommended: false)
-        } else if !saved.isEmpty && idx == fixed.count + 1 {
-            TeamsManagerPanel.shared.show { PanelController.shared.refreshUI() }
-            return nil
         } else {
             return nil
         }
 
         let gate = NSAlert()
-        gate.messageText = "Staff workers"
-        gate.informativeText = "Conductor: \(conductor.label)\nAdd workers under this team (implementers)."
+        gate.messageText = "Add helpers"
+        gate.informativeText = "The lead is \(conductor.label). Which AI should do the work?"
         gate.addButton(withTitle: "Claude")
-        gate.addButton(withTitle: "Other Model")
-        gate.addButton(withTitle: "Team")
+        gate.addButton(withTitle: "Other AI…")
+        gate.addButton(withTitle: "Several…")
         gate.addButton(withTitle: "Cancel")
         let g = gate.runModal()
         let gf = NSApplication.ModalResponse.alertFirstButtonReturn
@@ -4118,13 +4674,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         let idx = resp.rawValue - first
         guard idx >= 0 && idx < teams.count else { return false }
+        let picked = teams[idx]
+        let teamLabel = picked.displayName.isEmpty ? picked.name : picked.displayName
         let archiveId = SessionContinuityUI.pickArchive(
             allowNone: true,
-            message: "Start with continuity?"
+            message: "Start with continuity?",
+            displayName: teamLabel
         )
         if archiveId == nil { return false }
         let aid = (archiveId ?? "").isEmpty ? nil : archiveId
-        _ = SavedTeams.spawn(teams[idx], continuityArchiveId: aid)
+        _ = SavedTeams.spawn(picked, continuityArchiveId: aid)
         return true
     }
 
@@ -4144,6 +4703,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func tipDeveloper() {
         Tips.openTip20()
         Pong.log("tip developer menu → stripe $20")
+    }
+
+    /// Bar setup, for the team currently bound. Without one there is nothing for
+    /// a bar to cover, so say that rather than opening an empty form.
+    @objc func openReviewBarSetup() {
+        let active = Pong.loadJSON(PairState.activePath)
+        let session = (active["session"] as? String) ?? PairState.listPairs().first ?? ""
+        guard !session.isEmpty else {
+            let a = NSAlert()
+            a.messageText = "No team bound"
+            a.informativeText = "A review bar covers seats on a team. Pair one first."
+            a.runModal()
+            return
+        }
+        GauntletSheet.present(session: session)
     }
 
     @objc func quitAll() {
@@ -4945,9 +5519,11 @@ final class TeamsManagerPanel: NSObject {
     @objc private func openPressed(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue,
               let team = SavedTeams.loadAll().first(where: { $0.id == id }) else { return }
+        let teamLabel = team.displayName.isEmpty ? team.name : team.displayName
         let archiveId = SessionContinuityUI.pickArchive(
             allowNone: true,
-            message: "Start with continuity?"
+            message: "Start with continuity?",
+            displayName: teamLabel
         )
         if archiveId == nil { return }
         let aid = (archiveId ?? "").isEmpty ? nil : archiveId

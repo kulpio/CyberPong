@@ -458,7 +458,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     var onNewSessionRecap: ((Seat3D) -> Void)?
     var onOptions: ((Seat3D) -> Void)?
     var onPerms: ((Seat3D) -> Void)?
-    /// Switch live seat CLI / model (workers).
+    /// Switch live seat CLI / model (workers **or** orchestrator harness).
     var onChangeModel: ((Seat3D) -> Void)?
     /// Side pad: add peer agent on the AGENTS plane (no parent).
     var onPlus: ((Seat3D) -> Void)?
@@ -563,45 +563,26 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     private var mapIsDark: Bool { PongTheme.appearance == .dark }
 
     /// Void behind the constellation
-    private var mapVoid: NSColor {
-        // Design: deep blue-black #06090d (not pure black — kills depth)
-        mapIsDark
-            ? NSColor(calibratedRed: 0.024, green: 0.035, blue: 0.051, alpha: 1)
-            : NSColor(calibratedWhite: 0.94, alpha: 1)
-    }
+    /// The void behind the constellation (Night: `void`, #07090C).
+    private var mapVoid: NSColor { PongColor.void }
     /// Deck plate / grid / shell dots
-    private var mapInk: NSColor {
-        mapIsDark ? NSColor.white : NSColor(calibratedWhite: 0.12, alpha: 1)
-    }
-    private var mapPanelFill: NSColor {
-        mapIsDark
-            ? NSColor(calibratedWhite: 0.04, alpha: 0.88)
-            : NSColor(calibratedWhite: 1.0, alpha: 0.94)
-    }
-    private var mapPanelBorder: NSColor {
-        mapIsDark
-            ? NSColor(calibratedWhite: 1, alpha: 0.12)
-            : NSColor(calibratedWhite: 0, alpha: 0.12)
-    }
-    private var mapHUDText: NSColor {
-        mapIsDark ? NSColor(calibratedWhite: 0.85, alpha: 1) : NSColor(calibratedWhite: 0.10, alpha: 1)
-    }
-    private var mapHUDMuted: NSColor {
-        // Light: deeper muted greys so captions don't vanish on white panels
-        mapIsDark ? NSColor(calibratedWhite: 0.55, alpha: 1) : NSColor(calibratedWhite: 0.32, alpha: 1)
-    }
+    private var mapInk: NSColor { PongColor.textPrimary }
+    private var mapPanelFill: NSColor { PongColor.raised.withAlphaComponent(0.94) }
+    private var mapPanelBorder: NSColor { PongColor.hairline }
+    private var mapHUDText: NSColor { PongColor.textPrimary }
+    private var mapHUDMuted: NSColor { PongColor.textSecondary }
 
     /// Re-tint scene + HUD when appearance flips; rebuild décor & seat faces.
     private func applyMapTheme() {
         let void = mapVoid
         layer?.backgroundColor = void.cgColor
         scnView.backgroundColor = void
-        scene.background.contents = void
+        // the same room as a graph's deck: void above, teal haze, a warm floor
+        scene.background.contents = GraphTextures.fog()
         scene.fogColor = void
-        // Keep fog off (wash fix)
-        scene.fogStartDistance = 0
-        scene.fogEndDistance = 0
-        scene.fogDensityExponent = 0
+        scene.fogStartDistance = 40
+        scene.fogEndDistance = 140
+        scene.fogDensityExponent = 1.2
         // Lights
         for n in scene.rootNode.childNodes {
             guard let light = n.light else { continue }
@@ -644,13 +625,13 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         }
         trackTitle.textColor = muted
         trackBody.textColor = body
-        // Human channel chrome — always readable in light (not stuck on white/pale)
-        humanTitle.textColor = mapIsDark ? PongTheme.blue : NSColor(calibratedRed: 0.12, green: 0.32, blue: 0.55, alpha: 1)
+        // Human channel chrome — adaptive role tokens (readable on light panels)
+        humanTitle.textColor = PongTheme.blue
         humanSubtitle.textColor = muted
         humanStatusStrip.textColor = body
-        humanLockLabel.textColor = mapIsDark ? PongSheetChrome.lime : NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.12, alpha: 1)
-        humanAllBanner.textColor = mapIsDark ? PongTheme.amber : NSColor(calibratedRed: 0.50, green: 0.30, blue: 0.05, alpha: 1)
-        humanAttachLabel.textColor = mapIsDark ? PongTheme.amber : NSColor(calibratedRed: 0.50, green: 0.30, blue: 0.05, alpha: 1)
+        humanLockLabel.textColor = PongSheetChrome.lime
+        humanAllBanner.textColor = PongTheme.amber
+        humanAttachLabel.textColor = PongTheme.amber
         humanCompose.textColor = body
         humanCompose.backgroundColor = mapIsDark
             ? NSColor(calibratedWhite: 0.08, alpha: 1)
@@ -663,7 +644,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             : NSColor(calibratedWhite: 0.90, alpha: 1)).cgColor
         humanClear.contentTintColor = muted
         humanGrow.contentTintColor = muted
-        humanOpenOrchBtn.contentTintColor = mapIsDark ? PongTheme.blue : NSColor(calibratedRed: 0.12, green: 0.32, blue: 0.55, alpha: 1)
+        humanOpenOrchBtn.contentTintColor = PongTheme.blue
         humanToggle.contentTintColor = muted
         // Force bubble rebuild so light/dark cards don't keep stale colors
         reloadHumanInbox(forceStream: true)
@@ -756,6 +737,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     /// Bottom chrome for current map mode (orbit pan hint included).
     private func refreshOrbitHint() {
+        retireOldHUD()
         guard !isShiftPanning else { return }
         hintLabel.stringValue = {
             switch mapMode {
@@ -1136,7 +1118,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         FlowDesignSheetController.shared.show(session: preferred, seats: seats) { [weak self] in
             self?.onGraphChanged?()
             guard let self else { return }
-            self.reload(seats: self.seats, multiTeam: self.multiTeam)
+            self.reload(seats: self.seats, multiTeam: self.multiTeam,
+                        extraLinks: self.extraLinks)
         }
     }
 
@@ -1202,19 +1185,19 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     /// Size follows `planeSize` (auto-expands for multi-team).
     private func buildDotSphere() {
         let decks: [(y: Float, label: String, idx: String, accent: NSColor)] = [
-            (yConductor, "ORCHESTRATOR", "01", PongTheme.blue),
-            (yWorker, "AGENTS", "02", PongTheme.magenta),
-            (ySub, "SUB-AGENTS", "03", PongTheme.violet),
+            (yConductor, "LEAD", "01", PongColor.textSecondary),
+            (yWorker, "HELPERS", "02", PongColor.textTertiary),
+            (ySub, "THEIR HELPERS", "03", PongColor.mark),
         ]
         let size = planeSize
         let half = size / 2
 
         for d in decks {
-            // Whisper tint only (design opacity 0.03) — single flat plane, not a double-sided box
-            // (6-face box stacked the tint and read as a hot neon plate).
+            // Whisper tint — stronger on light so decks don’t vanish on pale void
+            let plateA: CGFloat = mapIsDark ? 0.03 : 0.09
             let plate = SCNPlane(width: CGFloat(size), height: CGFloat(size))
             let pm = SCNMaterial()
-            pm.diffuse.contents = d.accent.withAlphaComponent(0.03)
+            pm.diffuse.contents = d.accent.withAlphaComponent(plateA)
             pm.emission.contents = NSColor.black
             pm.isDoubleSided = false
             pm.writesToDepthBuffer = false
@@ -1228,20 +1211,24 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             pn.renderingOrder = -10
             decorRoot.addChildNode(pn)
 
-            // Rim frame (accent ~0.32)
-            addPlaneRim(y: d.y, half: half, accent: d.accent.withAlphaComponent(0.32))
-            // Corner brackets
-            addCornerBrackets(y: d.y, half: half, accent: d.accent.withAlphaComponent(0.55))
-            // Center cross-hair
-            addCrossHair(y: d.y, accent: d.accent.withAlphaComponent(0.1))
+            // Rim / brackets / cross — higher alpha on light (neon was invisible on white)
+            let rimA: CGFloat = mapIsDark ? 0.32 : 0.62
+            let bracketA: CGFloat = mapIsDark ? 0.55 : 0.78
+            let crossA: CGFloat = mapIsDark ? 0.10 : 0.28
+            let ringA: CGFloat = mapIsDark ? 0.07 : 0.18
+            addPlaneRim(y: d.y, half: half, accent: d.accent.withAlphaComponent(rimA))
+            addCornerBrackets(y: d.y, half: half, accent: d.accent.withAlphaComponent(bracketA))
+            addCrossHair(y: d.y, accent: d.accent.withAlphaComponent(crossA))
             // Range ring scales with deck (was fixed r=7.5 on 24×24)
             let ringR = min(7.5, max(4.5, half * 0.55))
-            addRangeRing(y: d.y, radius: ringR, accent: d.accent.withAlphaComponent(0.07))
+            addRangeRing(y: d.y, radius: ringR, accent: d.accent.withAlphaComponent(ringA))
 
             // 13×13 dotted grid as ONE point-cloud geometry (not 169 SCNSphere nodes).
             let n = 13
             let step = size / Float(n - 1)
+            // Light: use dark ink dots (mapGrid is light-aware); dark: design grid
             let gridCol = PongTheme.mapGrid
+            let gridA: CGFloat = mapIsDark ? 0.45 : 0.55
             var pts: [SCNVector3] = []
             pts.reserveCapacity(n * n)
             for ix in 0..<n {
@@ -1250,15 +1237,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                     let gz = -half + Float(iz) * step
                     let dist = sqrt(gx * gx + gz * gz)
                     let edgeFade = max(0, min(1, 1 - dist / (half * 1.05)))
-                    let a = 0.55 * edgeFade
+                    let a = Float(gridA) * edgeFade
                     guard a > 0.04 else { continue }
                     pts.append(SCNVector3(gx, d.y + 0.01, gz))
                 }
             }
             if !pts.isEmpty {
-                let cloud = pointCloudGeometry(vertices: pts, pointSize: 2.4)
+                let cloud = pointCloudGeometry(vertices: pts, pointSize: mapIsDark ? 2.4 : 2.8)
                 let sm = SCNMaterial()
-                sm.diffuse.contents = gridCol.withAlphaComponent(0.45)
+                sm.diffuse.contents = gridCol.withAlphaComponent(gridA)
                 sm.emission.contents = NSColor.black // matte dots — no bloom
                 sm.lightingModel = .constant
                 sm.writesToDepthBuffer = false
@@ -1271,7 +1258,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 decorRoot.addChildNode(sn)
             }
 
-            // Label plate: "01 · ORCHESTRATOR"
+            // Label plate: "01 · ORCHESTRATOR" — accent is adaptive via PongTheme
             addDeckIndexLabel(y: d.y, half: half, index: d.idx, title: d.label, accent: d.accent)
         }
 
@@ -1411,9 +1398,11 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         ]
         let line = "\(index)  ·  \(title)" as NSString
         // Draw index in accent, rest muted — single string for simplicity
+        // Light: full accent (deeper tokens); dark: slight fade for neon on void
+        let labelA: CGFloat = mapIsDark ? 0.75 : 0.95
         let fullAttr: [NSAttributedString.Key: Any] = [
             .font: PongTheme.mono(40, weight: .semibold),
-            .foregroundColor: accent.withAlphaComponent(0.75),
+            .foregroundColor: accent.withAlphaComponent(labelA),
             .kern: 3,
         ]
         let sz = line.size(withAttributes: fullAttr)
@@ -1495,7 +1484,18 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         refreshOrbitHint()
     }
 
+    /// 1.9: the Team page shows the map bare. Its old panels (tracking, you, schedules, tasks), the
+    /// legend and the gesture strip are retired; only Move mode keeps its one line, which says how
+    /// moving works.
+    private func retireOldHUD() {
+        leftHUDScroll.isHidden = true
+        leftHUDSplitter.isHidden = true
+        legendPanel.isHidden = true
+        hintLabel.isHidden = mapMode != .move
+    }
+
     private func layoutHintStrip() {
+        retireOldHUD()
         let h = Self.hintStripHeight
         let inset: CGFloat = 10
         hintLabel.frame = NSRect(
@@ -1764,8 +1764,14 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         ])
         raiseLeftHUDChrome()
         layoutPromotedHUD(in: host.bounds)
-        Pong.log("Agent3DMapView: shared HUD promoted to canvasPage")
+        // Promote can re-run on layout; log once per process
+        if !Self.didLogHUDPromote {
+            Self.didLogHUDPromote = true
+            Pong.log("Agent3DMapView: shared HUD promoted to canvasPage")
+        }
     }
+
+    private static var didLogHUDPromote = false
 
     func layoutPromotedHUD(in hostBounds: NSRect) {
         guard hudPromoted else { return }
@@ -2378,8 +2384,14 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     }
 
     /// Lightweight poll from PanelController timer — refresh asks + orch status/reports.
+    private var lastHumanPollAt: TimeInterval = 0
+
     func pollHumanConsole() {
         guard humanExpanded else { return }
+        let now = Date().timeIntervalSince1970
+        // At most every 8s — syncOrchFeedback was stacking with map poll
+        if now - lastHumanPollAt < 8 { return }
+        lastHumanPollAt = now
         if let focus = focusedTeamSession, focus != "__all__", !focus.isEmpty {
             humanSession = focus
         }
@@ -3392,7 +3404,12 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             ? (seats.first(where: { $0.role != "human" })?.session ?? "")
             : humanSession
         guard !session.isEmpty else { return }
-        CronManagerSheet.shared.show(session: session, seats: seats, preselectJobId: preselectJobId) { [weak self] in
+        // 1.9: a schedule opens in the schedule sheet; the list is the Schedules page
+        guard let pid = preselectJobId, let job = CronSchedule.load(session: session).first(where: { $0.id == pid }) else {
+            PanelController.shared.goArea(.schedules)
+            return
+        }
+        ScheduleSheet.present(team: session, job: job, on: window) { [weak self] in
             self?.reloadCronTimeline()
             self?.rulerDirty = true
         }
@@ -3793,15 +3810,10 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
     @objc private func plusMenuAddCron(_ item: NSMenuItem) {
         guard let gid = item.representedObject as? String,
               let s = seats.first(where: { $0.globalId == gid }) else { return }
-        CronManagerSheet.shared.addJobForOwner(
-            session: s.session,
-            ownerId: s.id,
-            seats: seats,
-            onDone: { [weak self] in
-                self?.rulerDirty = true
-                self?.reloadCronTimeline()
-            }
-        )
+        ScheduleSheet.present(team: s.session, job: nil, owner: s.id, on: window) { [weak self] in
+            self?.rulerDirty = true
+            self?.reloadCronTimeline()
+        }
     }
 
     /// Session that owns an edge id (pairs may share bare ids in multi-team).
@@ -3837,7 +3849,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         ) { [weak self] in
             self?.onGraphChanged?()
             guard let self else { return }
-            self.reload(seats: self.seats, multiTeam: self.multiTeam)
+            self.reload(seats: self.seats, multiTeam: self.multiTeam,
+                        extraLinks: self.extraLinks)
         }
     }
 
@@ -3846,7 +3859,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         hoverTitle.stringValue = s.title
         let roleName: String = {
             switch s.role {
-            case "conductor": return "ORCHESTRATOR"
+            case "conductor": return "LEAD"
             case "subagent": return "SUBAGENT"
             case "human": return "YOU · HUMAN"
             default: return s.resolvedMission.title.uppercased()
@@ -3905,6 +3918,12 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
         // Click a link → edit sheet (direction, kind, label). Option-click deletes.
         if let edgeKey = hits.compactMap({ edgeId(from: $0.node) }).first {
+            // Work-graph wiring is a view of the running loop, not editable topology:
+            // no rename sheet, no option-click delete, nothing written to pairs.json.
+            if extraLinks.contains(where: { $0.id == edgeKey }) {
+                hintLabel.stringValue = "Loop wiring — read-only"
+                return
+            }
             let session = linkSession(for: edgeKey)
                 ?? seats.first(where: { $0.role != "human" })?.session
             let flowId = parseEdgeKey(edgeKey)?.flowId ?? edgeKey
@@ -3913,7 +3932,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                     FlowGraph.removeEdge(pair: session, id: flowId)
                     hintLabel.stringValue = "Flow link removed"
                     onGraphChanged?()
-                    reload(seats: seats, multiTeam: multiTeam)
+                    reload(seats: seats, multiTeam: multiTeam, extraLinks: extraLinks)
                 } else {
                     openLinkEditor(session: session, edgeId: edgeKey)
                 }
@@ -4121,9 +4140,40 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         origin.x = min(max(12, origin.x), max(12, bounds.width - host.bounds.width - 12))
         origin.y = min(max(40, origin.y), max(40, bounds.height - host.bounds.height - 12))
         host.setFrameOrigin(origin)
-        addSubview(host)
+
+        // Into the window's own content view, on top of everything.
+        //
+        // Added to the map, this card is a child of a view that Guide and the
+        // TRACKING rail are drawn OVER, so no amount of reordering among the
+        // map's own subviews could bring it forward and the close ✕ was
+        // unreachable. Guide already reparents itself to contentView for the
+        // same reason. Coordinates are converted rather than reused, because
+        // the click arrived in map space and the card now lives elsewhere.
+        if let content = window?.contentView {
+            var inContent = convert(origin, to: content)
+            inContent.x = min(max(12, inContent.x),
+                              max(12, content.bounds.width - host.bounds.width - 12))
+            inContent.y = min(max(12, inContent.y),
+                              max(12, content.bounds.height - host.bounds.height - 12))
+            host.setFrameOrigin(inContent)
+            content.addSubview(host, positioned: .above, relativeTo: nil)
+        } else {
+            addSubview(host, positioned: .above, relativeTo: nil)
+        }
         moduleHost = host
         moduleCard = card
+    }
+
+    /// Keep the card in front of panes that lay out after it.
+    ///
+    /// Guide and the status rail re-add themselves on their own schedule, and
+    /// whoever is added last wins — so being frontmost once is not the same as
+    /// staying frontmost.
+    func raiseModuleCard() {
+        guard let host = moduleHost, let parent = host.superview else { return }
+        guard parent.subviews.last !== host else { return }
+        host.removeFromSuperview()
+        parent.addSubview(host, positioned: .above, relativeTo: nil)
     }
 
     @objc private func dismissModuleCard() {
@@ -4162,11 +4212,16 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             }
             menu.addItem(NSMenuItem.separator())
             if s.role == "conductor" {
+                menu.addItem(withTitle: "Switch harness / CLI…",
+                             action: #selector(ctxChangeModel(_:)), keyEquivalent: "")
                 menu.addItem(withTitle: "Save session (compress)…",
                              action: #selector(ctxSaveSession(_:)), keyEquivalent: "")
                 menu.addItem(withTitle: "New session + recap…",
                              action: #selector(ctxNewSessionRecap(_:)), keyEquivalent: "")
                 menu.addItem(NSMenuItem.separator())
+            } else if s.role == "worker" || s.role == "subagent" {
+                menu.addItem(withTitle: "Switch CLI / model…",
+                             action: #selector(ctxChangeModel(_:)), keyEquivalent: "")
             }
             menu.addItem(withTitle: s.role == "conductor" ? "Kill team" : "Remove seat",
                          action: #selector(ctxKill(_:)), keyEquivalent: "")
@@ -4223,7 +4278,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             ?? teamDisplayName(for: s.session)
         let a = NSAlert()
         a.messageText = "Rename team"
-        a.informativeText = "Display name for this team (map title over the orchestrator + top-bar switcher)."
+        a.informativeText = "Display name for this team (the title over the orchestrator on the Team page, and the top-bar switcher)."
         a.addButton(withTitle: "Save")
         a.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
@@ -4247,6 +4302,12 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         onKill?(s)
     }
 
+    @objc private func ctxChangeModel(_ item: NSMenuItem) {
+        guard let gid = item.representedObject as? String,
+              let s = seats.first(where: { $0.globalId == gid }) else { return }
+        onChangeModel?(s)
+    }
+
     @objc private func ctxSaveSession(_ item: NSMenuItem) {
         guard let gid = item.representedObject as? String,
               let s = seats.first(where: { $0.globalId == gid }) else { return }
@@ -4268,37 +4329,83 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     // MARK: - Data reload
 
-    func reload(seats: [Seat3D], multiTeam: Bool) {
+    /// - Parameter light: poll path — dirty-only; never layoutSeats / face thrash when idle.
+    /// - Parameter extraLinks: plotlines the roster cannot derive (work-graph wiring).
+    ///   Read-only: they are drawn, never written back to `pairs.json`.
+    func reload(seats: [Seat3D], multiTeam: Bool, light: Bool = false,
+                extraLinks: [FlowLink3D] = []) {
+        // Work-graph wiring changes must beat every dirty-only early out below,
+        // so its identity rides in both signatures.
+        let extraSig = extraLinks
+            .map { "\($0.id)|\($0.label)|\($0.active ? "1" : "0")|\($0.human ? "1" : "0")" }
+            .joined(separator: ";")
+        let extraDirty = extraSig != lastExtraSig
+        self.extraLinks = extraLinks
+        lastExtraSig = extraSig
         // Include ephemeral ids so spawn/vanish always rebuilds layout
         // missionRole + title must invalidate face cache when Architecture updates purpose
         let teamN = Set(seats.filter { $0.role != "human" }.map(\.session)).count
         let wantPlane = multiTeam ? planeSizeForTeamCount(teamN) : planeSizeBase
+        // Activity-only sig for light path (skip flowHint text noise / edge file reads when possible)
+        let activitySig = seats.map {
+            "\($0.globalId)|\($0.status)|\($0.openJobs)|\($0.ephemeral ? "E" : "P")"
+        }.joined(separator: ";") + (multiTeam ? "|M" : "|S") + "|p\(Int(wantPlane))"
+            + "|x\(extraSig)"
         var sig = seats.map {
             "\($0.globalId)|\($0.status)|\($0.openJobs)|\($0.title)|\($0.missionRole)|\($0.flowHint.prefix(12))|\($0.ephemeral ? "E" : "P")"
         }.joined(separator: ";") + (multiTeam ? "|M" : "|S") + "|p\(Int(wantPlane))"
-        // Edge identity is NOT captured by the seat fields above. Without this,
-        // editing/adding/deleting a flow link leaves the seats unchanged, the
-        // signature matches, and the early-out below skips layoutSeats() so the
-        // edges never repaint until a seat changes or the app relaunches. Fold a
-        // per-session edge signature in so any link mutation invalidates the cache.
-        let db = PairState.loadPairsDb()
-        for session in Array(Set(seats.filter { $0.role != "human" }.map(\.session))).sorted() {
-            let entry = db[session] as? [String: Any] ?? [:]
-            let edges = FlowGraph.load(from: entry)
-                .map { "\($0.from)>\($0.to):\($0.kind)" }
-                .sorted()
-            sig += "#\(session):" + edges.joined(separator: ",")
+        // Edge identity — full path only (light poll uses cached edgeSig)
+        if light {
+            sig += lastEdgeSigSuffix
+        } else {
+            let db = PairState.loadPairsDb()
+            var edgePart = ""
+            for session in Array(Set(seats.filter { $0.role != "human" }.map(\.session))).sorted() {
+                let entry = db[session] as? [String: Any] ?? [:]
+                let edges = FlowGraph.load(from: entry)
+                    .map { "\($0.from)>\($0.to):\($0.kind)" }
+                    .sorted()
+                edgePart += "#\(session):" + edges.joined(separator: ",")
+            }
+            lastEdgeSigSuffix = edgePart
+            sig += edgePart
         }
+        sig += "|x\(extraSig)"
         self.seats = seats
         self.multiTeam = multiTeam
         // Keep open module card in sync (rename / status) without forcing reopen
-        syncModuleCard(with: seats)
-        // Poll path: skip full graph rebuild when nothing meaningful changed
+        if !light { syncModuleCard(with: seats) }
+        // Publish snapshot for render thread
         sceneLock.lock()
-        // Publish snapshot for render thread before any layout (avoids Seat3D free race)
         self.renderSeats = seats
-        defer { sceneLock.unlock() }
+        sceneLock.unlock()
+
+        // --- Dirty-only early out (poll path) ---
+        if light, activitySig == lastActivitySig, !seatNodes.isEmpty {
+            // Status-identical: do not touch materials, SceneKit, or isPlaying
+            return
+        }
         if sig == lastSeatsSig, !seatNodes.isEmpty {
+            if light {
+                // Same topology; only flip pulse/ring if active bit changed
+                applyLightActivityOnly(seats)
+            } else {
+                for s in seats {
+                    if let n = seatNodes[s.globalId] {
+                        updateBlobMaterial(n, seat: s)
+                    }
+                }
+                reevaluateMapPlaying()
+            }
+            lastActivitySig = activitySig
+            return
+        }
+        // Structural change — full rebuild (never on light if we can avoid: still needed for new seats)
+        lastSeatsSig = sig
+        lastActivitySig = activitySig
+        if light, !extraDirty, !seatNodes.isEmpty,
+           seats.map(\.globalId).sorted() == seatNodes.keys.sorted() {
+            // Same seat set, metadata change only — materials without layoutSeats
             for s in seats {
                 if let n = seatNodes[s.globalId] {
                     updateBlobMaterial(n, seat: s)
@@ -4307,11 +4414,56 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             reevaluateMapPlaying()
             return
         }
-        lastSeatsSig = sig
         faceImageCache.removeAll(keepingCapacity: true)
         layoutSeats()
         requestMapRender()
         reevaluateMapPlaying()
+    }
+
+    /// Cached topology edges for light poll (avoids pairs.json FlowGraph parse every 4s).
+    private var lastEdgeSigSuffix: String = ""
+    /// Caller-supplied plotlines (work-graph wiring) — drawn after the roster links.
+    private var extraLinks: [FlowLink3D] = []
+    /// Identity of the last `extraLinks` batch, so poll can early-out on unchanged wiring.
+    private var lastExtraSig: String = ""
+    /// status/openJobs only — identical means zero SceneKit work on light poll.
+    private var lastActivitySig: String = ""
+
+    /// Cheap pulse/ring updates without face texture redraw.
+    private func applyLightActivityOnly(_ seats: [Seat3D]) {
+        var activityChanged = false
+        for s in seats {
+            guard let root = seatNodes[s.globalId] else { continue }
+            let active = isSeatActive(s)
+            let human = s.role == "human" || s.status.lowercased().contains("human")
+            let was = (root.value(forKey: "pulsing") as? Bool) ?? false
+            if was != active {
+                activityChanged = true
+                root.setValue(active, forKey: "pulsing")
+                root.setValue(human, forKey: "human")
+                let full = roleColor(s)
+                root.setValue(full, forKey: "roleColor")
+                let baseY = (root.value(forKey: "baseY") as? Float) ?? Float(root.position.y)
+                let pos = SCNVector3(root.position.x, CGFloat(baseY), root.position.z)
+                syncPlaneRing(for: s, at: pos, active: active, color: full)
+                if let shell = root.childNode(withName: "shell", recursively: false),
+                   let mat = shell.geometry?.firstMaterial {
+                    if active {
+                        mat.diffuse.contents = full.withAlphaComponent(0.85)
+                        mat.emission.contents = full.withAlphaComponent(0.50)
+                    } else {
+                        mat.diffuse.contents = full.withAlphaComponent(0.60)
+                        mat.emission.contents = full.withAlphaComponent(0.08)
+                    }
+                }
+                // Force face rebuild only when active bit flips
+                root.setValue(nil as String?, forKey: "lastFaceKey")
+                updateBlobMaterial(root, seat: s)
+            }
+        }
+        if activityChanged {
+            reevaluateMapPlaying()
+        }
     }
 
     /// Instant title/detail refresh on the floating kill/open card after rename.
@@ -4503,6 +4655,9 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             // dropdown and rewired YOU to the wrong orchestrator every poll.
         }
 
+        // Work-graph wiring last, so roster plotlines keep their ids on a collision.
+        appendExtraLinks(allLinks: &allLinks, desiredSigs: &desiredSigs, pendingEdges: &pendingEdges)
+
         commitPendingEdges(desiredSigs: desiredSigs, pendingEdges: pendingEdges)
         lastLinks = allLinks
         refreshTrackingList()
@@ -4549,9 +4704,43 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
                 pendingEdges.append((from, to, link, 0, 1, sig))
             }
         }
+        appendExtraLinks(allLinks: &allLinks, desiredSigs: &desiredSigs, pendingEdges: &pendingEdges)
         commitPendingEdges(desiredSigs: desiredSigs, pendingEdges: pendingEdges)
         lastLinks = allLinks
         requestMapRender()
+    }
+
+    /// Draw caller-supplied plotlines (work-graph wiring) between seats already placed.
+    ///
+    /// Endpoints that are not on the map — a node whose seat was filtered out, or a
+    /// self-edge such as a cycle graph's `builder → builder` — are skipped rather
+    /// than faked, and ids already taken by a roster edge are left alone.
+    private func appendExtraLinks(
+        allLinks: inout [FlowLink3D],
+        desiredSigs: inout [String: String],
+        pendingEdges: inout [(from: SCNNode, to: SCNNode, link: FlowLink3D, pi: Int, pc: Int, sig: String)]
+    ) {
+        guard !extraLinks.isEmpty else { return }
+        func pairKey(_ a: String, _ b: String) -> String { [a, b].sorted().joined(separator: "|") }
+        var totals: [String: Int] = [:]
+        for l in extraLinks where l.fromGid != l.toGid {
+            totals[pairKey(l.fromGid, l.toGid), default: 0] += 1
+        }
+        var buckets: [String: Int] = [:]
+        for link in extraLinks {
+            guard link.fromGid != link.toGid else { continue }
+            guard desiredSigs[link.id] == nil else { continue }
+            guard let fn = seatNodes[link.fromGid], let tn = seatNodes[link.toGid] else { continue }
+            let pk = pairKey(link.fromGid, link.toGid)
+            let idx = buckets[pk] ?? 0
+            buckets[pk] = idx + 1
+            let total = max(1, totals[pk] ?? 1)
+            let sig = edgeSignature(link: link, from: fn, to: tn,
+                                    parallelIndex: idx, parallelCount: total)
+            desiredSigs[link.id] = sig
+            pendingEdges.append((fn, tn, link, idx, total, sig))
+            allLinks.append(link)
+        }
     }
 
     private func appendSessionEdges(
@@ -4608,7 +4797,10 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
             desiredSigs[edgeKey] = sig
             pendingEdges.append((fn, tn, link, idx, max(1, total), sig))
         }
-        for s in subs where s.ephemeral {
+        // A sub the caller already wires into (a work-graph node) gets its line from
+        // that wiring — the generic SUB · SPAWN line would only double it.
+        let wiredTargets = Set(extraLinks.map(\.toGid))
+        for s in subs where s.ephemeral && !wiredTargets.contains(s.globalId) {
             guard let pid = s.parentId,
                   let fromSeat = team.first(where: { $0.id == pid })
                     ?? seats.first(where: { $0.session == session && $0.id == pid }),
@@ -5858,8 +6050,8 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         )
 
         let left = pad + spineW + 6
-        let roleLine = s.role == "conductor" ? "ORCHESTRATOR"
-            : (mission?.title.uppercased() ?? "AGENT")
+        let roleLine = s.role == "conductor" ? "LEAD"
+            : (mission?.title.uppercased() ?? "HELPER")
         let name = String(s.title.prefix(s.role == "conductor" ? 22 : 18))
         let roleFont = max(10, min(15, w * 0.045))
         let nameFont = max(14, min(28, w * 0.095))
@@ -6215,7 +6407,7 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
 
     private func reevaluateMapPlaying() {
         if !mapPowerAllowsContinuousWork {
-            scnView.isPlaying = false
+            if scnView.isPlaying { scnView.isPlaying = false }
             return
         }
         // Prefer renderSeats snapshot if available (main-thread safe under lock)
@@ -6225,9 +6417,15 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         // Only real handoff work — idle seats must not hold the display link
         let anyActive = snap.contains { isSeatActive($0) }
         let animating = anyActive || mapNeedsRender || rulerDirty
-        scnView.isPlaying = animating
+        // Avoid redundant isPlaying / FPS writes every poll (main-thread thrash)
+        if scnView.isPlaying != animating {
+            scnView.isPlaying = animating
+        }
         if #available(macOS 10.13, *) {
-            scnView.preferredFramesPerSecond = animating ? mapActiveFPS : mapIdleFPS
+            let want = animating ? mapActiveFPS : mapIdleFPS
+            if scnView.preferredFramesPerSecond != want {
+                scnView.preferredFramesPerSecond = want
+            }
         }
         if !animating { mapNeedsRender = false }
     }
@@ -6599,12 +6797,16 @@ final class Agent3DMapView: NSView, SCNSceneRendererDelegate, NSGestureRecognize
         // During live resize, skip HUD reflow (cheap frames); full layout on end.
         if isLiveResizing || window?.inLiveResize == true { return }
         layoutRightHUD()
-        // Keep module card on-screen after resize
-        if let host = moduleHost {
+        // Keep module card on-screen after resize, and in front of whatever
+        // laid out after it. Clamp against ITS OWN superview: the card now
+        // lives in the window's contentView, so the map's bounds are the wrong
+        // rectangle to keep it inside.
+        if let host = moduleHost, let parent = host.superview {
             var o = host.frame.origin
-            o.x = min(max(12, o.x), max(12, bounds.width - host.bounds.width - 12))
-            o.y = min(max(40, o.y), max(40, bounds.height - host.bounds.height - 12))
+            o.x = min(max(12, o.x), max(12, parent.bounds.width - host.bounds.width - 12))
+            o.y = min(max(12, o.y), max(12, parent.bounds.height - host.bounds.height - 12))
             host.setFrameOrigin(o)
+            raiseModuleCard()
         }
     }
 
