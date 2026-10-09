@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CyberPong 2.0.0 — Local agent mission control for Mac</title>
-  <meta name="description" content="CyberPong 2.0.0 runs multi-agent coding teams on your Mac. Pick a conductor, staff workers (Claude, Grok, Hermes, Codex…), watch the live mission map, step in when needed. Jobs stay local." />
-  <meta property="og:title" content="CyberPong 2.0.0" />
+  <title>CyberPong 2.1.0 — Local agent mission control for Mac</title>
+  <meta name="description" content="CyberPong 2.1.0 runs multi-agent coding teams on your Mac. Pick a conductor, staff workers (Claude, Grok, Hermes, Codex…), watch the live mission map, step in when needed. Jobs stay local." />
+  <meta property="og:title" content="CyberPong 2.1.0" />
   <meta property="og:description" content="Local agent mission control. Multi-CLI teams, live 3D map, human-in-the-loop — all on your Mac." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="app-icon.png" />
@@ -453,6 +453,11 @@
       display: grid;
       gap: 10px;
     }
+    .section h3.then {
+      font-size: 1rem;
+      letter-spacing: -0.01em;
+      margin: 26px 0 8px;
+    }
     @media (min-width: 560px) {
       .new-in { grid-template-columns: 1fr 1fr; }
     }
@@ -639,7 +644,7 @@
       </a>
       <nav aria-label="Primary">
         <a href="#gallery">Screens</a>
-        <a href="#whats-new">2.0.0</a>
+        <a href="#whats-new">2.1.0</a>
         <a href="#can-do">What it does</a>
         <a href="#support">Tip</a>
         <a href="#install">Install</a>
@@ -649,7 +654,7 @@
     </header>
 
     <section class="hero">
-      <div class="version-pill"><span class="dot" aria-hidden="true"></span> Release 2.0.0 · CyberPong</div>
+      <div class="version-pill"><span class="dot" aria-hidden="true"></span> Release 2.1.0 · CyberPong</div>
       <img
         class="hero-wordmark"
         src="cyberpong-wordmark-dark.png"
@@ -664,7 +669,7 @@
         watch the live map, and jump in when something needs a human.
       </p>
       <div class="cta-row">
-        <a class="btn primary" id="get" download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip">Download 2.0.0</a>
+        <a class="btn primary" id="get" download="CyberPong-macOS.zip" href="https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip">Download 2.1.0</a>
         <a class="btn ghost" href="https://github.com/kulpio/CyberPong">View on GitHub</a>
         <a class="btn ghost" href="#install">Install from source</a>
       </div>
@@ -797,7 +802,28 @@
     </section>
 
     <section class="section" id="whats-new">
-      <h2>New in 2.0.0</h2>
+      <h2>New in 2.1.0</h2>
+      <p><strong>The notch panel lives inside CyberPong.</strong> The panel beside your Mac’s notch is part of the app now, so there is no second app to allow or keep running. It shows each graph step by step, and the questions that need you come first.</p>
+      <div class="new-in">
+        <div class="new-item">
+          <strong>Its own page in Settings</strong>
+          <span>Settings › Notch panel chooses where the pointer has to be for the panel to open, how long it waits first, how long it stays open after the pointer leaves, whether a click keeps it open, and what it shows.</span>
+        </div>
+        <div class="new-item">
+          <strong>Each graph, step by step</strong>
+          <span>Closed, it names the graph and says what it needs or how far along it is: “Pricing page needs you”, “Checkout fix · 3/4”. Open, each graph shows its step (“Step 3 of 4 · Run the tests”), the AI on it, its round and what it is doing now.</span>
+        </div>
+        <div class="new-item">
+          <strong>Answer in the notch</strong>
+          <span>Questions come first, with “What you’re deciding” open. A new question opens the panel a little, with the question, for 6 seconds (not at night).</span>
+        </div>
+        <div class="new-item">
+          <strong>Graphs or Teams</strong>
+          <span>A switch at the top of the panel shows your graphs step by step, or your teams and what each AI is doing. Questions, limits and problems show the same in both.</span>
+        </div>
+      </div>
+
+      <h3 class="then">In 2.0.0</h3>
       <p><strong>Ready for other Macs.</strong> Download it, open it, and a short setup gets this Mac, your AIs and your limits in place. Then say what you want done: a chat plans it as a graph of steps, your AIs do the steps, and they ask you when a decision is yours.</p>
       <div class="new-in">
         <div class="new-item">
@@ -822,7 +848,7 @@
         </div>
         <div class="new-item">
           <strong>Every question and every graph in one place</strong>
-          <span>Needs you lists each question from your graphs and chats; the notch island and notifications show them too. Graphs shows every graph on the Mac step by step: which AI runs each step, what it made, its terminal.</span>
+          <span>Needs you lists each question from your graphs and chats; the notch panel beside your Mac’s notch and notifications show them too. Graphs shows every graph on the Mac step by step: which AI runs each step, what it made, its terminal.</span>
         </div>
       </div>
       <p class="fine" style="margin-top:14px">No checkout needed: the app puts its engine and the <code>pong</code> command in place by itself, and the setup turns the graph runner on with one button.</p>
@@ -937,7 +963,7 @@
             <div>
               <strong>If macOS can’t check it</strong><br />
               Close the message, open <strong>System Settings › Privacy &amp; Security</strong>, press <strong>Open Anyway</strong> next to CyberPong under Security, and confirm.
-              You only do this once; if macOS then asks the same about Pong Island (the notch island inside CyberPong), do the same for it.
+              You only do this once.
             </div>
           </li>
           <li>
@@ -984,7 +1010,7 @@
       <a href="https://github.com/kulpio/CyberPong/releases">Releases</a>
       <a href="#can-do">What it does</a>
       <a href="#support">Tip</a>
-      <span>CyberPong 2.0.0 · Built by Dylan · Boreal</span>
+      <span>CyberPong 2.1.0 · Built by Dylan · Boreal</span>
     </footer>
   </div>
 </body>

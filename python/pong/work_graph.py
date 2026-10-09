@@ -1585,17 +1585,51 @@ def lint_topology(topo: dict[str, Any]) -> dict[str, Any]:
     return lint(topo)
 
 
-def snapshot_block(session: str, *, full: bool = False) -> dict[str, Any]:
+def _paused_view(p: Any) -> Any:
+    """The pause record without the step's whole report (``prev``, kept for the engine: the gate's own
+    summary already carries it)."""
+    return {k: v for k, v in p.items() if k != "prev"} if isinstance(p, dict) else p
+
+
+def _limit_until() -> float | None:
+    """When the runner's pause for Claude's limits lifts (one small file read), or None."""
+    try:
+        from .limits import load_state
+
+        st = load_state()
+        return float(st["until"]) if st.get("state") in ("paused_5h", "paused_week") and st.get("until") else None
+    except Exception:
+        return None
+
+
+def snapshot_block(session: str, *, full: bool = False, brief_finished: bool = False) -> dict[str, Any]:
     """Graphs for one team. ``full`` adds the long history and goal text the
     graph page reads (``pong graph list``); the team snapshot the map polls
-    stays lean so it never grows past what a pipe carries in one read."""
+    stays lean so it never grows past what a pipe carries in one read.
+    ``brief_finished`` (the team snapshot) sends a finished graph as its id,
+    title, status, stop reason and finish time only: the graph page reads
+    finished graphs from ``pong graph list``."""
     from . import graph_engine as _engine
 
     data = load(session)
     graphs = []
+    unread = object()
+    limit_until: Any = unread  # read once, and only when a graph is held for Claude's limits
     for g in data.get("graphs") or []:
         if not isinstance(g, dict):
             continue
+        if brief_finished and str(g.get("status") or "") not in ("running", "waiting"):
+            graphs.append({"id": g.get("id"), "title": _engine.graph_title(g), "status": g.get("status"),
+                           "stop_reason": g.get("stop_reason"), "finished_at": g.get("finished_at")})
+            continue
+        is_graph = g.get("kind") == "graph"
+        places, total = _engine.step_places(g) if is_graph else ({}, None)
+        paused = g.get("paused") if isinstance(g.get("paused"), dict) else {}
+        lu = None
+        if is_graph and paused.get("manual") and _engine._limit_pause(str(paused.get("reason") or "")):
+            if limit_until is unread:
+                limit_until = _limit_until()
+            lu = limit_until
         graphs.append(
             {
                 "id": g.get("id"),
@@ -1611,7 +1645,7 @@ def snapshot_block(session: str, *, full: bool = False) -> dict[str, Any]:
                 "created_at": g.get("created_at"),
                 "finished_at": g.get("finished_at"),
                 "boundaries": g.get("boundaries") or {},
-                "paused": g.get("paused"),
+                "paused": _paused_view(g.get("paused")),
                 "builder_role": g.get("builder_role"),
                 "edges": [e for e in (g.get("edges") or []) if isinstance(e, dict)],
                 "history": len(g.get("history") or []),
@@ -1634,12 +1668,12 @@ def snapshot_block(session: str, *, full: bool = False) -> dict[str, Any]:
                         "status": n.get("status"),
                         "job_id": n.get("job_id"),
                         "round": n.get("round"),
-                        **(_engine.snapshot_node(g, n) if g.get("kind") == "graph" else {}),
+                        **(_engine.snapshot_node(g, n, places) if is_graph else {}),
                     }
                     for n in (g.get("nodes") or [])
                     if isinstance(n, dict)
                 ],
-                **(_engine.snapshot_fields(g, full=full) if g.get("kind") == "graph" else {}),
+                **(_engine.snapshot_fields(g, full=full, places=places, total=total, limit_until=lu) if is_graph else {}),
                 "last_error": g.get("last_error"),
             }
         )

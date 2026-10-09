@@ -10,10 +10,19 @@ The menu-bar app shows as **CyberPong**. The binary and CLI still say `Pong` for
 |--|--|
 | **UI name** | CyberPong |
 | **Repo** | [kulpio/CyberPong](https://github.com/kulpio/CyberPong) |
-| **Version** | **2.0.0** |
+| **Version** | **2.1.0** |
 | **AIs** | Claude Code, Grok Build, Codex, Hermes Agent; as team workers also Kimi, OpenCode or a custom CLI |
 | **State** | `~/.pong/` (graphs, chats, teams, jobs, events, ledger; optional keys in `~/.pong/secrets/`) |
 | **Platform** | macOS 13+, Apple silicon or Intel |
+
+---
+
+## What's new in 2.1
+
+- **The notch panel lives inside CyberPong.** No second app to allow or keep running: the panel beside your Mac's notch is part of CyberPong, with its own page, **Settings › Notch panel**. There you choose where the pointer has to be for it to open, how long it waits first, how long it stays open after the pointer leaves, whether a click keeps it open, and what it shows.
+- **Graphs in plain words beside the notch.** Closed, it names the graph and says what it needs or how far along it is: "Pricing page needs you", "Checkout fix · 3/4", "Paused · back 3:45 pm". Open, each graph shows its step ("Step 3 of 4 · Run the tests"), the AI on it, its round and what it is doing now.
+- **Answer in the notch.** Questions come first, on the same card as Needs you, with What you're deciding open. A new question opens the panel a little, with the question, for 6 seconds (not at night).
+- **Graphs or Teams.** A switch at the top of the panel shows your graphs step by step, or your teams and what each AI is doing. Questions, limits and problems show the same in both.
 
 ---
 
@@ -32,7 +41,7 @@ The menu-bar app shows as **CyberPong**. The binary and CLI still say `Pong` for
 In plain language:
 
 1. **Plan work as a graph** — Say what you want done. A planning chat turns it into steps (write, review, check, ask you), picks an AI and a model for each step, and starts it when you agree.
-2. **Ask you only what's yours** — Needs you shows each question as a short card with the facts to decide and buttons that say what they do. The notch island shows them too.
+2. **Ask you only what's yours** — Needs you shows each question as a short card with the facts to decide and buttons that say what they do. The notch panel beside your Mac's notch shows them too, and you can answer there.
 3. **See every graph live** — The Graphs page shows each step, which AI runs it, what it produced, and its terminal.
 4. **Build multi-agent teams** — Pick a conductor and staff workers from the CLIs you already use. Each seat is a real Terminal / tmux session you can open anytime; the 3D map shows who is on each team.
 5. **Keep handoffs honest** — Jobs are files under `~/.pong/jobs/…`. Create, list, and inspect work from the CLI or the app. Progress isn't only "whatever got pasted into chat."
@@ -68,7 +77,7 @@ You don't have to get these right first: the first-run setup checks each one and
 
 1. Download [CyberPong-macOS.zip](https://github.com/kulpio/CyberPong/releases/latest/download/CyberPong-macOS.zip) from [Releases](https://github.com/kulpio/CyberPong/releases/latest).
 2. Unzip it, move **CyberPong** to your Applications folder, and open it.
-3. If macOS says it can't check CyberPong or that Apple could not verify it (a build that isn't notarized), press **Done** (or **OK**), then open **System Settings › Privacy & Security**, scroll down to **Security**, press **Open Anyway** next to CyberPong, and confirm. You only do this once. If macOS then asks the same about **Pong Island** (the notch island inside CyberPong), do the same for it.
+3. If macOS says it can't check CyberPong or that Apple could not verify it (a build that isn't notarized), press **Done** (or **OK**), then open **System Settings › Privacy & Security**, scroll down to **Security**, press **Open Anyway** next to CyberPong, and confirm. You only do this once.
 4. The [first-run setup](#first-run-setup) opens. Allow Accessibility and Automation for Terminal when macOS asks.
 
 On first launch the app copies its engine to `~/.pong/lib` and writes the `pong` command (`~/bin/pong`), which needs Apple's command line tools (Python). To use `pong` in your own Terminal, add `~/bin` to your PATH:
@@ -128,6 +137,7 @@ What it asks lives on in Settings: your name in **General**, your AIs and the AI
 4. **Chats** (⌘2) — Go back to a planning chat to change a graph or start another one.
 5. **Teams** (⌘4) — Who is on each team and what each AI is doing; **New team** (⇧⌘N) builds a lineup by hand. Open any seat's Terminal when you want to step in.
 6. **Schedules** (⌘5) — Everything that runs on its own, and when.
+7. **The notch panel** — Beside your Mac's notch (a small tab at the top of a screen without one): what needs you and how far each graph is, without opening CyberPong. Point at the notch to open it and answer a question there. **Settings › Notch panel** sets how it opens and closes and what it shows.
 
 ---
 
@@ -207,7 +217,7 @@ pong -s <team> goal resume --id g_…          # continue a loop that stopped to
 pong -s <team> goal pause  --id g_…          # hold one
 ```
 
-Since 2.0 the app's and the island's **New graph** open a planning chat instead; the interview stays in Settings › Advanced › The old interview. The
+Since 2.0 **New graph** (in the app and in the notch panel) opens a planning chat instead; the interview stays in Settings › Advanced › The old interview. The
 questions: what it should achieve · what kind of work · how we know it is done
 (a command must pass, it must match an example, or you judge it) · who sees the
 result · how careful (thorough / balanced / fast and cheap) · when it should
@@ -247,9 +257,9 @@ pong runtime install-agent           # com.cyberpong.runtime: drain + goal ticks
 
 Policy is data: `python/pong/models/catalog.json` holds runtimes, models,
 strengths, boundaries, demand markers and ordered rules (machine override at
-`~/.pong/models/catalog.json`, team override under the session). The island's
-**Runs on** rows and `goal start` read the same solver, so the preview cannot
-disagree with what gets spawned. A critic that claims without saying win or
+`~/.pong/models/catalog.json`, team override under the session). `wire plan`
+and `goal start` read the same solver, so the preview cannot disagree with what
+gets spawned. A critic that claims without saying win or
 fail is counted as **fail** and recorded as a refusal; the owner's mailbox gets
 one item per round and one when the loop stops. Schedule rows whose wording
 would send, publish, spend or deploy are gated to draft-only unless the row
@@ -320,6 +330,8 @@ Brand kit (mark, wordmarks, favicons): [`brand/`](brand/) and [`resources/brand/
 ---
 
 ## Version
+
+**2.1.0** — The notch panel moves inside CyberPong: one app, no separate helper, and its own page, Settings › Notch panel (where the pointer opens it, how long it waits, how long it stays open, whether a click keeps it open, what it shows). Closed, it names the graph and says what it needs or how far along it is. Open, questions come first on the app's own card, then every graph's step, AI, progress and what it is doing now, or your teams and their AIs with the [Graphs | Teams] switch. A new question opens it a little, with the question. Claude's limits, the graph runner and stopped teams show there in the app's words.
 
 **2.0.0** — Ready for other Macs. Questions come as short cards that say what you're deciding, with the facts and their files, and buttons that say what they do (gates, chat questions, the island, notifications). A first-run setup and new Settings panes: this Mac's checks with fixes, AI sign-ins and switches, the AI and model that plan your graphs, permission mode, limits and spending, Jev and Perplexity keys. The graph runner rides out Claude's 5-hour limit and stops near the weekly limit you set. The app installs its own `pong` command and engine; `pong doctor`, `pong keys`, `pong limits` and `pong runtime install-agent` are new. Also in this release, since 1.7: graphs are planned and run from chats with an architect (New graph, ⌘N), every graph keeps a full log, and the app is redesigned around a sidebar of Needs you, Chats, Graphs, Teams and Schedules.
 

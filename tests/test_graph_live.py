@@ -403,8 +403,10 @@ class ChangedFilesTests(unittest.TestCase):
         g["nodes"][0]["live"] = {"since": 1.0, "state": "working", "doing": "Writing a.md", "busy": True,
                                  "changed_at": 2.0, "seen_at": 3.0, "fp": "abc"}
         snap = self.ge.snapshot_node(g, g["nodes"][0])
+        # a reading saved before 2.1 has no plain line or line time: the plain line is worked out on the way out
         self.assertEqual(snap["live"], {"state": "working", "doing": "Writing a.md", "busy": True,
-                                        "changed_at": 2.0, "seen_at": 3.0})
+                                        "changed_at": 2.0, "seen_at": 3.0, "doing_at": None,
+                                        "doing_plain": "Writing a.md"})
         g["nodes"][0]["status"] = "done"
         self.assertIsNone(self.ge.snapshot_node(g, g["nodes"][0])["live"], "a finished step shows no live line")
         fields = self.ge.snapshot_fields(g)

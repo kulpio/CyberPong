@@ -22,13 +22,94 @@ final class GraphStore {
 
     private var timer: Timer?
     private var inFlight = false
-    /// Fast while the window is in front; slow otherwise (the badge and notifications still move).
-    var fast = true { didSet { if fast != oldValue { schedule() } } }
+    /// Who wants the feed read fast (2.1): "window" while the main window is in front, "island" while
+    /// the notch panel is open. Anyone → every 2.5 s; no one → every 15 s, with the file watch
+    /// (`watch()`) bringing a change in between.
+    private(set) var fastReasons: Set<String> = ["window"]
+
+    /// The main window's reason (PanelController sets it, as before 2.1).
+    var fast: Bool {
+        get { !fastReasons.isEmpty }
+        set { wantFast("window", newValue) }
+    }
+
+    /// Ask for the fast rate (or give it up) for one reason. Turning it on reads the feed at once when
+    /// the last read is older than a fast tick, so an opened panel shows what is true now.
+    func wantFast(_ reason: String, _ on: Bool) {
+        let was = !fastReasons.isEmpty
+        if on { fastReasons.insert(reason) } else { fastReasons.remove(reason) }
+        let now = !fastReasons.isEmpty
+        guard now != was else { return }
+        if timer != nil { schedule() }
+        if now && Date().timeIntervalSince(lastLoad) > 2.5 { refresh() }
+    }
 
     func start() {
         guard timer == nil else { return }
         refresh()
         schedule()
+        watch()
+    }
+
+    // MARK: File watch (2.1, spec §10.1)
+
+    private var stream: FSEventStreamRef?
+    private let watchQueue = DispatchQueue(label: "pong.graphstore.watch", qos: .utility)
+    /// When the watch last read the feed, and whether a read is already on its way.
+    private var lastWatchRead: Date = .distantPast
+    private var watchReadPending = false
+    private var rereadAfterFlight = false
+
+    /// Read the feed when a graph, a question or the limits change on disk: an FSEvents stream on the
+    /// state folder (file events, 0.5 s latency), filtered to `*/work_graph.json`, `*/asks.json` and
+    /// `limits-state.json`. One read per change, 0.7 s after it, at most one per 2 s, so a question
+    /// reaches the notch panel in a second or two and no `pong` runs unless something changed. The
+    /// 15 s timer stays as a backstop.
+    func watch() {
+        guard stream == nil else { return }
+        let root = Pong.stateDir
+        var paths = [root]
+        let sessions = root + "/sessions"
+        // the sessions folder is inside the state folder unless it is a link to somewhere else
+        let real = (sessions as NSString).resolvingSymlinksInPath
+        if !real.hasPrefix((root as NSString).resolvingSymlinksInPath + "/") { paths.append(sessions) }
+        var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                       retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, rawPaths, _, _ in
+            guard let info else { return }
+            let store = Unmanaged<GraphStore>.fromOpaque(info).takeUnretainedValue()
+            let list = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue() as? [String] ?? []
+            if list.prefix(count).contains(where: GraphStore.watched) {
+                DispatchQueue.main.async { store.watchedFileChanged() }
+            }
+        }
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
+        guard let s = FSEventStreamCreate(nil, callback, &ctx, paths as CFArray,
+                                          FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.5, flags) else {
+            Pong.log("graph store: the file watch didn't start; the 15 s read carries on")
+            return
+        }
+        FSEventStreamSetDispatchQueue(s, watchQueue)
+        FSEventStreamStart(s)
+        stream = s
+    }
+
+    /// The files whose change is news: a graph's state, a team's questions, the limits.
+    static func watched(_ path: String) -> Bool {
+        path.hasSuffix("/work_graph.json") || path.hasSuffix("/asks.json") || path.hasSuffix("/limits-state.json")
+    }
+
+    private func watchedFileChanged() {
+        guard !watchReadPending else { return }
+        watchReadPending = true
+        let due = max(0.7, 2.0 - Date().timeIntervalSince(lastWatchRead))
+        DispatchQueue.main.asyncAfter(deadline: .now() + due) { [weak self] in
+            guard let self else { return }
+            self.watchReadPending = false
+            self.lastWatchRead = Date()
+            // a read already on its way may have started before the change: read once more after it
+            if self.inFlight { self.rereadAfterFlight = true } else { self.refresh() }
+        }
     }
 
     /// No usable Python on this Mac: every call answers the same until the tools are installed, so the
@@ -65,6 +146,10 @@ final class GraphStore {
             self.loadedOnce = true
             self.lastLoad = Date()
             NotificationCenter.default.post(name: GraphStore.didChange, object: self)
+            if self.rereadAfterFlight {
+                self.rereadAfterFlight = false
+                self.refresh()
+            }
         }
     }
 

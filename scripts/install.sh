@@ -116,8 +116,9 @@ rm -rf \
   2>/dev/null || true
 
 # Build when there is no build, or when a Swift source is newer than it: the
-# old check reinstalled a stale dist/ build as if it were this checkout.
-if [[ ! -d "$SRC_APP" ]] || [[ -n "$(find "$ROOT/src" "$ROOT/island" -name '*.swift' -newer "$SRC_APP/Contents/MacOS/Pong" 2>/dev/null | head -1)" ]]; then
+# old check reinstalled a stale dist/ build as if it were this checkout. Every
+# Swift source is in src/ (the notch panel too, since 2.1).
+if [[ ! -d "$SRC_APP" ]] || [[ -n "$(find "$ROOT/src" -name '*.swift' -newer "$SRC_APP/Contents/MacOS/Pong" 2>/dev/null | head -1)" ]]; then
   bash "$ROOT/scripts/build-app.sh"
 fi
 

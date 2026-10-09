@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Standalone swiftc harness for the question card's data (2.0): the app's GDetail, GLimits, GLoop
 # and EngineCheck (src/GraphStudioModel.swift), QuestionWords (src/QuestionCard.swift), Words and
-# RunState (src/GraphWords.swift), EngineReply (src/GraphStore.swift) and the island's DetailPoint
-# (island/PongIsland.swift).
+# RunState (src/GraphWords.swift) and EngineReply (src/GraphStore.swift). Since 2.1 the notch panel
+# shows the app's own question card, so there is no second copy of these words to compare.
 #
 #   tests/swift/questions/run.sh
 #
-# There is no Swift test target, and both files drag in the whole app, so this slices the
+# There is no Swift test target, and these files drag in the whole app, so this slices the
 # top-level types it tests out of them (each from its declaration to the first `}` in column 0),
 # compiles them with main.swift, and runs the result. Nothing here reads ~/.pong or runs `pong`.
 set -euo pipefail
@@ -24,7 +24,6 @@ model="$root/src/GraphStudioModel.swift"
 card="$root/src/QuestionCard.swift"
 words="$root/src/GraphWords.swift"
 store="$root/src/GraphStore.swift"
-island="$root/island/PongIsland.swift"
 {
   echo "import Foundation"
   slice "$model" "enum GJ {"
@@ -37,11 +36,6 @@ island="$root/island/PongIsland.swift"
   slice "$words" "enum RunState {"
   slice "$store" "enum EngineReply {"
 } > "$out/AppModel.swift"
-{
-  echo "import Foundation"
-  slice "$island" "struct DetailPoint: Hashable {"
-  slice "$island" "enum PongCheck {"
-} > "$out/IslandModel.swift"
 for want in "static func parse" "func pausedWords" "var weekWords" "static func attribution" \
             "static func notificationBody" "static func holdNotification" "static func fileRow" \
             "static func fileTitles" "static func cleanCut" "static func launchesPathPython" "static func runnerOK" \
@@ -50,12 +44,10 @@ for want in "static func parse" "func pausedWords" "var weekWords" "static func 
             "static func holdStill" "static func waitsForTeam"; do
   grep -q "$want" "$out/AppModel.swift" || { echo "run.sh: the slice lost '$want'"; exit 2; }
 done
-for want in "static func parse" "static func sentence" "static func launchesPathPython" "static func answerRefusal"; do
-  grep -q "$want" "$out/IslandModel.swift" || { echo "run.sh: the island slice lost '$want'"; exit 2; }
-done
 
-echo "compiling: swiftc AppModel.swift IslandModel.swift main.swift"
-swiftc -Onone -swift-version 5 "$out/AppModel.swift" "$out/IslandModel.swift" "$here/main.swift" \
+cache="${SWIFT_MODULE_CACHE:-$out/modcache}"
+echo "compiling: swiftc AppModel.swift main.swift"
+swiftc -Onone -swift-version 5 -module-cache-path "$cache" "$out/AppModel.swift" "$here/main.swift" \
   -o "$out/questions-harness"
 
 echo "running:   $out/questions-harness"

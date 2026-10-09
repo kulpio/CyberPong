@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build CyberPong.app — native Swift menu bar + control panel
+# Build CyberPong.app — native Swift menu bar, control panel and notch panel (one app, one process)
 # Usage: build-app.sh [--dev]
 set -euo pipefail
 
@@ -13,13 +13,14 @@ APP="$ROOT/dist/${BUNDLE_NAME}.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 DEV=0
 [[ "${1:-}" == "--dev" ]] && DEV=1
 
-# Drop legacy dist names so we never ship the wrong Dock label
-rm -rf "$APP" "$ROOT/dist/Pong.app"
+# Drop legacy dist names so we never ship the wrong Dock label (and 2.0's separate notch
+# helper build: since 2.1 the notch panel is part of the app)
+rm -rf "$APP" "$ROOT/dist/Pong.app" "$ROOT/dist/PongIsland.app"
 mkdir -p "$MACOS" "$RES"
 
 # Universal binary: compile per-arch, lipo together. Relative source path so
@@ -127,27 +128,6 @@ if [[ -d "$ROOT/python/pong" ]]; then
     bash "$ROOT/scripts/install-control-plane.sh" || echo "  (warn: control-plane install failed — app still built)"
   fi
 fi
-# The island ships INSIDE this app.
-#
-# It stays its own process — it is an accessory app that owns a borderless panel
-# pinned to the notch, and folding that into the map process would mean one
-# window server client doing two unrelated jobs. But it is not a second thing to
-# find and launch: it lives in Contents/Helpers, CyberPong starts it, and there
-# is one icon in the Dock.
-if [[ -x "$ROOT/island/build.sh" ]]; then
-  echo "→ Building the island helper …"
-  bash "$ROOT/island/build.sh" >/dev/null
-  if [[ -d "$ROOT/dist/PongIsland.app" ]]; then
-    mkdir -p "$CONTENTS/Helpers"
-    rm -rf "$CONTENTS/Helpers/PongIsland.app"
-    cp -R "$ROOT/dist/PongIsland.app" "$CONTENTS/Helpers/PongIsland.app"
-    echo "  bundled Helpers/PongIsland.app"
-  else
-    echo "error: island build produced no app" >&2
-    exit 2
-  fi
-fi
-
 # Abstract tactical module textures (Imagine — conductor / worker / canvas void)
 cp "$ROOT/resources/tex-conductor.png" "$RES/" 2>/dev/null || true
 cp "$ROOT/resources/tex-worker.png" "$RES/" 2>/dev/null || true
@@ -221,11 +201,14 @@ echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
 # Ad-hoc sign for local open (executable name MUST match CFBundleExecutable).
 # Fail the build if signing fails — unsigned/mismatched bundles show as "damaged".
-# --deep reaches the island in Contents/Helpers; ad hoc is fine on this Mac only.
-codesign --force --deep --sign - "$APP"
+# The bundle holds one Mach-O (Contents/MacOS/Pong) and no nested code (the notch panel is
+# part of the app since 2.1), so signing needs no --deep. The check keeps --deep: nested
+# code that ever turns up unsigned fails the build here instead of shipping.
+# Ad hoc is fine on this Mac only.
+codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 echo "hint: ad-hoc signed (this Mac only). Release builds: bash scripts/sign-notarize.sh"
-echo "      (signs the island helper, then the app, with Developer ID; notarizes; makes the zip)"
+echo "      (signs the app with Developer ID; notarizes; makes the zip)"
 
 # Release bundles must not leak the local user path (the home folder this was built in).
 if [[ "$DEV" != "1" ]]; then

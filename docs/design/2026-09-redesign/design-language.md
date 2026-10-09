@@ -6,7 +6,7 @@ Artisan · 29 Sep 2026 · specification only. Builds on the brief, research.md's
 - **Primary button: Wallace white, not amber**, so amber always means "needs you" (ISO 2575 reads amber as caution).
 - **Question card lit by haze (#221915):** amber over blue-black turns olive.
 - **No texture under reading text:** wear is colour, glyph and time stamp. The frame's 3% grain touches only navigation labels (≥15.1:1).
-- **Screens stay Night in Daylight:** deck, terminals, notch island.
+- **Screens stay Night in Daylight:** deck, terminals, notch panel.
 
 ## 1. Five principles
 1. **One colour, one job:** amber you, cyan machines at work, magenta the architect, red failed; all else neutral.
@@ -83,7 +83,7 @@ Artisan · 29 Sep 2026 · specification only. Builds on the brief, research.md's
   - Primary / tertiary text on `selectedMuted` 14.0 / 5.8, on `selectedOnOverlay` 11.6 / 4.8.
   - Secondary edge on its fill ≥3.15; focus ring ≥9.2.
 - **Daylight:** ink text 16.1 (hover 11.9); badge 8.1; white on the red fill 5.9; focus ring ≥4.8.
-- **Island:** its #000 background raises every Night pair.
+- **Notch panel:** its #000 body raises every Night pair.
 
 ### 2.4 Status markers
 | State | Shape | Colour | Word |
@@ -146,7 +146,7 @@ SF Pro (system API) for the UI, Archivo Expanded SemiBold for eyebrows, IBM Plex
 | `afterglow` | 400 ms linear | A changed number fades from cyan to its own colour | None |
 | `spin` | 1.6 s per turn, linear | Working ring | Still |
 
-Toasts: in 200 ms, hold 4 s (6 s with an action; hovering pauses), out 150 ms. Only the ring and the island orb loop. Nothing moves on typing, scrolling, refresh, or while the window isn't key. Animate transform and opacity only.
+Toasts: in 200 ms, hold 4 s (6 s with an action; hovering pauses), out 150 ms. Only the working ring loops, in the notch panel too, where it holds still while anything needs you. Nothing moves on typing, scrolling, refresh, or while the window isn't key. Animate transform and opacity only.
 
 ### 2.9 Texture
 | Texture | Value | Only on |
@@ -154,7 +154,7 @@ Toasts: in 200 ms, hold 4 s (6 s with an action; hovering pauses), out 150 ms. O
 | Grain | Still one-colour noise, 128 px @2x tile, fixed seed; white 3% (Daylight black 2%) | Sidebar, rail, deck void |
 | Scanlines | 1 device px light line every 3 px, white 3% | Deck backdrop |
 | Fog | #07090C top → #09181D at 55% height (void + 30% teal) → #20211D floor (+ 12% haze) | Deck, Team map |
-| Glow | One colour, 6–8 pt blur, ≤35% | Wordmark (baked in), live deck nodes, focus ring, island orb |
+| Glow | One colour, 6–8 pt blur, ≤35% | Wordmark (baked in), live deck nodes, focus ring, the notch panel's working ring |
 
 Never on text, cards, fields, terminals or buttons. Text over the brightest fog still passes (tertiary 5.4:1). Reduce Transparency and Increase Contrast turn all four off.
 
@@ -199,7 +199,7 @@ Never on text, cards, fields, terminals or buttons. Text over the brightest fog 
 - **One primary per view:** trailing in sheets (Return), leading in the question card (⌘1).
 
 **The question card**
-It appears wherever a question does: Home, a graph (docked over the plan, and in the inspector), a chat (docked over its terminal), the island and ⌘J. Width 480–720 pt; `tint.you` fill, radius 10, padding 20 (16 compact), no border (Increase Contrast adds a 1 pt `signal.you` border). The question is short and the facts behind it are on the card, so a person can decide without opening a file, with each file one click away.
+It appears wherever a question does: Home, a graph (docked over the plan, and in the inspector), a chat (docked over its terminal), the notch panel and ⌘J. Width 480–720 pt (416 in the notch panel); `tint.you` fill, radius 10, padding 20 (16 compact), no border (Increase Contrast adds a 1 pt `signal.you` border). The question is short and the facts behind it are on the card, so a person can decide without opening a file, with each file one click away.
 
 1. **Header, 16 pt:**
    - A 10 pt ◆ and the NEEDS YOU eyebrow in amber (8.4:1).
@@ -279,11 +279,24 @@ It appears wherever a question does: Home, a graph (docked over the plan, and in
 - **Framing:** fit to the bounds + 48 pt on open and on resize.
 - **Accessibility:** the Steps list is the accessible equivalent.
 
-**Notch island card**
+**Notch panel** (beside the Mac's notch; part of the app since 2.1, built from these same tokens and components, with no palette of its own)
 - **Colour:** always Night. Its body is #000000 to meet the notch, the one exception.
-- **Panel:** 440 pt. Header: "2 need you · 1 working", across all teams.
-- **Contents:** compact question cards with 28 pt buttons, the file link, Jev's line and working ⌘1–3, and the points folded under a "Details (4)" disclosure (each with its ↗ file button, then who wrote them); one 32 pt line per working graph.
-- **Collapsed:** the orb and an amber count.
+- **Closed:** chin height (the notch's height + 2 pt, about 34 pt; a 28 pt black tab at the top centre of a screen without a notch). Nothing sits over the camera; concave shoulders join the two sides.
+  - Left of the notch: one marker, the most urgent state, and a count of graphs (11 pt Semibold, tabular), at most 64 pt. Both groups when something needs you and graphs work: "◆ 2  ◠ 3". The working count shows from 2.
+  - Right of the notch: one line, 11 pt Medium with tabular digits, at most 150 pt. It names the graph and says what it needs or how far along it is: "Pricing page needs you" (amber), "Checkout fix · 3/4", "Research · step 2", "Login form · quiet 14 min" (tertiary), "Paused · back 3:45 pm", "Graph runner off" (red). The name truncates in the middle; the tail never does.
+  - Which line wins: needs you (the oldest, never rotated), then Graph runner off, then a finished note (3 s), then a turn every 5 s through the working graphs, the quiet ones and, while Claude's limit holds graphs, one "Paused · back 3:45 pm"; then paused by you, then waits for its team; else the bare notch. The turn stops while the pointer is on the panel.
+  - Nothing in it is smaller than 11 pt text or a 16 pt marker; progress is words ("3/4"), never a filling shape or a track.
+- **A new question (the nudge):** the shape opens a little below the notch (at most 64 pt below the chin, up to 360 pt wide): ◆, the question in 13 pt Semibold on one line, and "Northwind › Pricing page" in 11 pt tertiary under it. It stays 6 s, then folds back to the amber count. Several at once: "Pricing page needs you · and 2 more". Pointing at it or clicking it opens the panel at that question. No nudge at night (10 pm to 8 am, a setting that is on unless turned off); the amber count still shows.
+- **Open:** a 440 pt body with 17 pt concave shoulders and 20 pt bottom corners; content 416 pt (12 pt sides); as tall as its content, down to 24 pt above the Dock (at least 320 pt), with one scroll area under the count line.
+  - Top band, beside the camera: the marker and count stay where they were, then Keep open (a pin, cyan when on) and ⋯; on the other side the compact [Graphs | Teams] switch (`PongSegmented`, 24 pt, about 116 pt wide), the same setting as Settings › Notch panel › Shows.
+  - Count line (28 pt): "◆ 2 need you   ◠ 3 working   ‖ 1 paused   ○ 1 waits for its team" ("All quiet." when nothing is), then banners for what the person can fix: Graph runner off [Turn on], Claude's limits, Engine off [Fix].
+  - NEEDS YOU · 1 OF 3 comes first in both views: the focused question card, then a 36 pt line per other question (clickable to focus), then problems as red cards. A question that arrives while one is being read joins the list; it never replaces the focused card.
+  - Graphs view: a 60 pt row per graph (its name and team; the step track with "Step 3 of 4 · Run the tests · Claude Sonnet · round 2 of 3"; what it is doing now, with its age), 44 pt and two lines while anything waits. Steps › opens the step list inside the row. Finished graphs fold under "Show 3 finished".
+  - Teams view: a row per team (its marker, name, "Lead: Claude Opus · 2 helpers · …", a 20 pt line per member, the lead's last message, its graphs as chips), chats after the teams, and the "Message the lead…" box.
+  - Footer (44 pt): + New graph · Open CyberPong ↗ · "Claude this week: 84%" at 80% or more.
+- **The question card in it:** the app's card at 416 pt: padding 16, radius 10, 28 pt buttons, the source on its own line under the header. What you're deciding is open on the focused (first) card and folded ("Show details (4)") on the others; the choice is kept per question, as everywhere. Buttons wrap: Approve and Send back with a note on the first row; Stop the graph always starts the next row, away from the primary. Keycaps and ⌘1–3 on the focused card only. After an answer the receipt line is the confirmation (no toast); after the last one, "That's everything." and the panel closes 1.5 s later.
+- **Behaviour:** it opens when the pointer rests on the notch (a 0.15 s wait; a fast sweep past it never opens it) or on a click, and closes 1 s after the pointer leaves (at least 3 s while a question shows); it never closes while a note is being typed or an answer is sending. It takes the keyboard only for typing or after a click on it: answering, pinning and switching views never bring CyberPong's windows forward (opening a graph does). Settings › Notch panel holds these choices.
+- **Motion:** open, a spring of 0.42 s; close, 0.36 s, the window shrinking only after it ends; the line slides 0.28 s; the nudge drops in 220 ms and folds back in 180 ms. Reduce Motion: fades.
 
 **The rest**
 
@@ -345,7 +358,7 @@ y   0   ● ● ●          │ ⧉                                      ⌕  �
 | Chat | Subtitle "Architect · Claude Fable · ◠ Live"; bar: [Show its graph], ⋯; pending card y 132–250; terminal x 224–936, from y 132 (262 under a card) to 664, ≈87 columns at 13 pt | Terminal x 264–1088, y 132–884 (≈101 columns); docked inspector: ITS GRAPHS, FOLDER, Details |
 | Team | Bar: [Start team] when stopped, ⋯ (Stop, Team layout, Save as template); MEMBERS from y 132; MAP x 200–960, y 340–600; composer y 624–680 ("Message the lead…", [Send] primary once typed) | Left column x 264–704 (members, next runs, composer); map x 736–1440, y 52–900 |
 | Schedules | [New schedule] primary in the bar; NEXT RUNS (44 pt rows: time, "in 25 min", what, team, quiet "Run now"); ALL SCHEDULES (52 pt rows: last result, "Every weekday at 9:00", switch) | Same column (≤824) + docked inspector with the next 5 runs |
-| Settings (⌘,) | Own window, 720 × 540 (height to 900). List 180 pt: General, AI accounts, Permissions, Quality bars, Advanced. Pane padding 32; `bg.raised` cards of 40 pt rows; Permissions show live ✓/✕; changes apply at once | Identical |
+| Settings (⌘,) | Own window, 720 × 540 (height to 900). List 180 pt: General, This Mac, Notch panel, AI accounts, Permissions, Quality bars, Notifications, Advanced, Limits & keys. Pane padding 32; `bg.raised` cards of 40 pt rows; Permissions show live ✓/✕; changes apply at once | Identical |
 
 **New graph sheet** (560 × 436 at both sizes)
 ```
@@ -379,7 +392,7 @@ Focus starts in the field. Return starts; Esc cancels.
 ## 7. Building it in AppKit
 **Semantic tokens**
 - **New file:** add `src/PongTokens.swift`: hex primitives plus `PongColor`, `PongType`, `PongSpace`, `PongRadius` and `PongMotion`.
-- **Shared with the island:** also compile it in `island/build.sh`, and the island drops its own `Ink` palette.
+- **The notch panel:** part of the app since 2.1, so it uses these tokens as they are; it has no palette of its own.
 - **Colours:** each is `NSColor(name:dynamicProvider:)`, choosing via `appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua])`. SwiftUI uses `Color(nsColor:)`.
 - **Layers:** resolve CGColors in `updateLayer()` inside `performAsCurrentDrawingAppearance`, then retire the `appearanceDidChange` notification.
 - **Migration:**
@@ -398,8 +411,7 @@ Focus starts in the field. Return starts; Esc cancels.
   - Have `build-app.sh` copy `*.txt` as well, and list the licences in `Credits.rtf`, which the standard About panel shows.
 - **Loading:**
   - Register with `CTFontManagerRegisterFontsForURL(…, .process, nil)`, and create the font from `CTFontManagerCreateFontDescriptorsFromURL`, so no PostScript name is guessed.
-  - The island registers the same file from the host's `Contents/Resources/fonts`.
-  - Both fall back to SF Pro Expanded.
+  - Without the file, eyebrows fall back to SF Pro Expanded.
 
 **NSVisualEffectView: no**
 - **Why:** translucency makes contrast depend on what's behind the window, so every surface is solid.
@@ -414,15 +426,15 @@ Focus starts in the field. Return starts; Esc cancels.
 
 **Night and Daylight**
 - `NSApp.appearance` is `.darkAqua`, `.aqua` or `nil` (Match Mac), stored in `ui-prefs.json` (add `"system"`).
-- The deck, terminals and Screen tab force `.darkAqua`; the island is always dark.
+- The deck, terminals and Screen tab force `.darkAqua`; the notch panel is always dark.
 - Swap the wordmark in `viewDidChangeEffectiveAppearance()`.
 - Watch `NSWorkspace.accessibilityDisplayOptionsDidChangeNotification`.
 
 **Remove**
 - **Colour:** #000 chrome, the always-dark `Launch` palette, lime, violet, the ten neon seat swatches, the 55% and 85% white lines, and the card borders in `applyCard` and `applyFloating`.
-- **Type:** Space Grotesk, every size under 11 pt (119 places, plus the island's 7–10 pt), and 24 sizes cut to 5.
+- **Type:** Space Grotesk, every size under 11 pt (119 places, plus the old island's 7–10 pt), and 24 sizes cut to 5.
 - **Top bar:** tabs, team dropdown, "2 teams live" pill, moon toggle and ↻.
 - **Team page:** the nine-pill toolbar, gesture strip, legend and Guide bubble.
 - **Mission:** KPI tiles and charts on the main path.
 - **Deck:** label textures, 12 pt corner brackets and `drawRings`.
-- **Island:** its `Ink` palette.
+- **Notch panel:** the old island's `Ink` palette and SF Mono (since 2.1 it is drawn with the app's tokens and components).

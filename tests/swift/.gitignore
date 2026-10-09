@@ -1,4 +1,4 @@
-.out/
-.out-loop-args/
-.out-setup/
-.out-island-graphs/
+# Every harness builds into its own .out* folder next to its sources (.out, .out-setup,
+# .out-island-graphs, ...). None of it belongs in git: one pattern keeps a new harness
+# folder out too.
+.out*/

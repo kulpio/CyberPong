@@ -174,4 +174,33 @@ Node additions: `visits, max_visits, last_outcome, started_at, finished_at, task
 
 The team snapshot (`pong snapshot`) carries the same graph block in a lean form (10 recent events, a shorter goal). One-team snapshots are written beside the team (`sessions/<s>/snapshot.json`); `~/.pong/snapshot.json` is always the all-teams view.
 
+## Notch panel data (2.1)
+
+What the notch panel reads, so it never has to guess from ids or terminal text. Additive: an older app ignores it, and the app keeps its own fallbacks for an older engine.
+
+**`graphs[].now`** (running graphs only, else null; in `pong graph list --json` and the team snapshot): the graph's one state and the step to show.
+
+| field | meaning |
+|---|---|
+| `state` | `needs_you` (a question is open, or a step asks for something), `no_model` (a step's AI is not running), `paused_limit` (the runner's pause for Claude's limits), `paused` (the person's), `working`, `quiet` (every running step quiet: no change on screen for 10 minutes), `between_steps` |
+| `step`, `step_name` | the step shown: the oldest open question, else a step asking, else the running step started last. `step_name` is its title, else what it does ("The builder", "A reviewer", "Your answer"); never an id |
+| `step_n`, `steps` | its place and the total, by the longest path from the start with the edges that send work back removed; a step's copies are walked as one step and share its place (walked one by one, work sent back to a copy not yet reached would read as a step forward); the end step doesn't count. null when no start can be found ("step 2", never a guess) |
+| `at_once`, `at_once_names`, `at_once_done` | steps running now, their names (up to 3, no repeats), and copies at the shown step's place that already finished this round |
+| `runtime`, `model` | the shown step's AI (running steps only) |
+| `step_started_at` | this visit of the step (a question: when it opened) |
+| `doing`, `doing_plain`, `doing_changed_at` | its latest screen line (≤160, keys hidden), the same in plain words (null when it would only be tool text), and when the line last changed |
+| `last_file` | `{path, kb, at, step}`: the newest file written in the working folder |
+| `round`, `rounds` | the innermost loop's round and limit, else the graph's |
+| `sent_back` | times this step was sent back (visits − 1) |
+| `waiting_since` | when the question opened (or the step started asking) |
+| `pause_reason`, `limit_until` | why it is paused; when the limit pause lifts |
+| `held` | steps waiting to start |
+| `quiet_since` (quiet), `next_name` (between steps) | when the screen last changed; the step that comes next |
+
+The graph also carries `steps` (the total) and, in both reads, `owner_label` ("Lead", "Helper 1", "Chat"). Each node adds `title`, `step_name` and `rank` (its place, null for the end step or an unreachable one); `live` adds `doing_plain` and `doing_at`. `pong graph list` fills `team_label` from the team's `display_name`.
+
+**Team snapshot additions:** `teams[].alive` (its tmux session is there), `teams[].last_message` (`{text ≤200, at}`: the lead's latest message in `human/<team>/chat.jsonl`; automatic job recaps are not the lead speaking), and on the conductor and each worker `doing`, `doing_plain`, `doing_at` (from the 16 screen lines already captured, keys hidden; the line's time is kept across passes in `sessions/<team>/seat-doing.json`) and `graph` (`{graph_id, title, step_name}` when the member is a running step's own seat, or, for a helper, runs a graph of its own; else null). The snapshot's top level carries `limits` and `runner`, the same as `pong graph list --json`.
+
+**Size:** the all-teams `work_graph` copy at the top level is gone (each team's graphs are under `teams[].work_graph`); a finished graph in the team snapshot is `{id, title, status, stop_reason, finished_at}` only; `paused` no longer carries the step's whole report (`prev`). The `--compact` (pipe) copy also leaves out the graph page's inspector details (`jev`, `why`, `rejected`, `rule`, `claim_read`, `advice_log`, `task_preview` on nodes, the gate's `jev`, the wiring's reasons) and keeps 4 recent events, so forty running graphs stay well under the 500,000 bytes the app reads.
+
 Actions are commands: `goal resume --id G [--node N] --outcome O [--note T]`, `goal pause`, `goal cancel`, `graph retry --id G --node N`, `graph peek --seat S`, `graph seat-view --seat S`, `graph attach --owner O --file F --task T`.

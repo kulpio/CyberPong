@@ -142,7 +142,10 @@ class AskDetailTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name) / "home"
+        # the folders the CLI is asked from, by their real path: on a Mac the temp folder is under /var, a
+        # link to /private/var, and `pong ask` makes a path whole from os.getcwd(), which gives /private/var
+        root = Path(self.tmp.name).resolve()
+        self.home = root / "home"
         self.home.mkdir()
         os.environ["PONG_HOME"] = str(self.home)
         os.environ["PONG_SESSION"] = S
@@ -155,7 +158,7 @@ class AskDetailTest(unittest.TestCase):
         from pong import plain_ask as P
 
         self.Q, self.P = Q, P
-        self.work = Path(self.tmp.name) / "project"
+        self.work = root / "project"
         (self.work / "plans").mkdir(parents=True)
         self.plan = self.work / "plans" / "ROUND-3.md"
         self.plan.write_text("# Round 3\n\n## Scope\nPricing, two competitors, the launch date.\n\n"

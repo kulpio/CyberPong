@@ -121,5 +121,74 @@ class ParseUsageTests(unittest.TestCase):
         self.assertNotIn("remaining", u)
 
 
+class ExactSessionTests(unittest.TestCase):
+    """A stopped pong-team-9 read pong-team-91's screens as its own: tmux takes a bare name as the start
+    of the one session that has it, so the snapshot said the team was up (``teams[].alive``) and gave its
+    lead the other team's doing line (2.1 review)."""
+
+    def test_the_targets_are_exact(self) -> None:
+        from unittest.mock import patch
+
+        from pong import pane_activity as pa
+
+        seen: list[tuple] = []
+
+        def fake(*args):
+            seen.append(args)
+            return True, ""
+
+        with patch.object(pa, "_tmux", side_effect=fake):
+            pa.capture_all_alive("pong-team-9", [0])
+        self.assertEqual([a[a.index("-t") + 1] for a in seen], ["=pong-team-9:", "=pong-team-9:0"])
+
+    def test_a_team_never_reads_a_team_whose_name_starts_with_its_own(self) -> None:
+        import os
+        import shutil
+        import subprocess
+        import time
+        from unittest.mock import patch
+
+        from pong import pane_activity as pa
+
+        if not shutil.which("tmux"):
+            self.skipTest("no tmux")
+        sock = f"pongtest-pa-{os.getpid()}"  # its own tmux server, never the person's
+
+        def tmux(*args):
+            r = subprocess.run(["tmux", "-L", sock, "-f", "/dev/null", *args], text=True, capture_output=True,
+                               timeout=10)
+            return r.returncode == 0, ((r.stdout or "") + (r.stderr or "")).strip()
+
+        sock_path = ""
+        try:
+            ok, err = tmux("new-session", "-d", "-s", "pong-team-91", "-n", "lead",
+                           "printf '* Update(src/other-team/Secret.swift)\\n'; exec cat")
+            self.assertTrue(ok, err)
+            sock_path = tmux("display-message", "-p", "#{socket_path}")[1]
+            with patch.object(pa, "_tmux", side_effect=tmux):
+                for _ in range(40):
+                    if "Secret.swift" in pa.capture_all_alive("pong-team-91", [0])[1].get(0, ""):
+                        break
+                    time.sleep(0.05)
+                alive, panes = pa.capture_all_alive("pong-team-91", [0])
+                self.assertTrue(alive)
+                self.assertIn("Secret.swift", panes[0])
+                self.assertFalse(pa.session_alive("pong-team-9"))
+                self.assertEqual(pa.capture_all_alive("pong-team-9", [0]), (False, {}))
+                self.assertFalse(pa.capture_pane("pong-team-9", 0)[0])
+                ok, err = tmux("new-session", "-d", "-s", "pong-team-9", "-n", "lead", "exec cat")
+                self.assertTrue(ok, err)
+                alive, panes = pa.capture_all_alive("pong-team-9", [0])
+                self.assertTrue(alive, "a running team still reads as up")
+                self.assertNotIn("Secret.swift", panes[0], "and reads its own screen")
+        finally:
+            subprocess.run(["tmux", "-L", sock, "kill-server"], capture_output=True)
+            if sock_path.endswith("/" + sock):
+                try:
+                    os.unlink(sock_path)
+                except OSError:
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,9 +12,9 @@
 #   Notary credentials stored once as keychain profile "hermes-pong"
 #             (not needed with --sign-only)
 #
-# Order: hygiene → sign inside out (the island helper in Contents/Helpers, then
-# the app) → check every Mach-O → notarize → staple → Gatekeeper → zip. With
-# --sign-only: hygiene → sign → check every Mach-O → Gatekeeper (printed; it is
+# Order: hygiene → sign the app (one Mach-O, nothing nested: the notch panel is part
+# of the app since 2.1) → check every Mach-O → notarize → staple → Gatekeeper → zip.
+# With --sign-only: hygiene → sign → check every Mach-O → Gatekeeper (printed; it is
 # expected to say "not notarized") → zip. The release zip is made last, only when
 # every step before it passed.
 #
@@ -202,24 +202,13 @@ NOZIP
   exit 0
 fi
 
-# ---------- sign (inside out: the nested island helper first, then the app) ----------
-# The bundle holds two Mach-O executables: Contents/MacOS/Pong and the island in
-# Contents/Helpers/PongIsland.app (build-app.sh signs both ad hoc). Apple's notary
-# service rejects any nested executable without a Developer ID signature, the
-# hardened runtime and a secure timestamp, and signing the outer app alone (no
-# --deep) leaves the helper as it was. So: each nested app first, then the app.
+# ---------- sign (no --deep: the bundle holds one Mach-O, Contents/MacOS/Pong) ----------
+# Since 2.1 the notch panel is part of the app, so nothing nested needs its own
+# signature. The deep check below and the Mach-O check after it would still catch
+# nested code that turned up unsigned or ad hoc: Apple's notary service rejects any.
 echo "→ Signing with: $IDENTITY"
 # Finder info and other extended attributes make codesign refuse ("detritus not allowed").
 xattr -cr "$APP"
-HELPER="$APP/Contents/Helpers/PongIsland.app"
-if [[ -d "$APP/Contents/Helpers" ]]; then
-  while IFS= read -r -d '' nested; do
-    # The island needs no entitlements: it only starts /bin/bash and uses WKWebView,
-    # and sends no Apple Events of its own.
-    codesign --force --timestamp --options runtime -s "$IDENTITY" "$nested"
-    echo "  signed Helpers/$(basename "$nested")"
-  done < <(find "$APP/Contents/Helpers" -maxdepth 1 -name "*.app" -type d -print0)
-fi
 codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -243,18 +232,15 @@ echo "  ✓ signed + verified ($MACHO_COUNT Mach-O files, each Developer ID + ha
 # ---------- --sign-only: Gatekeeper's view, then the zip (no notarizing) ----------
 if [[ "$SIGN_ONLY" == "1" ]]; then
   echo "→ Gatekeeper assessment (expected: rejected as not notarized)"
-  for target in "$APP" "$HELPER"; do
-    [[ -d "$target" ]] || continue
-    SPCTL_OUT="$(spctl --assess --type execute -vv "$target" 2>&1 || true)"
-    sed 's/^/  /' <<<"$SPCTL_OUT"
-    if grep -q 'Unnotarized Developer ID' <<<"$SPCTL_OUT"; then
-      echo "  ✓ as expected for $(basename "$target"): Developer ID, not notarized"
-    elif grep -q ': accepted' <<<"$SPCTL_OUT"; then
-      echo "  ✓ $(basename "$target") accepted"
-    else
-      echo "  ⚠ $(basename "$target"): not the expected \"Unnotarized Developer ID\" answer (see above)"
-    fi
-  done
+  SPCTL_OUT="$(spctl --assess --type execute -vv "$APP" 2>&1 || true)"
+  sed 's/^/  /' <<<"$SPCTL_OUT"
+  if grep -q 'Unnotarized Developer ID' <<<"$SPCTL_OUT"; then
+    echo "  ✓ as expected for $(basename "$APP"): Developer ID, not notarized"
+  elif grep -q ': accepted' <<<"$SPCTL_OUT"; then
+    echo "  ✓ $(basename "$APP") accepted"
+  else
+    echo "  ⚠ $(basename "$APP"): not the expected \"Unnotarized Developer ID\" answer (see above)"
+  fi
   package_release "signed, not notarized"
   echo ""
   echo "Release zip: $ZIP_RELEASE"
@@ -285,14 +271,11 @@ echo "  ✓ notarization accepted (id: $SUBMISSION_ID)"
 echo "→ Stapling"
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
-# The ticket sits beside the code; the seal must still hold, helper included.
+# The ticket sits beside the code; the seal must still hold.
 codesign --verify --deep --strict "$APP"
 
 echo "→ Gatekeeper assessment"
 spctl --assess --type execute -vv "$APP"
-if [[ -d "$HELPER" ]]; then
-  spctl --assess --type execute -vv "$HELPER"
-fi
 
 # ---------- package (last: only a bundle that passed everything above) ----------
 package_release "post-staple"

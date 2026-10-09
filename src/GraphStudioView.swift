@@ -1917,32 +1917,10 @@ final class GraphStudioView: NSView {
         }
     }
 
-    /// A step's state in words. In a graph that has stopped, a step that never ran was not reached.
+    /// A step's state in words (`GNode.stepWords`, shared with the notch panel's step list).
     private func stepStatus(_ n: GNode, running: Bool = true, paused: Bool = false, finishing: Bool = false,
                             teamDown: Bool = false) -> String {
-        if !running && ["pending", "ready", "waiting", ""].contains(n.status) { return "not reached" }
-        if teamDown && n.status == "running" { return "waits for its team to start" }
-        if paused && n.status == "running" { return "paused with the graph" }
-        if finishing && n.status == "running" { return "finishing, then the graph waits" }
-        switch n.status {
-        case "pending", "": return "not started"
-        case "ready": return "about to start"
-        case "waiting": return "waiting for the steps before it"
-        case "waiting_human": return "waiting for your answer"
-        case "held": return "held by the pause"
-        case "bounded": return "stopped: its rounds are spent"
-        case "awaiting_critic": return "waiting for the reviewer"
-        case "done":
-            switch n.lastOutcome {
-            case "", "done", "ok": return "finished"
-            case "win", "pass", "passed": return "finished · passed"
-            case "fail", "failed": return "finished · didn't pass"
-            case "approved": return "approved"
-            case "rejected": return "sent back"
-            default: return "finished · " + Words.outcome(n.lastOutcome).lowercased()  // "hit an error", "chose fix"
-            }
-        default: return n.status.replacingOccurrences(of: "_", with: " ")
-        }
+        n.stepWords(running: running, paused: paused, finishing: finishing, teamDown: teamDown)
     }
 
     private func renderNode(_ n: GNode, in g: GGraph, width: CGFloat) {

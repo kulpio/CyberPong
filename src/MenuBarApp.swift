@@ -2675,6 +2675,33 @@ enum SavedTeams {
 }
 
 
+/// A seat's screen in Terminal, the open-or-raise way (never a second window for a seat that has one).
+/// The notch panel's "Open its screen" (2.1: a direct call, where the 2.0 helper posted a notification).
+enum SeatScreen {
+    static func front(session: String, seat: String) {
+        guard !session.isEmpty, !seat.isEmpty else { return }
+        Pong.log("open a seat's screen \(session)/\(seat)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            if seat.contains(".") {
+                // A graph seat (c1.a, c1.q): not in pairs.json, so frontWorker cannot find
+                // it. The Graphs page's path: a one-window view, attached by exact name.
+                let r = GraphCLI.runSync(["-s", session, "graph", "seat-view", "--seat", seat, "--json"], timeout: 20)
+                guard let data = r.out.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      GJ.bool(obj["ok"]) else {
+                    Pong.log("open a seat's screen \(session)/\(seat) failed: \(r.out.isEmpty ? r.err : r.out)")
+                    return
+                }
+                GraphCLI.openInTerminal("tmux attach-session -t '=" + GJ.str(obj["view"]) + ":'")
+            } else if seat == "c1" || seat == "hermes" {
+                Pairing.frontConductor(session)
+            } else {
+                Workers.frontWorker(pair: session, workerId: seat)
+            }
+        }
+    }
+}
+
 // MARK: - Pairing operations (Terminal + tmux, ports of the Python panel)
 
 enum Pairing {
@@ -4049,11 +4076,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         PongTheme.registerBundledFonts()
         if UIPreview.isOn {
-            // A development preview: no island, no schedules, no menu bar item, no Dock icon.
+            // A development preview: no schedules, no menu bar item, no Dock icon, and no notch panel at
+            // the real notch. With PONG_PREVIEW_ISLAND=1 the panel is drawn on a stand-in screen far off
+            // every display, behind every window, for the harness to photograph.
             Self.isolatePreviewChildren()
             NSApp.setActivationPolicy(.accessory)
             installMainMenu()
             GraphStore.shared.start()
+            if UIPreview.env["PONG_PREVIEW_ISLAND"] == "1" { IslandController.shared.startPreview() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 PanelController.shared.show()
                 UIPreview.runSteps()
@@ -4071,58 +4101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // being open — the panel's poll stops exactly when the person is looking at
         // the island instead, which is why that pane had nothing in it.
         HumanConsoleController.startChiefRecapWatch()
-        // One package: the island comes up with the app rather than being a
-        // second thing to find and open.
-        if !Pong.boolSetting("hide_island") { IslandHelper.ensureRunning() }
+        // One app (2.1): the notch panel lives in this process. It asks the 2.0 helper app to quit once,
+        // so two panels never fight over the notch, and comes up when Settings › Notch panel has it on.
+        IslandController.shared.start()
         // Until now nothing ever fired a cron: nextRun() only drew NEXT on the
         // map and in the Cron Manager, so a schedule was a label. This is the
         // single clock that turns a due schedule into a real job.
         CronSchedule.startRunner()
-        // The island asks us to front a seat's Terminal. It cannot do it itself
-        // without its own Automation grant, and we already hold one plus the
-        // open-or-raise path that refuses to spawn a second window for a seat
-        // that already has one.
-        // The island's "New graph" opens the app's own sheet.
-        DistributedNotificationCenter.default().addObserver(
-            forName: .init("com.owi.cyberpong.newGraph"), object: nil, queue: .main
-        ) { _ in
-            PanelController.shared.newGraph()
-        }
-        // The island's working-graph lines open the graph here.
-        DistributedNotificationCenter.default().addObserver(
-            forName: .init("com.owi.cyberpong.openGraph"), object: nil, queue: .main
-        ) { note in
-            guard let key = (note.userInfo as? [String: Any])?["key"] as? String, !key.isEmpty else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            PanelController.shared.openGraph(key)
-        }
-        DistributedNotificationCenter.default().addObserver(
-            forName: .init("com.owi.cyberpong.frontSeat"), object: nil, queue: .main
-        ) { note in
-            let info = note.userInfo as? [String: Any] ?? [:]
-            let session = (info["session"] as? String) ?? ""
-            let seat = (info["seat"] as? String) ?? ""
-            guard !session.isEmpty, !seat.isEmpty else { return }
-            Pong.log("island frontSeat request \(session)/\(seat)")
-            DispatchQueue.global(qos: .userInitiated).async {
-                if seat.contains(".") {
-                    // A graph seat (c1.a, c1.q): not in pairs.json, so frontWorker cannot find
-                    // it. The Graphs page's path: a one-window view, attached by exact name.
-                    let r = GraphCLI.runSync(["-s", session, "graph", "seat-view", "--seat", seat, "--json"], timeout: 20)
-                    guard let data = r.out.data(using: .utf8),
-                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          GJ.bool(obj["ok"]) else {
-                        Pong.log("island frontSeat \(session)/\(seat) failed: \(r.out.isEmpty ? r.err : r.out)")
-                        return
-                    }
-                    GraphCLI.openInTerminal("tmux attach-session -t '=" + GJ.str(obj["view"]) + ":'")
-                } else if seat == "c1" || seat == "hermes" {
-                    Pairing.frontConductor(session)
-                } else {
-                    Workers.frontWorker(pair: session, workerId: seat)
-                }
-            }
-        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
@@ -4340,6 +4325,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// ⌘1–5 go to the areas; with a question card focused, ⌘1–3 answer it instead.
     @objc private func menuGoArea(_ sender: NSMenuItem) {
+        // typing in the notch panel never pulls the main window forward (it handles ⌘1–3 itself)
+        if NSApp.keyWindow is IslandPanel { return }
         let pc = PanelController.shared
         if sender.tag < 3, pc.answerFocused(sender.tag) { return }
         if let a = ShellArea(rawValue: sender.tag) {
@@ -4356,11 +4343,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         timer?.invalidate()
         timer = nil
-        // The island came up with us, so it goes down with us — leaving a panel
-        // pinned to the notch with nothing behind it is worse than no island.
-        // Agent panes are tmux and outlive both of us either way. A preview never
-        // started one: the island that is up belongs to the real app.
-        if !UIPreview.isOn { IslandHelper.stop() }
+        // The notch panel is part of this process (2.1): it goes with us. Agent panes are tmux and
+        // outlive us either way.
         return .terminateNow
     }
 

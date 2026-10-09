@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -88,13 +91,15 @@ def team_snapshot(session: str, entry: dict[str, Any] | None = None) -> dict[str
     workers = workers_from_state(state)
     pane_on: dict[int, bool] = {}
     pane_text: dict[int, str] = {}
+    alive = False
     try:
-        from .pane_activity import capture_all, is_thinking, parse_usage
+        from .pane_activity import capture_all_alive, is_thinking, parse_usage
 
         idxs = [c.get("tmux_index"), *[w.get("tmux_index") for w in workers]]
-        pane_text = capture_all(session, idxs)
+        alive, pane_text = capture_all_alive(session, idxs)
         pane_on = {i: is_thinking(t) for i, t in pane_text.items()}
     except Exception:
+        alive = False
         pane_on = {}
         pane_text = {}
         parse_usage = None  # type: ignore[assignment]
@@ -188,10 +193,10 @@ def team_snapshot(session: str, entry: dict[str, Any] | None = None) -> dict[str
         mailbox_block = _mb(session)
     except Exception:
         pass
-    try:
+    try:  # finished graphs go as a line each: the graph page reads them from `pong graph list` (2.1)
         from .work_graph import snapshot_block as _wg
 
-        work_graph_block = _wg(session)
+        work_graph_block = _wg(session, brief_finished=True)
     except Exception:
         pass
     try:  # the short names the app shows (1.9)
@@ -200,9 +205,41 @@ def team_snapshot(session: str, entry: dict[str, Any] | None = None) -> dict[str
         apply_graphs(session, work_graph_block.get("graphs") or [])
     except Exception:
         pass
+    # What each member is doing, in its own words and in plain ones, and which graph step it is on (2.1)
+    try:
+        doing = _member_doing(session, pane_text, [(cond_id, c_idx), *[(str(w.get("id")), w.get("tmux_index"))
+                                                                       for w in workers]])
+    except Exception:
+        doing = {}
+    try:
+        on_graph = _seat_graphs(work_graph_block.get("graphs") or [], {str(w.get("id")) for w in workers}, cond_id)
+    except Exception:
+        on_graph = {}
+    conductor_out.update(doing.get(cond_id) or _NO_DOING)
+    conductor_out["graph"] = on_graph.get(cond_id)
+    for rec in workers_out:
+        rec.update(doing.get(rec["id"]) or _NO_DOING)
+        rec["graph"] = on_graph.get(rec["id"])
+    try:
+        last_message = _last_message(session, cond_id)
+    except Exception:  # a view: a chat log it can't read never stops the snapshot, and shows nothing
+        last_message = _no_last_message()
+    try:
+        from .graph_engine import owner_label, owner_labels
+
+        labels = owner_labels(state, workers)
+        for g in work_graph_block.get("graphs") or []:
+            if isinstance(g, dict) and "nodes" in g:
+                g["owner_label"] = owner_label(labels, g.get("owner"))
+    except Exception:
+        pass
     return {
         "session": session,
         "display_name": state.get("display_name") or "",
+        # its tmux session is there (the check the screen capture already makes)
+        "alive": bool(alive),
+        # the lead's latest message to the person, so the notch panel needn't read the chat log (2.1)
+        "last_message": last_message,
         "stowed": bool(state.get("stowed")),
         "schema_version": state.get("schema_version") or SCHEMA_VERSION,
         "conductor": conductor_out,
@@ -229,6 +266,125 @@ def team_snapshot(session: str, entry: dict[str, Any] | None = None) -> dict[str
             "bind_card": str(binds_dir() / f"{session}.md"),
         },
     }
+
+
+_NO_DOING: dict[str, Any] = {"doing": None, "doing_plain": None, "doing_at": None}
+#: Each seat's last doing line and when it changed, so a line's age survives from one pass to the next.
+DOING_FILE = "seat-doing.json"
+
+
+def _member_doing(session: str, pane_text: dict[int, str], seats: list[tuple[str, Any]],
+                  now: float | None = None) -> dict[str, dict[str, Any]]:
+    """seat → {doing, doing_plain, doing_at} from the screens already captured for this pass (16 lines
+    each): the seat's latest step line, keys hidden the way a graph step's live view hides them, the
+    same line in plain words, and when it last changed. A seat whose screen wasn't read has none."""
+    from .graph_engine import hide_keys, plain_doing, seat_doing
+    from .jsonutil import read_json, write_json
+
+    now = time.time() if now is None else now
+    path = sessions_dir(session) / DOING_FILE
+    old = read_json(path) if path.exists() else {}
+    out: dict[str, dict[str, Any]] = {}
+    for sid, idx in seats:
+        text = pane_text.get(idx) if isinstance(idx, int) else None
+        if not sid or text is None:
+            continue
+        raw = hide_keys(seat_doing(text), text)
+        if not raw:
+            continue
+        prev = old.get(sid) if isinstance(old.get(sid), dict) else {}
+        at = prev.get("at") if prev.get("doing") == raw and prev.get("at") else round(now, 1)
+        out[sid] = {"doing": raw, "doing_plain": plain_doing(raw), "doing_at": at}
+    keep = {sid: {"doing": v["doing"], "at": v["doing_at"]} for sid, v in out.items()}
+    if keep != old:
+        try:
+            write_json(path, keep)
+        except Exception:
+            pass
+    return out
+
+
+def _seat_graphs(graphs: list[dict[str, Any]], roster: set[str], lead: str) -> dict[str, dict[str, Any]]:
+    """seat → {graph_id, title, step_name} for the team's members at work on a graph: a member that is a
+    running step's own seat, else (helpers only) one that runs a graph of its own (its newest)."""
+    from .graph_engine import SEATLESS
+
+    running = sorted((g for g in graphs if isinstance(g, dict) and g.get("status") == "running" and "nodes" in g),
+                     key=lambda g: -float(g.get("created_at") or 0))
+    out: dict[str, dict[str, Any]] = {}
+    for g in running:
+        for n in g.get("nodes") or []:
+            seat = str(n.get("seat") or "")
+            if str(n.get("status") or "") != "running" or str(n.get("role") or "") in SEATLESS:
+                continue
+            if (seat in roster or seat == lead) and seat not in out:
+                out[seat] = {"graph_id": g.get("id"), "title": g.get("title"), "step_name": n.get("step_name")}
+    for g in running:
+        owner = str(g.get("owner") or "")
+        if owner in roster and owner not in out:
+            out[owner] = {"graph_id": g.get("id"), "title": g.get("title"),
+                          "step_name": (g.get("now") or {}).get("step_name")}
+    return out
+
+
+#: Lines a screen reader picked up from the lead's terminal chrome (the Teams page leaves the same out).
+_CHAT_CHROME = re.compile(r"enter to select|to navigate|esc to|\? for shortcuts|bypass permissions|^⎿", re.I)
+LAST_MESSAGE_MAX = 200
+#: How much of the chat log's end is read for the lead's latest message.
+LAST_MESSAGE_TAIL = 65536
+
+
+def _no_last_message() -> dict[str, Any]:
+    """Nothing the lead wrote may be shown: no log yet, none written, or each line held back (a key in it,
+    a job's recap). Never null: the app reads null as an older engine and falls back to reading the chat
+    log itself, without these tests, and keeps what it read; a log that appeared between the engine's read
+    and the app's (a new team's first job recaps) would put a held-back line on the notch panel."""
+    return {"text": "", "at": None}
+
+
+def _last_message(session: str, lead: str) -> dict[str, Any]:
+    """The lead's latest message to the person, {text (≤200), at}: the newest line in the end of the chat
+    log (``human/<team>/chat.jsonl``, its last 64 KB) that the lead wrote itself. An automatic recap of a
+    finished job (it carries a job id) is not the lead speaking, and a line with a key or token in it is
+    never shown. ``{"text": "", "at": None}`` when no line qualifies or there is no log yet: never None."""
+    path = state_dir() / "human" / session / "chat.jsonl"
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            start = max(0, f.tell() - LAST_MESSAGE_TAIL)
+            f.seek(max(0, start - 1))
+            data = f.read()
+    except OSError:
+        return _no_last_message()
+    if start > 0:  # read from mid-file: keep whole rows only (the byte before shows whether one starts here)
+        nl = data.find(b"\n")
+        data = data[nl + 1:] if nl >= 0 else b""
+    from .graph_engine import HIDDEN_DOING, hide_keys
+
+    # every whole line in the tail, so a run of job recaps can't push the lead's own words out of reach
+    for line in reversed(data.decode("utf-8", "replace").splitlines()):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or str(row.get("kind") or "") != "from_orch" or str(row.get("job_id") or "").strip():
+            continue
+        if str(row.get("seat_id") or lead) not in (lead, "c1"):
+            continue
+        text = re.sub(r"^Orchestrator needs you\s*·\s*", "", " ".join(str(row.get("text") or "").split()))
+        # a key or token in the message keeps it off the panel (the same test as a doing line)
+        if not text or _CHAT_CHROME.search(text) or hide_keys(text, "") == HIDDEN_DOING or \
+                (" tokens" in text and "·" in text and re.search(r"thinking|…|\.\.\.", text, re.I)):
+            continue
+        if len(text) > LAST_MESSAGE_MAX:
+            cut = text[:LAST_MESSAGE_MAX - 1]
+            text = (cut[:cut.rfind(" ")] if cut.rfind(" ") > LAST_MESSAGE_MAX // 2 else cut).rstrip(" ,;:-—") + "…"
+        try:
+            at = float(row.get("ts")) if row.get("ts") is not None else None
+        except (TypeError, ValueError):
+            at = None
+        return {"text": text, "at": at}
+    return _no_last_message()
 
 
 def _open_asks(session: str) -> list[dict[str, Any]]:
@@ -417,6 +573,20 @@ def build_snapshot(*, session: str | None = None, events_n: int = 40) -> dict[st
         cron_block = cron_status()
     except Exception:
         pass
+    # the same two as `pong graph list --json` (2.1): what the runner holds for Claude's usage limits
+    # (null when all is well) and whether the runner that moves graphs past their first step is on
+    try:
+        from .limits import view as _limits_view
+
+        limits_block = _limits_view()
+    except Exception:
+        limits_block = None
+    try:
+        from .doctor import _runner as _runner_check
+
+        runner_block = _runner_check(time.time())
+    except Exception:
+        runner_block = None
     snap = {
         "schema_version": SCHEMA_VERSION,
         "contract_version": CONTRACT_VERSION,
@@ -434,12 +604,11 @@ def build_snapshot(*, session: str | None = None, events_n: int = 40) -> dict[st
                 int((t.get("mailbox") or {}).get("unread_total") or 0) for t in teams
             )
         },
-        "work_graph": {
-            "graphs": [
-                g for t in teams for g in ((t.get("work_graph") or {}).get("graphs") or [])
-            ]
-        },
+        # Each team's graphs are under teams[].work_graph. The all-teams copy that sat here was read by
+        # nothing and was nearly half the snapshot (2.1).
         "cron": cron_block,
+        "limits": limits_block,
+        "runner": runner_block,
     }
     return snap
 

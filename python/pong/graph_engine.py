@@ -3072,6 +3072,7 @@ def _watch_seat(session: str, graph: dict[str, Any], node: dict[str, Any]) -> bo
             # only for the folder the engine opened the seat in, named on the line under the question
             if not _grok_trust_is_root(tail, _project_root(session, graph, node)):
                 node["attention"] = "asks to open a folder outside this project (not the team's). Open its screen to say yes or no."
+                _attention_since(node, before)
                 if node["attention"] != before:
                     _history(graph, str(node.get("id")), "attention", "the AI asks to trust a folder other than "
                              "the project's: that is yours to answer", event="seat")
@@ -3085,6 +3086,7 @@ def _watch_seat(session: str, graph: dict[str, Any], node: dict[str, Any]) -> bo
         _history(graph, str(node.get("id")), "trust", "said yes when the AI asked to trust the project's folder",
                  event="seat")
         node["attention"] = None
+        _attention_since(node, before)
         return True
     bottom = "\n".join(text.splitlines()[-14:])
     no_model = str((node.get("live") or {}).get("state") or "") == "no_model"
@@ -3092,6 +3094,7 @@ def _watch_seat(session: str, graph: dict[str, Any], node: dict[str, Any]) -> bo
     node["attention"] = ((f"is asking: \u201c{asked}\u201d Open its screen to answer." if asked
                           else "is asking your permission. Open its screen to answer.")
                          if _ASKS.search(bottom) and not no_model else NO_MODEL_ATTENTION if no_model else None)
+    _attention_since(node, before)
     if node["attention"] and node["attention"] != before:
         if no_model:
             _history(graph, str(node.get("id")), "attention", "the AI never started or has quit (its terminal is "
@@ -3104,6 +3107,16 @@ def _watch_seat(session: str, graph: dict[str, Any], node: dict[str, Any]) -> bo
             _post(session, graph, kind="attention", summary=f"{node.get('id')} on {seat} is asking for permission"
                   + (f": \u201c{asked}\u201d" if asked else ""), next_node=node.get("id"))
     return before != node.get("attention") or live_changed
+
+
+def _attention_since(node: dict[str, Any], before: Any) -> None:
+    """When the step started asking (the notch panel's "waiting 3 min"); gone when it stops asking."""
+    if node.get("attention") == before:
+        return
+    if node.get("attention"):
+        node["attention_at"] = _now()
+    else:
+        node.pop("attention_at", None)
 
 
 _FRAME = re.compile(r"^[\s│┃|╭╮╰╯─━>❯⏺●]+|[\s│┃|╭╮╰╯─━]+$")
@@ -3216,6 +3229,89 @@ def seat_doing(text: str) -> str:
     return line
 
 
+#: What a doing line becomes when a key or token is anywhere on the seat's screen.
+HIDDEN_DOING = "(hidden: a credential is on the seat's screen)"
+
+
+def hide_keys(doing: str, text: str) -> str:
+    """*doing* as it may be saved and shown: the hidden note when a key or token is on the line or
+    anywhere in the screen's last 60 lines (a key on screen stays on screen, never in a file)."""
+    if not doing:
+        return ""
+    from .jev import has_secret
+
+    screen = str(text or "").splitlines()[-60:]
+    if has_secret(doing) or _NAMED_KEY.search(doing) or any(has_secret(ln) or _NAMED_KEY.search(ln) for ln in screen):
+        return HIDDEN_DOING
+    return doing
+
+
+#: A tool call as Claude Code draws it: "Read(src/app.py)", "Bash(make test …", "mcp__x__y(…)", and the
+#: tools whose screen name is two words: "Web Search(…)", "Edit Notebook(…)" (the app's Words.doing too).
+_TOOL_CALL = re.compile(r"^(?P<tool>[A-Za-z_][\w.]*(?: [A-Z][A-Za-z]+)?)\((?P<arg>.*)$", re.S)
+#: An MCP tool as Claude Code draws it: "notes - list_files (MCP)(…)".
+_MCP_CALL = re.compile(r"^[\w.-]+ - [\w .-]+ \(MCP\)", re.I)
+#: Claude Code's own hints at the end of a folded line.
+_FOLD_HINT = re.compile(r"\s*\((?:ctrl|cmd)\+\w+ to (?:expand|see all|collapse)\)\s*$", re.I)
+PLAIN_DOING_MAX = 80
+
+
+def _doing_file(verb: str, arg: str) -> str:
+    """"Reading app.py": the file's name only, never its folders."""
+    a = arg.rsplit(")", 1)[0] if ")" in arg else arg
+    a = re.split(r"\s+·\s+|,\s+|\s+-\s+", a.strip())[0]
+    a = re.sub(r"^\w+\s*[:=]\s*", "", a).strip().strip("\"'`")
+    name = os.path.basename(a.rstrip("/"))
+    if not name or len(name) > 60 or " " in name:
+        return f"{verb} a file"
+    return f"{verb} {name}"
+
+
+def plain_doing(raw: Any) -> str | None:
+    """A seat's doing line in plain words for the notch panel, or None to hide it.
+
+    Claude Code's tool calls become what they do ("Read(src/app.py)" → "Reading app.py", "Bash(…)" →
+    "Running a command"); any other tool call is hidden (raw tool text is never shown); a plain sentence
+    passes through, cut at 80 characters on a word. The app's ``Words.doing`` keeps the same table for
+    an older engine."""
+    s = _FOLD_HINT.sub("", re.sub(r"\s+", " ", str(raw or "")).strip()).strip()
+    if not s or s == HIDDEN_DOING or s.startswith("(hidden"):
+        return None
+    try:
+        from .jev import has_secret
+
+        if has_secret(s) or _NAMED_KEY.search(s):
+            return None
+    except Exception:
+        return None
+    if _MCP_CALL.match(s):
+        return None
+    # before the tool calls, as the app's Words.doing has it: "Update Todos(…)" reads as a two-word tool
+    if re.match(r"^Update Todos\b", s):
+        return "Updating its to-do list"
+    m = _TOOL_CALL.match(s)
+    if m:
+        tool, arg = m.group("tool").replace(" ", ""), m.group("arg")  # "Web Search" → "WebSearch"
+        if tool == "Read":
+            return _doing_file("Reading", arg)
+        if tool in ("Write", "Update", "Edit", "MultiEdit", "NotebookEdit", "EditNotebook"):
+            return _doing_file("Editing", arg)
+        if tool in ("Bash", "BashOutput", "Shell"):
+            return "Running a command"
+        if tool in ("Search", "Grep", "Glob"):
+            return "Searching the files"
+        if tool in ("WebSearch", "WebFetch", "Fetch"):
+            return "Looking on the web"
+        if tool in ("Task", "Agent"):
+            return "Asking a helper"
+        return None
+    if len(s) > PLAIN_DOING_MAX:
+        cut = s[:PLAIN_DOING_MAX]
+        sp = cut.rfind(" ")
+        s = (cut[:sp] if sp >= PLAIN_DOING_MAX // 2 else cut).rstrip(" ,;:-—") + "…"
+    return s
+
+
 def _see_live(node: dict[str, Any], text: str, command: str) -> bool:
     """Record what the seat's screen shows on this tick. True when the view changed."""
     from .pane_activity import is_thinking
@@ -3234,15 +3330,12 @@ def _see_live(node: dict[str, Any], text: str, command: str) -> bool:
     elif fp != live.get("fp"):
         live["fp"] = fp
         live["changed_at"] = now
-    doing = seat_doing(text)
+    doing = hide_keys(seat_doing(text), text)
     if doing:
-        from .jev import has_secret
-
-        # the line is saved and shown: a key or token on screen stays on screen
-        screen = str(text or "").splitlines()[-60:]
-        live["doing"] = ("(hidden: a credential is on the seat's screen)"
-                         if has_secret(doing) or _NAMED_KEY.search(doing) or any(has_secret(ln) or _NAMED_KEY.search(ln)
-                                                                                 for ln in screen) else doing)
+        if doing != live.get("doing"):
+            live["doing_at"] = now  # when the line itself last changed (the notch panel shows its age)
+        live["doing"] = doing
+        live["doing_plain"] = plain_doing(doing)
     live["busy"] = busy
     live["seen_at"] = now
     shell = command.lower() in _SHELLS if command else False
@@ -4023,7 +4116,245 @@ def graph_title(graph: dict[str, Any]) -> str:
     return _goal_title(str(graph.get("goal") or "")) or name or str(graph.get("id") or "")
 
 
-def snapshot_fields(graph: dict[str, Any], *, full: bool = True) -> dict[str, Any]:
+def step_places(graph: dict[str, Any]) -> tuple[dict[str, int], int | None]:
+    """Each step's place in the graph and how many places there are: "step 3 of 4".
+
+    A place is the longest path from the start step(s), counted in steps, with the edges that send
+    work back removed (an edge to a step still open on a depth-first walk from the starts); copies of
+    one step (``count``) are wired like it, so they share its place. The walk goes over the steps with
+    each step's copies taken as one: walked one by one, an edge that sends work back to a copy the walk
+    hadn't reached yet read as a step forward (a review panel came out "step 8 of 8" where it is 4 of 7).
+    The end step has no place and doesn't count. A graph with no start step that can be found (none
+    named, and every step has a step before it) has no places and no total: the notch panel then says
+    "step 2", never a guess."""
+    nodes = [n for n in graph.get("nodes") or [] if isinstance(n, dict) and str(n.get("id") or "")]
+    ids = [str(n["id"]) for n in nodes]
+    role = {str(n["id"]): str(n.get("role") or "") for n in nodes}
+    # each copy stands for the step it copies ("work#2" → "work")
+    base = {str(n["id"]): str(n.get("copy_of") or "") or str(n["id"]).split("#", 1)[0] for n in nodes}
+    steps = list(dict.fromkeys(base[i] for i in ids))
+    out: dict[str, list[str]] = {s: [] for s in steps}
+    into: set[str] = set()
+    for e in graph.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        a, b = str(e.get("from") or ""), str(e.get("to") or "")
+        if a not in base or b not in base:
+            continue
+        a, b = base[a], base[b]
+        if b not in out[a]:
+            out[a].append(b)
+            if a != b:
+                into.add(b)
+    topo = graph.get("topology") if isinstance(graph.get("topology"), dict) else {}
+    named = [str(s) for s in (topo.get("starts") or [topo.get("start")]) if s]
+    starts: list[str] = []
+    for s in named:  # a copied start step is its copies
+        b = base.get(s) or (s if s in out else "")
+        if b and b not in starts:
+            starts.append(b)
+    if not named:
+        starts = [s for s in steps if s not in into]
+    if not starts:
+        return {}, None
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {s: WHITE for s in steps}
+    keep: dict[str, list[str]] = {s: [] for s in steps}
+    post: list[str] = []
+    for s in starts:
+        if color[s] != WHITE:
+            continue
+        color[s] = GRAY
+        stack = [(s, iter(out[s]))]
+        while stack:
+            u, it = stack[-1]
+            v = next(it, None)
+            if v is None:
+                color[u] = BLACK
+                post.append(u)
+                stack.pop()
+                continue
+            if color[v] == GRAY:
+                continue  # back to a step still open on this walk: work sent back
+            keep[u].append(v)
+            if color[v] == WHITE:
+                color[v] = GRAY
+                stack.append((v, iter(out[v])))
+    depth: dict[str, int] = {s: 1 for s in starts}
+    for u in reversed(post):  # every kept edge runs forward in this order
+        if u not in depth:
+            continue
+        for v in keep[u]:
+            depth[v] = max(depth.get(v, 0), depth[u] + 1)
+    places = {i: depth[base[i]] for i in ids if base[i] in depth and role.get(i) != "end"}
+    return places, (max(places.values()) if places else None)
+
+
+def step_name(graph: dict[str, Any], n: dict[str, Any]) -> str:
+    """A step as the notch panel names it: its title, else what it does ("The builder", "A reviewer");
+    the person's own step is "Your answer". Never an id."""
+    title = " ".join(str(n.get("title") or "").split())
+    if title:
+        return title[:60]
+    r = str(n.get("role") or "")
+    if r == "human":
+        return "Your answer"
+    try:
+        from .plain_ask import ROLE_WORDS
+
+        w = ROLE_WORDS.get(r) or "a step"
+    except Exception:
+        w = "a step"
+    return w[:1].upper() + w[1:]
+
+
+def _limit_pause(reason: str) -> bool:
+    """A pause the runner made for Claude's usage limits (it lifts it by itself)."""
+    try:
+        from .limits import OUR_REASONS
+
+        return reason in OUR_REASONS
+    except Exception:
+        return "limit" in reason.lower()
+
+
+def _quiet(n: dict[str, Any], now: float) -> bool:
+    """A running step whose screen has not changed for ten minutes with nothing mid-turn. A reading
+    left from before the runner stopped looking counts its time from that reading."""
+    live = n.get("live") if isinstance(n.get("live"), dict) else None
+    if not live:
+        return False
+    st = str(live.get("state") or "")
+    if st == "quiet":
+        return True
+    return st == "working" and not live.get("busy") and \
+        now - float(live.get("changed_at") or now) >= QUIET_AFTER_MIN * 60
+
+
+def _ts(v: Any) -> int | None:
+    try:
+        return int(float(v)) if v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def graph_now(graph: dict[str, Any], *, places: dict[str, int] | None = None, total: int | None = None,
+              now: float | None = None, limit_until: float | None = None) -> dict[str, Any] | None:
+    """A running graph's one state now and the step to show, for the notch panel (``graphs[].now``).
+
+    The step shown is the first one waiting on the person (the oldest question, then a step asking
+    for something), else the running one started last. State, most pressing first: ``needs_you``,
+    ``no_model`` (its AI is not running), ``paused_limit`` (the runner's pause for Claude's limits),
+    ``paused`` (the person's), ``working``, ``quiet`` (every running step quiet), ``between_steps``.
+    None for a graph that is not running. Everything comes from the graph record already in memory."""
+    if str(graph.get("status") or "") != "running":
+        return None
+    now = _now() if now is None else now
+    if places is None:
+        places, total = step_places(graph)
+    nodes = [n for n in graph.get("nodes") or [] if isinstance(n, dict) and str(n.get("id") or "")]
+    gates = sorted(open_gates(graph), key=lambda g: float((g.get("gate") or {}).get("at") or 0))
+    running = [n for n in nodes if str(n.get("status") or "") == "running"]
+    no_model = [n for n in running if n.get("attention") == NO_MODEL_ATTENTION
+                or str((n.get("live") or {}).get("state") or "") == "no_model"]
+    # steps asking for something, the one asking longest first
+    asking = sorted((n for n in running if n.get("attention") and n not in no_model),
+                    key=lambda n: float(n.get("attention_at") or 0))
+    paused = graph.get("paused") if isinstance(graph.get("paused"), dict) else {}
+    manual = bool(paused.get("manual"))
+    reason = str(paused.get("reason") or "") if manual else ""
+    by_limit = manual and _limit_pause(reason)
+
+    def newest(ns: list[dict[str, Any]]) -> dict[str, Any]:
+        return max(ns, key=lambda n: float(n.get("started_at") or 0))
+
+    def last_done() -> dict[str, Any] | None:
+        done = [n for n in nodes if n.get("finished_at") and str(n.get("role") or "") != "end"]
+        return max(done, key=lambda n: float(n.get("finished_at") or 0)) if done else None
+
+    held_ids = [str(h.get("node")) for h in graph.get("held") or [] if isinstance(h, dict)]
+    step: dict[str, Any] | None
+    if gates or asking:
+        state, step = "needs_you", (gates[0] if gates else asking[0])
+    elif no_model:
+        state, step = "no_model", no_model[0]
+    elif manual:
+        state = "paused_limit" if by_limit else "paused"
+        step = newest(running) if running else (_node(graph, held_ids[0]) if held_ids else None) or last_done()
+    elif running:
+        state = "quiet" if all(_quiet(n, now) for n in running) else "working"
+        step = newest(running)
+    else:
+        state, step = "between_steps", last_done()
+    step = step or {}
+    sid = str(step.get("id") or "")
+    is_running = str(step.get("status") or "") == "running"
+    live = step.get("live") if is_running and isinstance(step.get("live"), dict) else {}
+    at_gate = isinstance(step.get("gate"), dict) and str(step.get("status") or "") == "waiting_human"
+    gate = step["gate"] if at_gate else {}
+    asked_at = step.get("attention_at") if any(step is n for n in asking) else None
+    w = ((graph.get("wiring") or {}).get(sid) or {}) if sid else {}
+    if str(w.get("runtime") or "") == "engine":
+        w = {}  # an automatic test runs no AI: no "which AI" to say
+    from .graph_loops import innermost
+
+    L = innermost(graph, sid) if sid and graph.get("loops") else None
+    rnd, rnds = ((L.get("round"), L.get("max_iters")) if L else (graph.get("round"), graph.get("max_rounds")))
+    names: list[str] = []
+    for n in sorted(running, key=lambda n: float(n.get("started_at") or 0)):
+        nm = step_name(graph, n)
+        if nm not in names:
+            names.append(nm)
+    place = places.get(sid)
+    done_here = 0
+    if place is not None:
+        here = [n for n in nodes if places.get(str(n.get("id"))) == place]
+        began = [float(n.get("started_at") or 0) for n in here if str(n.get("status") or "") == "running"]
+        if began:
+            since = min(began) - 5.0
+            done_here = sum(1 for n in here if str(n.get("status") or "") == "done"
+                            and float(n.get("finished_at") or 0) >= since)
+    files = [(rel, f) for rel, f in (graph.get("files") or {}).items() if isinstance(f, dict)] \
+        if isinstance(graph.get("files"), dict) else []
+    newest_file = max(files, key=lambda kv: float(kv[1].get("at") or 0)) if files else None
+    doing = str(live.get("doing") or "")
+    out: dict[str, Any] = {
+        "state": state,
+        "step": sid or None,
+        "step_name": step_name(graph, step) if sid else None,
+        "step_n": place,
+        "steps": total,
+        "at_once": len(running),
+        "at_once_names": names[:3],
+        "at_once_done": done_here,
+        "runtime": w.get("runtime") if is_running else None,
+        "model": w.get("model") if is_running else None,
+        "step_started_at": _ts(step.get("started_at") if is_running else gate.get("at")),
+        "doing": doing or None,
+        "doing_plain": (live.get("doing_plain") if "doing_plain" in live else plain_doing(doing)) if doing else None,
+        "doing_changed_at": _ts(live.get("doing_at") or live.get("changed_at")) if doing else None,
+        "last_file": ({"path": newest_file[0], "kb": newest_file[1].get("kb"), "at": _ts(newest_file[1].get("at")),
+                       "step": newest_file[1].get("node")} if newest_file else None),
+        "round": rnd,
+        "rounds": rnds,
+        "sent_back": max(0, int(step.get("visits") or 0) - 1) if sid else 0,
+        "waiting_since": _ts(gate.get("at") if gate else asked_at),
+        "pause_reason": reason,
+        "limit_until": _ts(limit_until) if by_limit else None,
+        "held": len(graph.get("held") or []),
+    }
+    if state == "quiet":
+        out["quiet_since"] = _ts(live.get("changed_at"))
+    if state == "between_steps" and sid:  # "Step 3 of 4 done · moving to Review"
+        nxt = [_node(graph, str(e.get("to"))) for e in select_edges(graph.get("edges") or [], sid,
+                                                                    str(step.get("last_outcome") or "done"))]
+        nxt = [n for n in nxt if isinstance(n, dict) and str(n.get("role") or "") != "end"]
+        out["next_name"] = step_name(graph, nxt[0]) if nxt else None
+    return out
+
+
+def snapshot_fields(graph: dict[str, Any], *, full: bool = True, places: dict[str, int] | None = None,
+                    total: int | None = None, limit_until: float | None = None) -> dict[str, Any]:
     """What the app needs to draw one graph truthfully. Additive to the v1 block."""
     now = _now()
     bnd = graph.get("boundaries") or {}
@@ -4048,10 +4379,15 @@ def snapshot_fields(graph: dict[str, Any], *, full: bool = True) -> dict[str, An
     refusals = [{k: r.get(k) for k in ("node", "round", "reason", "claim", "at", "job_id")}
                 for r in (graph.get("refusals") or [])[-(12 if full else 4):] if isinstance(r, dict)]
     topo = graph.get("topology") or {}
+    if places is None:
+        places, total = step_places(graph)
     return {
         "title": graph_title(graph),
         "goal_text": str(graph.get("goal") or "")[:1600 if full else 240],
         "start": topo.get("start"),
+        # the graph's one state and the step to show, in the notch panel's words (2.1); None when finished
+        "now": graph_now(graph, places=places, total=total, now=now, limit_until=limit_until),
+        "steps": total,
         "gates": gates,
         "held": len(graph.get("held") or []),
         "manual_pause": bool((graph.get("paused") or {}).get("manual")) if isinstance(graph.get("paused"), dict) else False,
@@ -4120,8 +4456,21 @@ def gate_routes(graph: dict[str, Any], gid: str) -> dict[str, list[str]]:
     return {o: [name(e.get("to")) for e in select_edges(edges, gid, o)] for o in gate_options(graph, gid)}
 
 
-def snapshot_node(graph: dict[str, Any], n: dict[str, Any]) -> dict[str, Any]:
+def _live_view(n: dict[str, Any]) -> dict[str, Any] | None:
+    """What a running step's screen showed on the engine's last look, with the doing line in plain words
+    (``doing_plain``, worked out here for a reading saved before 2.1) and when that line changed."""
+    live = n.get("live")
+    if str(n.get("status") or "") != "running" or not isinstance(live, dict):
+        return None
+    out = {k: live.get(k) for k in ("state", "doing", "busy", "changed_at", "seen_at", "doing_at")}
+    out["doing_plain"] = live.get("doing_plain") if "doing_plain" in live else plain_doing(live.get("doing"))
+    return out
+
+
+def snapshot_node(graph: dict[str, Any], n: dict[str, Any], places: dict[str, int] | None = None) -> dict[str, Any]:
     w = (graph.get("wiring") or {}).get(str(n.get("id") or "")) or {}
+    if places is None:
+        places = step_places(graph)[0]
     task = str(n.get("task") or "")
     if str(n.get("role") or "") == "check":
         task = " && ".join(str(c) for c in (n.get("run") or []))
@@ -4153,8 +4502,11 @@ def snapshot_node(graph: dict[str, Any], n: dict[str, Any]) -> dict[str, Any]:
         "taken_over": bool(n.get("taken_over")),
         "attention": n.get("attention") if str(n.get("status") or "") == "running" else None,
         # what the seat's screen showed on the engine's last look (every 30 s)
-        "live": ({k: (n.get("live") or {}).get(k) for k in ("state", "doing", "busy", "changed_at", "seen_at")}
-                 if str(n.get("status") or "") == "running" and isinstance(n.get("live"), dict) else None),
+        "live": _live_view(n),
+        # the step's name and its place ("step 3 of 4"), as the notch panel says them (2.1)
+        "title": n.get("title"),
+        "step_name": step_name(graph, n),
+        "rank": places.get(str(n.get("id") or "")),
         "check_log": n.get("check_log") or ((chk.get("base") + ".log") if chk.get("base") else None),
         "runtime": w.get("runtime"),
         "model": w.get("model"),
@@ -4213,6 +4565,47 @@ def _jev_view(rec: Any) -> dict[str, Any] | None:
 
 # ---------------------------------------------------------------- listing ---
 
+def owner_labels(team: dict[str, Any] | None, workers: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    """Who a graph's owner is, in the words the Teams page uses: "Lead" for the team's lead, "Helper 1",
+    "Helper 2"… for its helpers in roster order (the standing ones first, then those that come and go),
+    "Chat" for a graph-planning chat's seat. *team* is a pairs.json entry or a team's state; *workers*,
+    when given, is its roster as the snapshot lists it."""
+    from .state import workers_from_state
+
+    team = team if isinstance(team, dict) else {}
+    c = team.get("conductor") if isinstance(team.get("conductor"), dict) else {}
+    cond = str(c.get("id") or "c1")
+    try:
+        roster = workers if workers is not None else workers_from_state(team)
+    except Exception:
+        roster = []
+    out = {cond: "Lead"}
+    ordered = [w for w in roster if isinstance(w, dict) and not w.get("ephemeral")] + \
+              [w for w in roster if isinstance(w, dict) and w.get("ephemeral")]
+    n = 0
+    for w in ordered:
+        wid = str(w.get("id") or "")
+        if not wid or wid in out:
+            continue
+        if _CHAT_SEAT.search(wid):  # a chat's seat is no helper and takes no helper's number
+            out[wid] = "Chat"
+            continue
+        n += 1
+        out[wid] = f"Helper {n}"
+    return out
+
+
+#: A graph-planning chat's seat: "<lead>.arch", "<lead>.arch2", … (``architect.start``).
+_CHAT_SEAT = re.compile(r"\.arch\d*$")
+
+
+def owner_label(labels: dict[str, str], owner: Any) -> str:
+    """*owner* in the words of :func:`owner_labels`; a chat's seat is "Chat" whether or not the roster
+    lists it. Empty for a seat nobody named."""
+    owner = str(owner or "")
+    return labels.get(owner) or ("Chat" if _CHAT_SEAT.search(owner) else "")
+
+
 def list_all(*, done_limit: int = 12, done_days: float = 14.0) -> list[dict[str, Any]]:
     """Every custom graph on this Mac, newest first: running ones, then recent finished ones.
 
@@ -4239,13 +4632,17 @@ def list_all(*, done_limit: int = 12, done_days: float = 14.0) -> list[dict[str,
         except Exception:
             continue
         entry = db.get(d.name) if isinstance(db.get(d.name), dict) else {}
-        label = str(entry.get("label") or entry.get("name") or entry.get("title") or "")
+        # the team's name as the person set it (pairs.json display_name); the older keys after it
+        label = " ".join(str(entry.get("display_name") or entry.get("label") or entry.get("name")
+                             or entry.get("title") or "").split())
+        labels = owner_labels(entry)
         for g in blk.get("graphs") or []:
             if g.get("kind") != "graph":
                 continue
             g = dict(g)
             g["session"] = d.name
             g["team_label"] = label
+            g["owner_label"] = owner_label(labels, g.get("owner"))
             out.append(g)
     now = _now()
     running = [g for g in out if g.get("status") == "running"]

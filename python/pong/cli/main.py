@@ -783,7 +783,32 @@ def _compact_snapshot_for_pipe(snap: dict) -> dict:
                 val = job.get(key)
                 if isinstance(val, str) and len(val) > 160:
                     job[key] = val[:160] + "…"
+        for g in (team.get("work_graph") or {}).get("graphs") or []:
+            if isinstance(g, dict) and "nodes" in g:
+                _compact_graph(g)
     return out
+
+
+#: A step's graph-page details (why its AI was picked, Jev's lines, the advice log): the graph page reads
+#: them from ``pong graph list``; the snapshot's pipe copy leaves them out (2.1).
+_PAGE_ONLY_NODE_KEYS = ("jev", "jev_block", "claim_read", "advice_log", "rejected", "why", "rule", "task_preview")
+
+
+def _compact_graph(g: dict) -> None:
+    """A running graph in the pipe copy: its state, steps, questions and now, without the graph page's
+    inspector details. The app reads at most 500,000 bytes of it, so forty graphs must fit with room."""
+    g["recent"] = (g.get("recent") or [])[-4:]
+    g["wiring"] = {k: {kk: v.get(kk) for kk in ("seat", "role", "runtime", "model")}
+                   for k, v in (g.get("wiring") or {}).items() if isinstance(v, dict)}
+    for n in g.get("nodes") or []:
+        if isinstance(n, dict):
+            for k in _PAGE_ONLY_NODE_KEYS:
+                n.pop(k, None)
+            for k in [k for k, v in n.items() if v is None]:
+                n.pop(k)
+    for gate in g.get("gates") or []:
+        if isinstance(gate, dict):
+            gate.pop("jev", None)
 
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:

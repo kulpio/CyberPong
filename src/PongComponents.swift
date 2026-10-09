@@ -271,9 +271,11 @@ enum PongUI {
     }
 }
 
-/// A state's shape in a 16 pt cell. Working is a turning 270° ring.
+/// A state's shape in a 16 pt cell. Working is a turning 270° ring; `still` holds it still (the notch
+/// panel's ring stops while anything needs the person: one thing moves at a time).
 final class StatusMarkerView: NSView {
     var status: PongStatus { didSet { rebuild() } }
+    var still = false { didSet { if still != oldValue { ring.removeAnimation(forKey: "spin"); rebuild() } } }
     private let ring = CAShapeLayer()
     private let glyph = NSImageView()
 
@@ -315,7 +317,7 @@ final class StatusMarkerView: NSView {
             ring.lineCap = .round
             ring.bounds = bounds
             ring.position = CGPoint(x: bounds.midX, y: bounds.midY)
-            if ring.animation(forKey: "spin") == nil && !PongMotion.reduced {
+            if ring.animation(forKey: "spin") == nil && !PongMotion.reduced && !still {
                 let a = CABasicAnimation(keyPath: "transform.rotation.z")
                 a.fromValue = 0
                 a.toValue = -2 * Double.pi

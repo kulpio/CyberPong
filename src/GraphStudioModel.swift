@@ -202,9 +202,21 @@ struct GNode {
     let liveBusy: Bool       // mid-turn (a spinner, "esc to interrupt")
     let liveChangedAt: Double?
     let liveSeenAt: Double?
+    /// The engine's plain words for `liveDoing` (2.1): "Running a command" ("" from an older engine;
+    /// the app then words it itself, `Words.doing`).
+    let liveDoingPlain: String
+    /// The step's title from the graph's design, and the engine's name for it (its title, else what it
+    /// does: "the builder"); "" from an older engine.
+    let title: String
+    let stepName: String
+    /// The engine's place for the step on the longest path from the start (2.1); nil: not sent.
+    let rank: Int?
 
     init(_ d: [String: Any]) {
         id = GJ.str(d["id"])
+        title = GJ.str(d["title"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        stepName = GJ.str(d["step_name"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        rank = d["rank"].flatMap { $0 is NSNull ? nil : GJ.dbl($0) }.map { Int($0) }
         role = GJ.str(d["role"]).lowercased()
         status = GJ.str(d["status"]).lowercased()
         seat = GJ.str(d["seat"])
@@ -241,6 +253,7 @@ struct GNode {
         liveBusy = GJ.bool(lv["busy"])
         liveChangedAt = GJ.dbl(lv["changed_at"])
         liveSeenAt = GJ.dbl(lv["seen_at"])
+        liveDoingPlain = GJ.str(lv["doing_plain"]).trimmingCharacters(in: .whitespacesAndNewlines)
         let cr = GJ.dict(d["claim_read"])
         claimRead = cr.isEmpty ? "" : "Jev read the verdict-less claim as \(GJ.str(cr["outcome"])) (P \(String(format: "%.2f", GJ.dbl(cr["p"]) ?? 0)))"
         claimQuestion = GJ.str(cr["question"])
@@ -634,10 +647,83 @@ enum EngineCheck {
     }
 }
 
+/// A running graph's one state now, as the engine words it (2.1, spec §10.4 `graphs[].now`): the step to
+/// show, its place, its AI, what it is doing. nil from an older engine; the notch panel then works the
+/// same out from the steps (`StepPlaces`, `Words.doing`).
+struct GNow {
+    /// working | quiet | no_model | needs_you | paused | paused_limit | between_steps
+    let state: String
+    /// The step to show: the first one waiting on the person, else the one at work that started last.
+    let step: String
+    /// Its title, else what it does ("the builder"); never an id.
+    let stepName: String
+    /// Its place and the graph's total on the longest path (nil: not known).
+    let stepN: Int?
+    let steps: Int?
+    /// Steps at work now, up to three of their names, and how many copies at the shared place are done.
+    let atOnce: Int
+    let atOnceNames: [String]
+    let atOnceDone: Int
+    let runtime: String
+    let model: String
+    let stepStartedAt: Double?
+    let doing: String
+    let doingPlain: String
+    let doingChangedAt: Double?
+    let lastFile: GFile?
+    let round: Int
+    let rounds: Int
+    /// Times this step was sent back (its visits less one).
+    let sentBack: Int
+    let waitingSince: Double?
+    let pauseReason: String
+    let limitUntil: Double?
+    let held: Int
+    /// Between steps: the step that comes next ("" when not sent).
+    let nextName: String
+
+    init?(_ a: Any?) {
+        guard let d = a as? [String: Any], !d.isEmpty else { return nil }
+        let optInt: (Any?) -> Int? = { v in (v is NSNull ? nil : GJ.dbl(v)).map { Int($0) } }
+        state = GJ.str(d["state"])
+        step = GJ.str(d["step"])
+        stepName = GJ.str(d["step_name"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        stepN = optInt(d["step_n"]).flatMap { $0 > 0 ? $0 : nil }
+        steps = optInt(d["steps"]).flatMap { $0 > 0 ? $0 : nil }
+        atOnce = GJ.int(d["at_once"])
+        atOnceNames = GJ.strings(d["at_once_names"])
+        atOnceDone = GJ.int(d["at_once_done"])
+        runtime = GJ.str(d["runtime"])
+        model = GJ.str(d["model"])
+        stepStartedAt = GJ.dbl(d["step_started_at"])
+        doing = GJ.str(d["doing"])
+        doingPlain = GJ.str(d["doing_plain"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        doingChangedAt = GJ.dbl(d["doing_changed_at"])
+        let lf = GJ.dict(d["last_file"])
+        lastFile = lf.isEmpty ? nil : GFile(path: GJ.str(lf["path"]), kb: GJ.dbl(lf["kb"]) ?? 0, at: GJ.dbl(lf["at"]) ?? 0,
+                                             node: GJ.str(lf["step"]))
+        round = GJ.int(d["round"])
+        rounds = GJ.int(d["rounds"])
+        sentBack = GJ.int(d["sent_back"])
+        waitingSince = GJ.dbl(d["waiting_since"])
+        pauseReason = GJ.str(d["pause_reason"])
+        limitUntil = GJ.dbl(d["limit_until"])
+        held = GJ.int(d["held"])
+        nextName = GJ.str(d["next_name"]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct GGraph {
     let id: String
     let session: String
     let teamLabel: String
+    /// The team's name for the graph's owner seat (2.1; "" from an older engine).
+    let ownerLabel: String
+    /// The step the graph starts at, as its design names it ("" on an old record).
+    let start: String
+    /// The graph's one state now, worded by the engine (2.1; nil from an older engine, and for
+    /// graphs that aren't running).
+    let now: GNow?
     let owner: String
     let title: String
     let goalText: String
@@ -674,6 +760,10 @@ struct GGraph {
         session = GJ.str(d["session"])
         architectId = GJ.str(GJ.dict(d["architect"])["id"])
         teamLabel = GJ.str(d["team_label"])
+        ownerLabel = GJ.str(d["owner_label"])
+        // a start the topology gave as a list (its copies) counts from the first
+        start = (d["start"] as? [Any]).map { GJ.str($0.first) } ?? GJ.str(d["start"])
+        now = GNow(d["now"])
         owner = GJ.str(d["owner"])
         let t = GJ.str(d["title"])
         goalText = GJ.str(d["goal_text"]).isEmpty ? GJ.str(d["goal"]) : GJ.str(d["goal_text"])

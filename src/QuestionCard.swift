@@ -97,7 +97,8 @@ final class Toast: NSView {
 
     static func show(_ message: String, warn: Bool = false, action: String? = nil, in window: NSWindow? = nil,
                      onAction: (() -> Void)? = nil) {
-        guard let win = window ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+        // never in the notch panel: its card says what happened itself (2.1)
+        guard let win = window ?? NSApp.appKeyWindow ?? NSApp.mainWindow ?? NSApp.visibleAppWindow,
               let host = win.contentView else { return }
         current?.removeFromSuperview()
         let t = Toast(frame: .zero)
@@ -248,12 +249,13 @@ struct QuestionModel {
         answers = QuestionModel.gateAnswers(g, gate)
     }
 
-    init(ask a: GChatAsk, store: GraphStore? = nil) {
+    /// `architects`: the chats to name it from (the notch panel passes the ones it read; else the store's).
+    init(ask a: GChatAsk, store: GraphStore? = nil, architects: [GArchitect]? = nil) {
         source = .ask(a)
         key = a.key
         question = a.question
         context = a.context
-        let chat = (store ?? GraphStore.shared).architects.first { $0.id == a.architect && $0.session == a.session }
+        let chat = (architects ?? (store ?? GraphStore.shared).architects).first { $0.id == a.architect && $0.session == a.session }
         origin = "Chat · " + (chat?.displayTitle ?? TeamNames.name(a.session))
         openedAt = a.createdAt
         subject = chat?.displayTitle ?? "the chat"
@@ -312,6 +314,11 @@ struct QuestionModel {
 
     /// The files the points link to: the card's file row doesn't repeat them while the points show.
     var linkedFiles: Set<String> { Set(detail.compactMap { detailFile($0) }) }
+
+    /// What the notch panel's receipt says after the time, from the answer's own words (`QuestionWords`).
+    func receiptTail(_ a: QuestionAnswer) -> String {
+        QuestionWords.receiptTail(kind: a.kind, title: a.title, what: a.what, subject: subject, isChat: isChat)
+    }
 
     /// Everything a card draws from its words: a page redraws a card when this changes, so a
     /// plain-words rewrite or details that arrive late show up without a click.
@@ -476,6 +483,49 @@ enum QuestionWords {
     }
 }
 
+/// The notch panel's receipt (2.1, spec §6.3): plain values in and out, beside QuestionWords (an
+/// extension of its own, as it reads the answer's kind).
+extension QuestionWords {
+    /// The receipt's first word after an answer: "Approved", "Sent back", "Stopped", "Answered", "Replied".
+    static func receiptWord(_ kind: QuestionAnswer.Kind) -> String {
+        switch kind {
+        case .approve: return "Approved"
+        case .sendBack: return "Sent back"
+        case .stopByAnswer, .stopGraph: return "Stopped"
+        case .route, .option: return "Answered"
+        case .reply: return "Replied"
+        }
+    }
+
+    /// What happens now, from the answer's own words, so the receipt is the confirmation and no toast is
+    /// needed: "Pricing page goes on to Prepare the release", "The work goes back to Draft with your note",
+    /// "Pricing page stays in the list", "Tuesday 14 Oct".
+    static func receiptTail(kind: QuestionAnswer.Kind, title: String, what: String, subject: String, isChat: Bool) -> String {
+        var w = what.trimmingCharacters(in: .whitespacesAndNewlines)
+        while w.hasSuffix(".") { w = String(w.dropLast()) }
+        func after(_ prefix: String) -> String? { w.hasPrefix(prefix) ? String(w.dropFirst(prefix.count)) : nil }
+        let out: String
+        switch kind {
+        case .approve:
+            if let rest = after("Approve goes on to ") { out = subject + " goes on to " + rest }
+            else if w == "Approve finishes the graph" { out = subject + " is finished" }
+            else if w == "Approve lets the graph go on" { out = subject + " goes on" }
+            else { out = w }
+        case .sendBack:
+            out = after("Send back returns the work to ").map { "The work goes back to " + $0 } ?? w
+        case .stopByAnswer, .stopGraph:
+            out = subject + " stays in the list"
+        case .route:
+            out = after("Goes to ").map { subject + " goes to " + $0 } ?? w
+        case .option:
+            out = title
+        case .reply:
+            out = isChat ? "Sent to " + subject : w
+        }
+        return String(out.prefix(160))
+    }
+}
+
 enum ProbText {
     static func pct(_ p: Double) -> String {
         if p > 0 && p < 0.005 { return "<1%" }
@@ -486,10 +536,20 @@ enum ProbText {
 
 /// The card. `compact` (a graph's or a chat's banner, every card after Home's first) shows the header,
 /// the question, its first line of context and the buttons; "Details ›" opens it in place to the full card.
+///
+/// `.island` (2.1, spec §6): the same card in the notch panel, 416 pt wide. The source gets its own line
+/// under the header, the context at most three lines, 28 pt buttons that wrap with Stop starting a row of
+/// its own, "Sending…" in the header while an answer goes, and no toast: the receipt line says what
+/// happened, and a refusal says so in the card (with "Allow one more round" when that is the fix).
 final class QuestionCardView: NSView {
+    enum Size { case full, island }
+
     var onOpen: (() -> Void)?
     /// Called after an answer went through, so a page can re-read.
     var onAnswered: (() -> Void)?
+    /// The notch panel's receipt, said once an answer went through ("✓ Approved · 2:58 pm · …").
+    var onReceipt: ((String) -> Void)?
+    let size: Size
     /// Called when the card's height changed (details opened or folded, a note, Details ›, the receipt),
     /// so the page lays its cards out again.
     var onHeightChange: (() -> Void)?
@@ -565,9 +625,22 @@ final class QuestionCardView: NSView {
     private var armedStop: Int?
     private var armWork: DispatchWorkItem?
     private var hoverIndex: Int?
+    /// The island's "Allow one more round": the answer to send again once a round is allowed.
+    private let noticeAction = PongButton(title: "Allow one more round", style: .quiet, size: .small)
+    private var noticeShown = false
 
-    init(_ model: QuestionModel, compact: Bool = false) {
+    /// "Click again to stop" is showing (the notch panel stays open meanwhile).
+    var isStopArmed: Bool { armedStop != nil }
+    /// An answer is on its way.
+    var isSending: Bool { sending }
+
+    private var island: Bool { size == .island }
+    private var pad: CGFloat { island || compact ? 16 : 20 }
+    private var buttonSize: PongButton.Size { island || compact ? .regular : .large }
+
+    init(_ model: QuestionModel, compact: Bool = false, size: Size = .full) {
         self.model = model
+        self.size = size
         self.collapsible = compact
         // a card the person opened stays open when the page draws it again
         self.compact = compact && !QuestionCardView.opened.contains(model.key)
@@ -676,7 +749,7 @@ final class QuestionCardView: NSView {
             case .option, .reply: style = i == 0 ? .primary : .secondary
             default: style = .secondary
             }
-            let b = PongButton(title: a.title, style: style, size: compact ? .regular : .large)
+            let b = PongButton(title: a.title, style: style, size: buttonSize)
             b.toolTip = a.what
             b.setAccessibilityHelp(a.what)
             b.onPress = { [weak self] in self?.press(i) }
@@ -685,6 +758,9 @@ final class QuestionCardView: NSView {
         }
         whatLine.stringValue = model.answers.first?.what ?? ""
         footerView.addSubview(whatLine)
+        noticeAction.isHidden = true
+        noticeAction.toolTip = "Allow one more round of work, then send your answer"
+        footerView.addSubview(noticeAction)
         // "what it does" follows the pointer over the buttons; a click beside them focuses the card
         footerView.onHover = { [weak self] p in self?.hover(p) }
         footerView.onClick = { [weak self] in
@@ -776,6 +852,8 @@ final class QuestionCardView: NSView {
     }
 
     func refreshWaited() {
+        // the notch panel says an answer is on its way where the wait was
+        if island && sending { waited.stringValue = "Sending…"; return }
         let s = Date().timeIntervalSince1970 - model.openedAt
         waited.stringValue = s > 30 ? "waiting " + PongUI.duration(s) : "just now"
     }
@@ -786,6 +864,7 @@ final class QuestionCardView: NSView {
         guard !answered else { return }
         let full = !compact
         questionText.maximumNumberOfLines = compact ? 2 : 3
+        contextText.maximumNumberOfLines = island ? 3 : 5
         contextText.isHidden = !full || contextText.stringValue.isEmpty
         contextLine.isHidden = full || contextLine.stringValue.isEmpty
         details.isHidden = !full || !details.hasContent
@@ -798,9 +877,23 @@ final class QuestionCardView: NSView {
         whatLine.isHidden = !full
         expand.isHidden = full
         collapse.isHidden = !(full && collapsible)
-        for b in buttons { b.size = compact ? .regular : .large }
+        for b in buttons { b.size = buttonSize }
         needsLayout = true
         footerView.needsLayout = true
+    }
+
+    /// Esc: an armed Stop goes back to its usual self. True when one was armed.
+    @discardableResult
+    func cancelArmedStop() -> Bool {
+        guard armedStop != nil else { return false }
+        cancelOperation(nil)
+        return true
+    }
+
+    /// ⌘D in the notch panel: show or hide "What you're deciding".
+    func toggleDetails() {
+        guard !answered, !compact, details.hasContent, !model.detail.isEmpty else { return }
+        details.setOpen(!details.open)
     }
 
     private func heightChanged() {
@@ -814,7 +907,8 @@ final class QuestionCardView: NSView {
     /// "What it does" follows the pointer over the buttons (`p` in the footer's coordinates; nil: it left).
     private func hover(_ p: NSPoint?) {
         let i = p.flatMap { pt in buttons.firstIndex { !$0.isHidden && $0.frame.contains(pt) } }
-        guard i != hoverIndex else { return }
+        // a refusal stays until the next press: it says what to do
+        guard i != hoverIndex, !noticeShown else { return }
         hoverIndex = i
         if let i, !(model.answers[i].kind == .sendBack && noteOpen) {
             whatLine.stringValue = model.answers[i].what
@@ -867,8 +961,10 @@ final class QuestionCardView: NSView {
             }
             b.isEnabled = !sending
         }
-        let bw: CGFloat = focused ? 2 : (NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0)
-        let bc = (focused ? PongColor.live : PongColor.you).cgColor
+        // the notch panel's one card is always the focused one: no ring (its keycaps say it)
+        let ring = focused && !island
+        let bw: CGFloat = ring ? 2 : (NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0)
+        let bc = (ring ? PongColor.live : PongColor.you).cgColor
         if let ext = externalBorder {
             layer?.borderWidth = 0
             ext(bw, bc)
@@ -924,13 +1020,23 @@ final class QuestionCardView: NSView {
     private func send(_ a: QuestionAnswer, note given: String? = nil, extend: Bool = false) {
         sending = true
         working.isHidden = false
+        hideNotice()
         restyleButtons()
+        refreshWaited()
         let note = given ?? (noteOpen ? noteField.stringValue : "")
         let finish: (Bool, String) -> Void = { [weak self] ok, err in
             guard let self else { return }
             self.sending = false
             self.working.isHidden = true
-            if ok {
+            self.refreshWaited()
+            if ok, self.island {
+                // the receipt is the confirmation: what was said, when, and what happens now
+                let text = "✓ \(QuestionWords.receiptWord(a.kind)) · \(PongUI.clock(Date().timeIntervalSince1970)) · "
+                    + self.model.receiptTail(a)
+                self.showReceipt(text)
+                self.onReceipt?(text)
+                self.onAnswered?()
+            } else if ok {
                 let word: String
                 switch a.kind {
                 case .approve: word = "Approved"
@@ -951,7 +1057,14 @@ final class QuestionCardView: NSView {
                 let plain = refusal?.words ?? (a.kind == .stopGraph ? "Couldn't stop the graph. Try again in a moment."
                     : "Your answer didn't reach the \(self.model.isChat ? "chat" : "graph"). Try again in a moment.")
                 let words = GraphActions.failure(err, plain, log: "answer \(a.title) on \(self.model.subject)")
-                if refusal?.moreRounds == true, !extend, case .gate = self.model.source {
+                if self.island {
+                    // in the notch panel the card says it itself: a toast would land in another window
+                    var retry: (() -> Void)?
+                    if refusal?.moreRounds == true, !extend, case .gate = self.model.source {
+                        retry = { [weak self] in self?.send(a, note: note, extend: true) }
+                    }
+                    self.showNotice(words, action: retry)
+                } else if refusal?.moreRounds == true, !extend, case .gate = self.model.source {
                     // the card itself is kept for the toast's few seconds: a redraw may have replaced it
                     Toast.show(words, warn: true, action: "Allow one more round") { self.send(a, note: note, extend: true) }
                 } else {
@@ -962,8 +1075,34 @@ final class QuestionCardView: NSView {
         model.send(a, note: note, extend: extend, done: finish)
     }
 
+    /// A refusal in the card's own what-line, in red, with its fix when there is one (the notch panel).
+    private func showNotice(_ text: String, action: (() -> Void)?) {
+        whatLine.stringValue = text
+        whatLine.textColor = PongColor.fail
+        noticeShown = true
+        if let action {
+            noticeAction.onPress = { [weak self] in self?.hideNotice(); action() }
+            noticeAction.isHidden = false
+        } else {
+            noticeAction.isHidden = true
+        }
+        NSAccessibility.post(element: self, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        heightChanged()
+    }
+
+    private func hideNotice() {
+        guard noticeShown else { return }
+        noticeShown = false
+        whatLine.textColor = PongColor.textTertiary
+        whatLine.stringValue = model.answers.first?.what ?? ""
+        noticeAction.isHidden = true
+        heightChanged()
+    }
+
     private func showReceipt(_ s: String) {
         receipt.stringValue = s
+        receipt.toolTip = s
         receipt.isHidden = false
         for v in subviews where v !== receipt { v.isHidden = true }
         footerView.isHidden = true  // also when a page pinned it outside the card
@@ -1035,7 +1174,6 @@ final class QuestionCardView: NSView {
     /// The header, the question and what is under it, down to where the answers part starts.
     @discardableResult
     private func layoutBody(width W: CGFloat, apply: Bool) -> CGFloat {
-        let pad: CGFloat = compact ? 16 : 20
         let inner = max(40, W - pad * 2)
         var y = pad
         func place(_ v: NSView, _ r: NSRect) { if apply { v.frame = r } }
@@ -1050,9 +1188,17 @@ final class QuestionCardView: NSView {
         place(openBtn, NSRect(x: W - pad - ww - openW - 4, y: y - 5, width: 24, height: 24))
         openBtn.isHidden = onOpen == nil
         place(working, NSRect(x: W - pad - ww - openW - 24, y: y + 1, width: 14, height: 14))
-        let sx = pad + 16 + ew + 10 + (chatGlyph == nil ? 0 : 26)
-        place(source, NSRect(x: sx, y: y, width: max(20, W - pad - ww - openW - 30 - sx), height: 16))
-        y += 16 + 12
+        if island {
+            // 416 pt is too narrow for the source beside the header (it lost the step's name): its own
+            // line under it, the graph's name giving way in the middle
+            y += 16 + 4
+            place(source, NSRect(x: pad, y: y, width: inner, height: 16))
+            y += 16 + 10
+        } else {
+            let sx = pad + 16 + ew + 10 + (chatGlyph == nil ? 0 : 26)
+            place(source, NSRect(x: sx, y: y, width: max(20, W - pad - ww - openW - 30 - sx), height: 16))
+            y += 16 + 12
+        }
         // question
         let qh = textHeight(questionText, width: inner, maxLines: compact ? 2 : 3, lineH: 22)
         place(questionText, NSRect(x: pad, y: y, width: inner, height: qh))
@@ -1066,7 +1212,7 @@ final class QuestionCardView: NSView {
         } else {
             if !contextText.stringValue.isEmpty {
                 y += 8
-                let ch = textHeight(contextText, width: inner, maxLines: 5, lineH: 18)
+                let ch = textHeight(contextText, width: inner, maxLines: island ? 3 : 5, lineH: 18)
                 place(contextText, NSRect(x: pad, y: y, width: inner, height: ch))
                 y += ch
             }
@@ -1078,7 +1224,23 @@ final class QuestionCardView: NSView {
                 if apply { details.needsLayout = true }
                 y += dh
             }
-            if !fileButtons.isEmpty {
+            if !fileButtons.isEmpty && island {
+                // the notch panel is short of height: the files flow along a line and wrap
+                y += 12
+                var x = pad - 2
+                for b in fileButtons {
+                    let w = min(inner, ceil(b.attributedTitle.size().width) + 24)
+                    if x + w > W - pad + 2 && x > pad { x = pad - 2; y += 22 }
+                    place(b, NSRect(x: x, y: y, width: w, height: 20))
+                    x += w + 10
+                }
+                if let m = moreFiles {
+                    let w = m.intrinsicContentSize.width
+                    if x + w > W - pad + 8 && x > pad { x = pad - 2; y += 22 }
+                    place(m, NSRect(x: x - 8, y: y - 2, width: w, height: 24))
+                }
+                y += 22
+            } else if !fileButtons.isEmpty {
                 y += 12
                 for b in fileButtons {
                     place(b, NSRect(x: pad - 2, y: y, width: min(inner, ceil(b.attributedTitle.size().width) + 24), height: 20))
@@ -1108,7 +1270,6 @@ final class QuestionCardView: NSView {
     /// Pinned outside the card, it starts with a little room under the line that divides it.
     @discardableResult
     private func layoutFooter(width W: CGFloat, apply: Bool, pinned: Bool) -> CGFloat {
-        let pad: CGFloat = compact ? 16 : 20
         let inner = max(40, W - pad * 2)
         func place(_ v: NSView, _ r: NSRect) { if apply { v.frame = r } }
         var y: CGFloat = pinned ? 12 : 0
@@ -1132,25 +1293,33 @@ final class QuestionCardView: NSView {
             y += 16
         }
         var x = pad
-        let bh: CGFloat = compact ? 28 : 32
+        let bh: CGFloat = buttonSize == .regular ? 28 : 32
         var row = buttons
         if compact { row.append(expand) } else if collapsible { row.append(collapse) }
-        for b in row {
+        for (i, b) in row.enumerated() {
             let w = b.intrinsicContentSize.width
             let h = b.height
-            if x + w > W - pad && x > pad {  // wrap onto a second row
+            // the buttons flow and wrap; in the notch panel Stop starts a row of its own, away from Approve
+            let stop = island && i < model.answers.count && [.stopGraph, .stopByAnswer].contains(model.answers[i].kind)
+            if (x + w > W - pad || stop) && x > pad {  // wrap onto a second row
                 x = pad
                 y += bh + 8
             }
-            place(b, NSRect(x: x, y: y + (bh - h) / 2, width: w, height: h))
+            place(b, NSRect(x: x, y: y + (bh - h) / 2, width: min(w, inner), height: h))
             x += w + 8
         }
         y += bh
         if !compact {
             y += 8
-            let wh = textHeight(whatLine, width: inner, maxLines: 2, lineH: 14)
-            place(whatLine, NSRect(x: pad, y: y, width: inner, height: wh))
-            y += wh
+            var lineW = inner
+            if !noticeAction.isHidden {
+                let nw = noticeAction.intrinsicContentSize.width
+                lineW = max(80, inner - nw - 8)
+                place(noticeAction, NSRect(x: W - pad - nw + 8, y: y - 4, width: nw, height: 24))
+            }
+            let wh = textHeight(whatLine, width: lineW, maxLines: 2, lineH: 14)
+            place(whatLine, NSRect(x: pad, y: y, width: lineW, height: max(wh, noticeAction.isHidden ? 0 : 16)))
+            y += max(wh, noticeAction.isHidden ? 0 : 18)
         }
         return y + pad
     }

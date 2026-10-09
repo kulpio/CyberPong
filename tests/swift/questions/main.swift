@@ -1,6 +1,6 @@
 import Foundation
 
-// Harness for the question card's data (run.sh slices the types out of the app and the island).
+// Harness for the question card's data (run.sh slices the types out of the app).
 // Exit 0 = all green.
 
 var failures = 0
@@ -61,30 +61,9 @@ d = GDetail.parse(["text": "Only fact.", "file": "/tmp/A.md", "where": "Summary"
 check(d.map { [$0.text, $0.file, $0.location] } == [["Only fact.", "/tmp/A.md", "Summary"]], "a single {text, file, where}",
       "\(d)")
 
-// MARK: - DetailPoint (the island) reads the same shapes the same way
-
-section("I1  the island parses what the app parses")
-let shapes: [Any] = [
-    [["text": "Edit 19 changes the quote.", "file": "/tmp/U.md", "where": "Edit 19"]],
-    "• First fact.\n- Second fact.",
-    (1...9).map { "Point \($0)." },
-    [String(repeating: "a", count: 400)],
-    (1...6).map { _ in String(repeating: "b", count: 279) },
-    [["text": "x", "where": String(repeating: "w", count: 90)]],
-    ["text": "Only fact.", "file": "/tmp/A.md", "where": "Summary"],
-]
-for (i, s) in shapes.enumerated() {
-    let app = GDetail.parse(s).map { [$0.text, $0.file, $0.location] }
-    let isl = DetailPoint.parse(s).map { [$0.text, $0.file, $0.place] }
-    check(app == isl, "shape \(i + 1) matches", "app=\(app) island=\(isl)")
-}
-check(DetailPoint.attribution("Claude Haiku").hasPrefix("Summary by Claude Haiku from the files"), "Haiku attribution")
-check(DetailPoint.attribution("the chat") == "Written by the chat", "chat attribution")
-check(DetailPoint.attribution("") == "", "no attribution when nobody said")
-
 // MARK: - QuestionWords (the app's card and notification words)
 
-section("Q1  who wrote the details, the same line in the app and the island")
+section("Q1  who wrote the details")
 check(QuestionWords.attribution("Claude Haiku")
       == "Summary by Claude Haiku from the files · check the files for the full picture", "Haiku")
 check(QuestionWords.attribution("the chat") == "Written by the chat", "the chat")
@@ -96,11 +75,6 @@ check(QuestionWords.attribution("the graph's designer and Claude Haiku")
 check(QuestionWords.attribution("the graph's designer and CyberPong")
       == "Written by the graph's designer, with points from the step's report", "the designer's question, CyberPong's points")
 check(QuestionWords.attribution("  ") == "", "nobody said")
-for by in ["", "Claude Haiku", "the chat", "CyberPong", "the graph's designer", "the graph's designer and Claude Haiku",
-           "the graph's designer and CyberPong", "a helper"] {
-    check(QuestionWords.attribution(by) == DetailPoint.attribution(by), "island says the same for '\(by)'",
-          "app=\(QuestionWords.attribution(by)) island=\(DetailPoint.attribution(by))")
-}
 
 section("Q2  a notification: the question, then why in one line, never the details")
 check(QuestionWords.notificationBody(question: "Send the report?", context: ["The reviewer passed it.", "Second."])
@@ -242,23 +216,16 @@ check(Words.engineSentence("usage: pong goal resume [-h]\npong: error: the follo
 check(Words.engineSentence("Traceback (most recent call last):\n  File \"x\", line 1\nValueError: bad") == nil, "a traceback")
 check(Words.engineSentence("") == nil && Words.engineSentence("   ") == nil, "nothing said")
 check(Words.engineSentence("{\"ok\": false}") == nil, "a JSON reply with no words")
+check(Words.engineSentence("Its terminal couldn't be found just now.") == "Its terminal couldn't be found just now.",
+      "a single line that is a sentence, with no \"error:\"")
 
-section("W5  the island words a refusal the same way")
-let refusals = ["error: Its terminal has closed.", "{\"ok\": false, \"note\": \"There is no terminal to open yet.\"}",
-                "error: g_1 is done — nothing to pause", "error: KeyError: 'x'", "usage: x\npong: error: required: --id",
-                "Its terminal couldn't be found just now.", "", "{\"ok\": false, \"error\": \"The team isn't running.\"}"]
-for r in refusals {
-    check(Words.engineSentence(r) == PongCheck.sentence(r), "same for '\(r.prefix(40).replacingOccurrences(of: "\n", with: " ⏎ "))'",
-          "app=\(Words.engineSentence(r) ?? "nil") island=\(PongCheck.sentence(r) ?? "nil")")
-}
-
-section("W6  a refused answer that trying again won't fix says what it is")
+section("W5  a refused answer that trying again won't fix says what it is")
 // the engine's own refusals (graph_engine._answer / resume, asks.answer), as GraphActions passes them on
 let spent = "error: me: that would be round 5 of this gate's 4. Answer rejected, or allow one more round: "
     + "pong -s team-a goal resume --id g_1 --node me --outcome approved --note 'keep it' --extend 1"
 check(QuestionWords.answerRefusal(spent).map { $0.moreRounds } == true, "spent rounds: one more can be allowed")
 check(QuestionWords.answerRefusal(spent)?.words == "Its rounds are spent: allow one more round to send your answer.",
-      "spent rounds: the island's words", QuestionWords.answerRefusal(spent)?.words ?? "nil")
+      "spent rounds: its words", QuestionWords.answerRefusal(spent)?.words ?? "nil")
 check(Words.engineSentence(spent) == nil, "spent rounds: the engine's line is not shown (it carries the note)")
 check(QuestionWords.answerRefusal("error: me: one more round needs 3 job(s) and only 1 are left under max_jobs 9. "
                                   + "Allow one more round (raises max_jobs too): pong -s t goal resume --extend 1")?.moreRounds == true,
@@ -272,14 +239,10 @@ for closed in ["error: me is not an open gate (open: none)", "error: g_1 is done
 check(QuestionWords.answerRefusal("error: 'x' is not an answer this gate takes (it takes: approved)") == nil,
       "any other refusal: the card's own plain words")
 check(QuestionWords.answerRefusal("") == nil, "nothing said")
-for said in [spent, "error: me is not an open gate (open: none)", "error: question q_1 is already withdrawn",
-             "error: 'x' is not an answer this gate takes (it takes: approved)", ""] {
-    let app = QuestionWords.answerRefusal(said), island = PongCheck.answerRefusal(said)
-    check(app?.words == island?.words && app?.moreRounds == island?.moreRounds, "the island says the same for '\(said.prefix(36))'",
-          "app=\(app?.words ?? "nil") island=\(island?.words ?? "nil")")
-}
+check(QuestionWords.answerRefusal("error: question q_1 is already withdrawn")?.words
+      == "This question isn't open any more, so your answer wasn't sent.", "a withdrawn question is closed too")
 
-section("W7  why Jev has no opinion: a sentence in the words Settings uses, never red engine text")
+section("W6  why Jev has no opinion: a sentence in the words Settings uses, never red engine text")
 let noKey = "No Jev key on this Mac, or Jev is switched off in Settings › Limits & keys."
 check(Words.jevNotAsked("Jev is not available (no TypeSafe key, or turned off)") == noKey, "an older engine's no-key line",
       Words.jevNotAsked("Jev is not available (no TypeSafe key, or turned off)"))
@@ -338,19 +301,6 @@ check(EngineCheck.launchesPathPython("#!/usr/bin/env python3\nimport sys\n") && 
 check(!EngineCheck.launchesPathPython("#!/opt/homebrew/opt/python@3.12/bin/python3.12\nimport sys\n"),
       "a script that names its own interpreter (pip's entry point)")
 check(!EngineCheck.launchesPathPython("#!/usr/bin/env bash\necho hi\n"), "a shell script that never runs python")
-
-section("E1b the island reads a launcher the same way, and says the same thing when there is no Python")
-let launchers = ["#!/usr/bin/env bash\nexport PYTHONPATH=x\nexec python3 -m pong.cli.main \"$@\"\n",
-                 "#!/bin/sh\nexec /usr/bin/env python3 -m pong.cli.main \"$@\"",
-                 "#!/bin/sh\nexec /opt/homebrew/bin/python3 -m pong.cli.main \"$@\"",
-                 "#!/bin/sh\n# exec python3 is what we used to do\nexec /x/py -m pong",
-                 "#!/usr/bin/env python3\nimport sys\n", "#!/usr/bin/python3\n",
-                 "#!/opt/homebrew/opt/python@3.12/bin/python3.12\nimport sys\n", "#!/usr/bin/env bash\necho hi\n",
-                 "#!/usr/bin/env bash\nif ! xcode-select -p >/dev/null 2>&1; then exit 1; fi\nexec python3 -m pong.cli.main \"$@\"\n"]
-for (i, s) in launchers.enumerated() {
-    check(EngineCheck.launchesPathPython(s) == PongCheck.launchesPathPython(s), "launcher \(i + 1): the island agrees")
-}
-check(PongCheck.noPythonMessage == EngineCheck.noPythonMessage, "the same no-Python sentence")
 
 section("E2  the graph runner's state from graph list")
 check(EngineCheck.runnerOK(["ok": false, "installed": false, "running": false, "last_beat_s": NSNull()]) == false, "off")

@@ -35,7 +35,8 @@ class PongSheet: NSObject, NSWindowDelegate {
     func present(on parentWindow: NSWindow?, onEnd: (() -> Void)? = nil) {
         self.onEnd = onEnd
         PongSheet.retained.append(self)
-        if let p = parentWindow ?? NSApp.keyWindow ?? NSApp.mainWindow {
+        // never on the notch panel (2.1): a sheet there would hang off the notch
+        if let p = parentWindow ?? NSApp.appKeyWindow ?? NSApp.mainWindow {
             parent = p
             dim(p)
             p.beginSheet(window) { _ in }

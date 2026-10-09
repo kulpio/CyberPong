@@ -4,14 +4,15 @@ import UserNotifications
 
 /// Settings (⌘,): its own window, a list on the left, changes apply at once (no Save).
 /// Replaces the Setup page and Mission's advanced content (ux-review.md §3, §4).
-final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
+final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost, IslandSettingsHost {
     static let shared = SettingsWindow()
 
     /// Saved by index (`settings.pane`): new panes go at the end. The list shows them in
-    /// `listed` order: This Mac next to General, as the setup asks about this Mac first.
+    /// `listed` order: This Mac next to General, as the setup asks about this Mac first, then the
+    /// notch panel (2.1).
     enum Pane: Int, CaseIterable {
-        case general = 0, accounts, permissions, bars, notifications, advanced, limits, mac
-        static let listed: [Pane] = [.general, .mac, .accounts, .permissions, .bars, .notifications, .advanced, .limits]
+        case general = 0, accounts, permissions, bars, notifications, advanced, limits, mac, island
+        static let listed: [Pane] = [.general, .mac, .island, .accounts, .permissions, .bars, .notifications, .advanced, .limits]
         var title: String {
             switch self {
             case .general: return "General"
@@ -22,6 +23,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
             case .advanced: return "Advanced"
             case .limits: return "Limits & keys"
             case .mac: return "This Mac"
+            case .island: return "Notch panel"
             }
         }
         var symbol: String {
@@ -34,6 +36,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
             case .advanced: return "wrench.and.screwdriver"
             case .limits: return "gauge"
             case .mac: return "laptopcomputer"
+            case .island: return "menubar.rectangle"
             }
         }
         /// The panes that show the setup's rows and follow its checks.
@@ -55,12 +58,41 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
     private lazy var fade = MoreBelowFade(on: paneScroll, color: PongColor.base)
     /// The pane whose scroller was last shown for a moment (once per pane, not per redraw).
     private var flashedPane: Pane?
+    /// The pane drawn last: a redraw of the same pane keeps its scroll place.
+    private var renderedPane: Pane?
+
+    // Settings › Notch panel
+    /// The notch-panel settings the pane shows: a change from elsewhere (the panel's own switch, Hide
+    /// the notch panel, a hand edit) redraws it.
+    private var islandShown: IslandSettings?
+    private var islandObserver: NSObjectProtocol?
+    /// "Try it here" is open the first time the pane is shown, then as the person leaves it.
+    private var islandTryOpen: Bool?
+    private weak var islandTry: IslandTryItCard?
+    /// "Back to the usual settings." after a reset, until the next change.
+    private var islandResetNote = false
+    private weak var islandNote: NSTextField?
+    /// True while the pane writes a setting itself. IslandSettings tells its observers at once, on this
+    /// thread, before the write returns: the pane's own change is already on screen, so that news must
+    /// not redraw it (a redraw there took the focus from the field Tab moved to, cut the switch's slide
+    /// short, and inside a redraw it drew the page twice).
+    private var islandWriting = false
 
     private final class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+    /// The window; only a preview shooting a whole page lets it be taller than the screen.
+    private final class PageWindow: NSWindow {
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            UIPreview.isOn && UIPreview.env["PONG_PREVIEW_SETTINGS_TALL"] == "1"
+                ? frameRect : super.constrainFrameRect(frameRect, to: screen)
+        }
+    }
 
     /// Back from an edit (the bar sheet, System Settings, a sign-in in Terminal): read what may have changed.
     func windowDidBecomeKey(_ notification: Notification) {
         if pane.showsSetup { SetupModel.shared.refreshDoctor() }
+        // the notch panel's settings, edited by hand meanwhile: read again (a difference redraws the page)
+        if pane == .island { IslandSettings.reload() }
         setupPolling()
         guard pane == .bars || pane == .permissions else { return }
         if pane == .bars, window?.attachedSheet == nil { barsRead = nil }
@@ -90,11 +122,26 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
         if UIPreview.isOn {
             // a preview never takes the keyboard: what someone types elsewhere must not land here
             window?.orderFront(nil)
+            previewFitPage()
         } else {
             NSApp.activate(ignoringOtherApps: true)
             window?.makeKeyAndOrderFront(nil)
         }
         setupPolling()
+    }
+
+    /// A preview can ask for a whole page in one shot (`PONG_PREVIEW_SETTINGS_TALL=1`): the window grows
+    /// to the page's height, however tall (it sits behind every other window).
+    private func previewFitPage() {
+        guard UIPreview.env["PONG_PREVIEW_SETTINGS_TALL"] == "1", let w = window else { return }
+        let want = ceil(paneDoc.frame.height)
+        guard abs(paneScroll.contentSize.height - want) > 1 else { return }
+        w.maxSize = NSSize(width: w.maxSize.width, height: 10_000)
+        var f = w.frame
+        let chrome = f.height - paneScroll.contentSize.height
+        f.origin.y = f.maxY - (want + chrome)
+        f.size.height = want + chrome
+        w.setFrame(f, display: true)
     }
 
     // MARK: SetupHost
@@ -151,9 +198,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
 
     private func build() {
         let size = Self.openingSize
-        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                         backing: .buffered, defer: false)
+        let w = PageWindow(contentRect: NSRect(origin: .zero, size: size),
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                           backing: .buffered, defer: false)
         w.title = "Settings"
         w.titlebarAppearsTransparent = true
         w.appearance = NSAppearance(named: .darkAqua)
@@ -196,13 +243,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
             icon.imageScaling = .scaleProportionallyDown
             icon.identifier = NSUserInterfaceItemIdentifier("icon")
             b.addSubview(icon)
-            let box = ClosureBox { [weak self] in
-                // a name or number still being typed is saved before its pane goes
-                self?.endEditing()
-                self?.pane = p
-                UserDefaults.standard.set(p.rawValue, forKey: "settings.pane")
-                self?.render()
-            }
+            let box = ClosureBox { [weak self] in self?.go(p) }
             boxes.append(box)
             b.target = box
             b.action = #selector(ClosureBox.fire)
@@ -213,7 +254,22 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
             self?.layout()
             self?.render()
         }
+        islandObserver = NotificationCenter.default.addObserver(forName: IslandSettings.didChange, object: nil, queue: .main) { [weak self] _ in
+            // a change made elsewhere shows at once; the pane's own changes are already on screen
+            guard let self, !self.islandWriting, self.pane == .island, self.window?.isVisible == true,
+                  IslandSettings.current != self.islandShown else { return }
+            self.render()
+        }
         layout()
+    }
+
+    /// Another pane, from the list or a link on a pane.
+    private func go(_ p: Pane) {
+        // a name or number still being typed is saved before its pane goes
+        endEditing()
+        pane = p
+        UserDefaults.standard.set(p.rawValue, forKey: "settings.pane")
+        render()
     }
 
     private func layout() {
@@ -270,12 +326,20 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
         case .advanced: advanced()
         case .limits: limits()
         case .mac: mac()
+        case .island: island()
         }
         paneDoc.frame = NSRect(x: 0, y: 0, width: paneScroll.contentSize.width, height: max(y + 32, paneScroll.contentSize.height))
-        // a redraw from a sign-in, a fix or a saved key keeps the person where they were
-        if pane.showsSetup {
+        // a redraw from a sign-in, a fix or a saved key keeps the person where they were (and one
+        // from a notch-panel choice that adds or folds rows)
+        let samePane = renderedPane == pane
+        renderedPane = pane
+        if pane.showsSetup || (pane == .island && samePane) {
             let maxY = max(0, paneDoc.frame.height - paneScroll.contentSize.height)
             paneScroll.contentView.scroll(to: NSPoint(x: 0, y: min(keepScroll.y, maxY)))
+            paneScroll.reflectScrolledClipView(paneScroll.contentView)
+        } else if pane == .island {
+            // the notch panel's page is long: it opens at its top, not where another page was scrolled to
+            paneScroll.contentView.scroll(to: .zero)
             paneScroll.reflectScrolledClipView(paneScroll.contentView)
         }
         fade.update()
@@ -405,11 +469,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
                  self?.setSetting("hide_menu_bar_item", !on)
                  d?.applyMenuBarVisibility()
              }),
-            ("Notch panel", "Questions and working graphs under the Mac's notch",
-             toggle(!Pong.boolSetting("hide_island")) { [weak self] on in
-                 self?.setSetting("hide_island", !on)
-                 if on { IslandHelper.ensureRunning() } else { IslandHelper.stop() }
-             }),
+            // its switch and the rest live on its own pane (2.1)
+            (IslandSettingsWords.generalTitle, IslandSettingsWords.generalLine,
+             button("Open", .quiet) { [weak self] in self?.go(.island) }),
             ("Dock count", "The number of questions on the Dock icon",
              toggle(!UserDefaults.standard.bool(forKey: "attention.noDockBadge")) { on in
                  UserDefaults.standard.set(!on, forKey: "attention.noDockBadge")
@@ -418,6 +480,117 @@ final class SettingsWindow: NSObject, NSWindowDelegate, SetupHost {
         ])
         sectionTitle("Look")
         card([("Night", "CyberPong is dark only: dark blue rooms, warm white text, one colour per job.", nil)])
+    }
+
+    // MARK: Notch panel (2.1, spec §9)
+
+    /// The notch panel's page: card 1 (the owner's asks) with "Try it here" under it, card 2 (what it
+    /// shows), More settings (folded), and Reset. Every change is written at once (IslandSettings).
+    private func island() {
+        let s = IslandSettings.current
+        islandShown = s
+        // the page's line, under its title
+        y -= 12
+        let intro = PongUI.label(IslandSettingsWords.paneLine, PongType.secondary, PongColor.textSecondary, lines: 2)
+        let ih = ceil(intro.attributedStringValue.boundingRect(with: NSSize(width: paneW - 4, height: 100), options: [.usesLineFragmentOrigin]).height) + 2
+        intro.frame = NSRect(x: 32, y: y, width: paneW, height: ih)
+        paneDoc.addSubview(intro)
+        y += ih + 20
+
+        sectionTitle(IslandSettingsWords.card1)
+        islandCard(IslandSettingsRows.card1(s, host: self), gap: 10)
+
+        // Try it here: open the first time the page is shown, then as the person leaves it
+        if islandTryOpen == nil {
+            let seen = UserDefaults.standard.bool(forKey: "settings.island.trySeen")
+            islandTryOpen = !seen
+            UserDefaults.standard.set(true, forKey: "settings.island.trySeen")
+        }
+        let t = IslandTryItCard(open: islandTryOpen ?? false, showAreas: UserDefaults.standard.bool(forKey: "settings.island.areas"))
+        t.onFold = { [weak self] open in
+            self?.islandTryOpen = open
+            self?.render()
+        }
+        t.onAreas = { on in UserDefaults.standard.set(on, forKey: "settings.island.areas") }
+        let th = t.fit(width: paneW)
+        t.frame = NSRect(x: 32, y: y, width: paneW, height: th)
+        paneDoc.addSubview(t)
+        islandTry = t
+        y += th + 32
+
+        sectionTitle(IslandSettingsWords.card2)
+        islandCard(IslandSettingsRows.card2(s, host: self), gap: 20)
+
+        let moreOpen = UserDefaults.standard.bool(forKey: "settings.island.more")
+        let moreRows = IslandSettingsRows.more(s, host: self)
+        let fold = IslandSettingsRows.fold(IslandSettingsWords.moreTitle(moreRows.count), open: moreOpen) { [weak self] in
+            UserDefaults.standard.set(!moreOpen, forKey: "settings.island.more")
+            self?.render()
+        }
+        fold.frame.origin = NSPoint(x: 28, y: y)
+        paneDoc.addSubview(fold)
+        y += 32
+        if moreOpen { islandCard(moreRows, gap: 20) } else { y += 4 }
+
+        let note = PongUI.label(islandResetNote ? IslandSettingsWords.resetNote : IslandSettingsWords.applyNote,
+                                PongType.secondary, PongColor.textTertiary)
+        let reset = button(IslandSettingsWords.resetTitle, .quiet) { [weak self] in
+            guard let self else { return }
+            self.endEditing()
+            self.islandWriting = true
+            IslandSettings.reset()
+            self.islandWriting = false
+            self.islandResetNote = true
+            self.render()
+        }
+        reset.toolTip = "Every setting on this page back to how CyberPong comes, except whether the panel shows"
+        let rw = reset.intrinsicContentSize.width
+        reset.frame = NSRect(x: 32 + paneW - rw, y: y, width: rw, height: reset.height)
+        note.frame = NSRect(x: 36, y: y + 6, width: max(40, paneW - rw - 16), height: 16)
+        paneDoc.addSubview(note)
+        paneDoc.addSubview(reset)
+        islandNote = note
+        y += reset.height + 8
+    }
+
+    /// Rows on a card, `gap` under it.
+    private func islandCard(_ rowsIn: [SetupRowView], gap: CGFloat) {
+        let c = SetupCardView(rows: rowsIn, fill: PongColor.raised)
+        let h = c.fit(width: paneW)
+        c.frame = NSRect(x: 32, y: y, width: paneW, height: h)
+        paneDoc.addSubview(c)
+        y += h + gap
+    }
+
+    // MARK: IslandSettingsHost
+
+    var islandWindow: NSWindow? { window }
+
+    func islandWrite(_ key: IslandSettings.Key, _ value: Any?, redraw: Bool) {
+        let was = IslandSettings.current.value(key)
+        let same: Bool
+        switch (was, value) {
+        case (nil, nil): same = true
+        case (let a as NSObject, let b as NSObject): same = a.isEqual(b)
+        default: same = false
+        }
+        guard !same else { return }
+        islandWriting = true
+        IslandSettings.set(key, value)
+        islandWriting = false
+        islandShown = IslandSettings.current
+        if islandResetNote {
+            islandResetNote = false
+            islandNote?.stringValue = IslandSettingsWords.applyNote
+        }
+        if redraw { render() }
+    }
+
+    func islandShowMe() {
+        // a number still being typed in "A bigger area" counts: it is saved before the area is drawn
+        endEditing()
+        IslandShowMe.show()
+        islandTry?.stage.flashAreas()
     }
 
     /// The same rows as the setup's "Which AIs do you use?" and "Which AI plans your graphs?".

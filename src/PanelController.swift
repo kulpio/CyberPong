@@ -207,6 +207,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         window = win
         NotificationCenter.default.addObserver(
             self, selector: #selector(storeChanged), name: GraphStore.didChange, object: nil)
+        // the map's Island button follows Settings › Notch panel's switch
+        NotificationCenter.default.addObserver(forName: IslandSettings.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.applyMapMode()
+        }
         applyChrome()
         layoutAll()
         updateSidebar()
@@ -848,6 +852,11 @@ final class PanelController: NSObject, NSWindowDelegate {
                 }
                 if u == "ARCHITECTURE" {
                     b.isHidden = !use3DMap
+                }
+                // the notch panel off removes its button too (Settings › Notch panel)
+                if u == "ISLAND" {
+                    b.isHidden = !IslandSettings.current.enabled
+                    b.toolTip = "Open the notch panel"
                 }
                 // Reset position is 2D-only (flat multi grid)
                 if u == "RESET POSITION" || u == "ARRANGE TEAMS" || b.action == #selector(arrangeTeamsPressed) {
@@ -3383,13 +3392,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         map3D?.openArchitectureSheet()
     }
 
-    /// Open the island from the map.
-    ///
-    /// Hovering only opens it on the real camera cutout now, so this is the
-    /// deliberate way in. Deliberately not mode-gated: the island is the same
-    /// island whether the map is flat or 3D.
+    /// Open the notch panel from the map: the deliberate way in (hovering opens it only on the notch).
+    /// Held open until the pointer has been on it once. Hidden when the panel is off (2.1).
     @objc private func islandPressed() {
-        IslandHelper.expand()
+        IslandController.shared.forceExpand()
     }
 
     /// 2D multi: force every team onto distinct default grid slots (persists scoped positions).

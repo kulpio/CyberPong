@@ -68,14 +68,28 @@ enum Words {
             if low.hasPrefix("route:") { return "Chose " + name(String(o.dropFirst(6))) }
             // a graph's stop reasons, the way its status line says them
             if low.hasPrefix("failed_bounded") {
-                let what = o.replacingOccurrences(of: "failed_bounded:", with: "").replacingOccurrences(of: "failed_bounded", with: "")
-                return "Out of " + (what.isEmpty ? "budget" : what)
+                let b = bounded(o)
+                return b.prefix(1).uppercased() + b.dropFirst()
             }
             if low.hasPrefix("no_edge") {
                 let after = o.replacingOccurrences(of: "no_edge:", with: "").replacingOccurrences(of: "no_edge", with: "")
                 return "No next step" + (after.isEmpty ? "" : " after " + name(after))
             }
             return name(o)
+        }
+    }
+
+    /// What a graph ran out of, from its "failed_bounded:<what>" stop reason, in lower case: "out of
+    /// rounds", "out of jobs", "out of time", "failed the same way twice". Never the engine's own word
+    /// ("wall", "no_progress").
+    static func bounded(_ reason: String) -> String {
+        let what = reason.lowercased().replacingOccurrences(of: "failed_bounded:", with: "")
+            .replacingOccurrences(of: "failed_bounded", with: "").trimmingCharacters(in: .whitespaces)
+        switch what {
+        case "": return "out of budget"
+        case "wall", "time", "timeout": return "out of time"
+        case "no_progress", "no-progress": return "failed the same way twice"
+        default: return "out of " + name(what).lowercased()
         }
     }
 
@@ -117,6 +131,65 @@ enum Words {
 
     static func plural(_ n: Int, _ one: String, _ many: String? = nil) -> String {
         "\(n) " + (n == 1 ? one : (many ?? one + "s"))
+    }
+
+    /// What a step's AI is doing, in words a person reads (2.1, spec §10.3), from the line the engine
+    /// read off its screen: "Read(src/app.swift)" → "Reading app.swift", "Bash(make test)" → "Running a
+    /// command". Other tool syntax ("Skill(…)") is nil: raw tool text is never shown, and the row falls
+    /// back to when the step started. A plain sentence passes through, cut at 80 characters on a word.
+    static func doing(_ raw: String) -> String? {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // a step bullet the engine left on ("-" and "*" only before a space: "-5% faster" keeps its sign),
+        // and Claude's "(ctrl+o to expand)" hint
+        while let c = t.first,
+              "⏺•●∙·".contains(c) || ("-*>".contains(c) && t.dropFirst().first.map { $0.isWhitespace } == true) {
+            t = String(t.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        if let r = t.range(of: #"\s*\((?:ctrl|cmd|⌃|⌘)\+?\w+ to (?:expand|see all|collapse)\)\s*$"#,
+                           options: [.regularExpression, .caseInsensitive]) {
+            t = String(t[..<r.lowerBound])
+        }
+        t = t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        // nothing to show, or a line the engine hid because a key was on the screen
+        guard t.count >= 3, !t.hasPrefix("(hidden") else { return nil }
+        // the same table as the engine's plain_doing: an MCP tool ("notes - list_files (MCP)(…)") is tool
+        // text too, and Claude Code's to-do list has its own line
+        if t.range(of: #"^[\w.-]+ - [\w .-]+ \(MCP\)"#, options: [.regularExpression, .caseInsensitive]) != nil { return nil }
+        if t.range(of: #"^Update Todos\b"#, options: .regularExpression) != nil { return "Updating its to-do list" }
+        if let open = t.range(of: #"^[A-Za-z_][\w.]*(?: [A-Z][A-Za-z]+)?\("#, options: .regularExpression) {
+            let tool = t[open.lowerBound..<t.index(before: open.upperBound)].replacingOccurrences(of: " ", with: "")
+            let args = String(t[open.upperBound...])
+            switch tool {
+            case "Read": return doingFile(args).map { "Reading " + $0 } ?? "Reading a file"
+            case "Write", "Update", "Edit", "MultiEdit", "NotebookEdit", "EditNotebook":
+                return doingFile(args).map { "Editing " + $0 } ?? "Editing a file"
+            case "Bash", "BashOutput", "Shell": return "Running a command"
+            case "Search", "Grep", "Glob": return "Searching the files"
+            case "WebSearch", "WebFetch", "Fetch": return "Looking on the web"
+            case "Task", "Agent": return "Asking a helper"
+            default: return nil
+            }
+        }
+        guard t.count > 80 else { return t }
+        var cut = String(t.prefix(80))
+        if let sp = cut.lastIndex(of: " "), cut.distance(from: cut.startIndex, to: sp) >= 40 { cut = String(cut[..<sp]) }
+        return cut.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:·-")) + "…"
+    }
+
+    /// The file a tool line names, by its name only: "src/app.swift)" → "app.swift",
+    /// `file_path: "/x/PLAN.md")` → "PLAN.md". nil when there is none.
+    private static func doingFile(_ args: String) -> String? {
+        var a = args
+        if let end = a.firstIndex(where: { $0 == ")" || $0 == "," }) { a = String(a[..<end]) }
+        if let dot = a.range(of: " · ") { a = String(a[..<dot.lowerBound]) }
+        a = a.trimmingCharacters(in: .whitespaces)
+        for key in ["file_path:", "path:", "notebook_path:", "file:"] where a.lowercased().hasPrefix(key) {
+            a = String(a.dropFirst(key.count)).trimmingCharacters(in: .whitespaces)
+        }
+        a = a.trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+        let name = (a as NSString).lastPathComponent
+        guard !name.isEmpty, name != "/", name.count <= 60, !name.contains(" ") else { return nil }
+        return name
     }
 
     /// Why Jev wasn't asked or gave no answer, as a sentence in the words Settings uses ("Jev key",
@@ -164,6 +237,100 @@ enum RunState {
     }
 }
 
+/// Where each step sits in its graph (2.1, spec §10.3), so a graph can say "step 3 of 4": its place on
+/// the longest path from the start steps, with the edges that go back removed (a send-back or a retry
+/// never pushes a step later), and the graph's total, the deepest place. Parallel copies share their
+/// original's place; the end step isn't counted. With no start step to count from (an old record whose
+/// steps all point at each other) there is no total, and the places count from the first step. The
+/// engine's own numbers (`nodes[].rank`) win when it sends them. Plain values in and out
+/// (tests/swift/island checks it).
+enum StepPlaces {
+    struct Result: Equatable {
+        /// Step id → place, from 1. A step the start can't reach has none.
+        var place: [String: Int] = [:]
+        /// The deepest place; nil when it isn't known.
+        var total: Int?
+
+        /// The step ids at one place, in the graph's order.
+        func ids(at p: Int, order: [String]) -> [String] { order.filter { place[$0] == p } }
+    }
+
+    struct Step {
+        let id: String
+        let role: String
+        let copyOf: String
+        /// The engine's place for it (nil: not sent).
+        let rank: Int?
+    }
+
+    static func of(_ g: GGraph) -> Result {
+        compute(steps: g.nodes.map { Step(id: $0.id, role: $0.role, copyOf: $0.copyOf, rank: $0.rank) },
+                edges: g.edges.map { ($0.from, $0.to) }, start: g.start)
+    }
+
+    static func compute(steps: [Step], edges: [(String, String)], start: String) -> Result {
+        let counted = steps.filter { $0.role != "end" }
+        guard !counted.isEmpty else { return Result() }
+        // the engine's places, when it sent them for every step it counts (from 0 or from 1)
+        let ranks = counted.compactMap { $0.rank }
+        if ranks.count == counted.count, let low = ranks.min(), low >= 0 {
+            let shift = low == 0 ? 1 : 0
+            var r = Result()
+            for s in counted { r.place[s.id] = (s.rank ?? 0) + shift }
+            r.total = r.place.values.max()
+            return r
+        }
+        // copies are one step here: "write#2" counts as "write"
+        let base: [String: String] = Dictionary(counted.map { ($0.id, $0.copyOf.isEmpty ? $0.id : $0.copyOf) },
+                                                uniquingKeysWith: { a, _ in a })
+        var order: [String] = []
+        for s in counted { let b = base[s.id] ?? s.id; if !order.contains(b) { order.append(b) } }
+        var outs: [String: [String]] = [:]
+        var hasIn = Set<String>()
+        for (f, t) in edges {
+            guard let bf = base[f], let bt = base[t], bf != bt else { continue }
+            if !(outs[bf]?.contains(bt) ?? false) { outs[bf, default: []].append(bt) }
+            hasIn.insert(bt)
+        }
+        var starts: [String] = []
+        let s0 = start.trimmingCharacters(in: .whitespaces)
+        if !s0.isEmpty, let b = base[s0] ?? (order.contains(s0) ? s0 : nil) { starts = [b] }
+        if starts.isEmpty { starts = order.filter { !hasIn.contains($0) } }
+        let known = !starts.isEmpty
+        if !known { starts = [order[0]] }
+        // depth first from the starts: an edge to a step still on the path goes back, and is dropped
+        var colour: [String: Int] = [:]   // 1 on the path, 2 finished
+        var post: [String] = []
+        var back = Set<String>()          // "from>to"
+        func visit(_ v: String) {
+            colour[v] = 1
+            for w in outs[v] ?? [] {
+                switch colour[w] {
+                case nil: visit(w)
+                case 1: back.insert(v + ">" + w)
+                default: break
+                }
+            }
+            colour[v] = 2
+            post.append(v)
+        }
+        for s in starts where colour[s] == nil { visit(s) }
+        // longest path over what is left: in reverse finishing order every forward edge goes later
+        var place: [String: Int] = [:]
+        for s in starts { place[s] = 1 }
+        for v in post.reversed() {
+            guard let p = place[v] else { continue }
+            for w in outs[v] ?? [] where !back.contains(v + ">" + w) {
+                place[w] = max(place[w] ?? 0, p + 1)
+            }
+        }
+        var r = Result()
+        for s in counted { if let p = place[base[s.id] ?? s.id] { r.place[s.id] = p } }
+        r.total = known ? place.values.max() : nil
+        return r
+    }
+}
+
 /// Team display names from pairs.json, read at most every few seconds.
 enum TeamNames {
     private static var cache: [String: String] = [:]
@@ -197,7 +364,9 @@ extension GGraph {
         }
         if stopReason == "win" || stopReason.isEmpty { return .done }
         if stopReason == "cancelled" { return .stopped }
-        if stopReason.hasPrefix("failed") || stopReason.hasPrefix("no_edge") || !lastError.isEmpty { return .failed }
+        // "error:<step>": the graph ended because a step hit an error
+        if stopReason.hasPrefix("failed") || stopReason.hasPrefix("no_edge") || stopReason.hasPrefix("error")
+            || !lastError.isEmpty { return .failed }
         return .done
     }
 
@@ -266,14 +435,18 @@ extension GGraph {
         case .done: return stopReason == "win" ? "Finished · passed" : "Finished"
         case .stopped: return "Stopped by you"
         case .failed:
-            if stopReason.hasPrefix("failed_bounded") {
-                let what = stopReason.replacingOccurrences(of: "failed_bounded:", with: "")
-                return "Stopped · out of " + (what.isEmpty ? "budget" : what)
+            if stopReason.hasPrefix("failed_bounded") { return "Stopped · " + Words.bounded(stopReason) }
+            if stopReason.hasPrefix("error") {
+                let id = stopReason.hasPrefix("error:") ? String(stopReason.dropFirst(6)) : ""
+                let step = nodes.first { $0.id == id }?.displayName ?? (id.isEmpty ? "" : Words.name(id))
+                return "Failed" + (step.isEmpty ? "" : " · " + step + " hit an error")
             }
             if stopReason.hasPrefix("no_edge") {
                 return "Stopped · no next step after " + Words.name(stopReason.replacingOccurrences(of: "no_edge:", with: ""))
             }
-            return "Failed" + (stopReason.isEmpty ? "" : " · " + stopReason.replacingOccurrences(of: "_", with: " "))
+            // "failed_check" → "Failed · check"; any other reason (an engine error's "done") adds nothing
+            let rest = stopReason.lowercased().hasPrefix("failed") ? String(stopReason.dropFirst(6)).trimmingCharacters(in: CharacterSet(charactersIn: "_: ")) : ""
+            return "Failed" + (rest.isEmpty ? "" : " · " + Words.name(rest).lowercased())
         default: return "Finished"
         }
     }
@@ -285,6 +458,42 @@ extension GGraph {
 }
 
 extension GNode {
+    /// The step's name on screen: its title when the graph gives one, else its id in words ("me" is
+    /// "Your answer"). A parallel copy carries its number: "Write 2".
+    var displayName: String {
+        let base = title.isEmpty ? Words.name(copyOf.isEmpty ? id : copyOf) : title
+        guard !copyOf.isEmpty, let hash = id.lastIndex(of: "#"), let n = Int(id[id.index(after: hash)...]) else { return base }
+        return base + " \(n)"
+    }
+
+    /// A step's state in words, the way a graph's Steps list says it. In a graph that has stopped, a step
+    /// that never ran was not reached. (The Steps view and the notch panel's step list both use it.)
+    func stepWords(running: Bool = true, paused: Bool = false, finishing: Bool = false, teamDown: Bool = false) -> String {
+        if !running && ["pending", "ready", "waiting", ""].contains(status) { return "not reached" }
+        if teamDown && status == "running" { return "waits for its team to start" }
+        if paused && status == "running" { return "paused with the graph" }
+        if finishing && status == "running" { return "finishing, then the graph waits" }
+        switch status {
+        case "pending", "": return "not started"
+        case "ready": return "about to start"
+        case "waiting": return "waiting for the steps before it"
+        case "waiting_human": return "waiting for your answer"
+        case "held": return "held by the pause"
+        case "bounded": return "stopped: its rounds are spent"
+        case "awaiting_critic": return "waiting for the reviewer"
+        case "done":
+            switch lastOutcome {
+            case "", "done", "ok": return "finished"
+            case "win", "pass", "passed": return "finished · passed"
+            case "fail", "failed": return "finished · didn't pass"
+            case "approved": return "approved"
+            case "rejected": return "sent back"
+            default: return "finished · " + Words.outcome(lastOutcome).lowercased()  // "hit an error", "chose fix"
+            }
+        default: return status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
     /// A step's one state. In a paused graph a step that was at work shows paused, not a spinner.
     func pongStatus(graphRunning running: Bool, graphPaused paused: Bool = false) -> PongStatus {
         if !attention.isEmpty && status == "running" { return .needsYou }

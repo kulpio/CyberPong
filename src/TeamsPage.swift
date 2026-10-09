@@ -51,12 +51,15 @@ struct TeamInfo {
                                   isLead: true, parent: nil, status: st, word: word, openJobs: 0))
         }
         let workers = (snapTeam?["workers"] as? [[String: Any]]) ?? Workers.list(from: entry)
+        var helper = 0
         for w in workers {
             let wid = (w["id"] as? String) ?? ""
             guard !wid.isEmpty, (w["map_visible"] as? Bool) != false else { continue }
             let (st, word) = running ? status((w["status_hint"] as? String) ?? "") : (.stopped, "Stopped")
             let label = ((w["label"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
-            members.append(Member(id: wid, name: label.isEmpty ? "Helper \(wid)" : label,
+            helper += 1
+            // a helper without a name is numbered in the order shown, never called by its seat id ("w1")
+            members.append(Member(id: wid, name: label.isEmpty ? "Helper \(helper)" : label,
                                   ai: Words.ai((w["type"] as? String) ?? "", ""), isLead: false,
                                   parent: (w["parent_id"] as? String).flatMap { $0.isEmpty || $0 == "c1" ? nil : $0 },
                                   status: st, word: word, openJobs: (w["open_jobs"] as? Int) ?? 0))

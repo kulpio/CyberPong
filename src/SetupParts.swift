@@ -695,7 +695,7 @@ enum SetupActions {
     /// A one-line toast on the window the person is looking at (a sheet's window, not the
     /// sheet: a toast sits at a window's foot). Keep it short: it is one line.
     static func toast(_ message: String, warn: Bool = false) {
-        let key = NSApp.keyWindow
+        let key = NSApp.appKeyWindow
         Toast.show(message, warn: warn, in: key?.sheetParent ?? key)
     }
 
@@ -1376,8 +1376,10 @@ enum SetupRows {
 
     // MARK: Limits and spending
 
-    private static func numberField(_ value: String, width: CGFloat, label: String, row keep: inout [AnyObject],
-                                    _ commit: @escaping (String) -> Void) -> SetupField {
+    /// A small right-aligned number field (Settings › Notch panel uses it too); `commit` runs on Return
+    /// or when the field is left.
+    static func numberField(_ value: String, width: CGFloat, label: String, row keep: inout [AnyObject],
+                            _ commit: @escaping (String) -> Void) -> SetupField {
         let f = SetupField(placeholder: label, value: value, width: width, height: 24)
         f.field.alignment = .right
         f.field.setAccessibilityLabel(label)

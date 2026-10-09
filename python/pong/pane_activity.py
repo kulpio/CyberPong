@@ -57,9 +57,11 @@ def _tmux(*args: str) -> tuple[bool, str]:
 
 
 def session_alive(session: str) -> bool:
+    """Whether the team's own tmux session is there. The target is exact ("=name:"): with a bare name
+    tmux takes the one session whose name starts with it, so a stopped pong-team-9 read pong-team-91."""
     if not session:
         return False
-    ok, _ = _tmux("has-session", "-t", session)
+    ok, _ = _tmux("has-session", "-t", f"={session}:")
     return ok
 
 
@@ -69,8 +71,9 @@ def capture_pane(session: str, idx: int) -> tuple[bool, str]:
     ``ok=False`` means tmux could not read the pane at all. That is not the
     same as a pane that is genuinely empty, and a caller gating a paste on
     "is this seat mid-turn" must not read an unreadable pane as "idle".
+    The session name is matched exactly, never as the start of another team's name.
     """
-    return _tmux("capture-pane", "-p", "-J", "-t", f"{session}:{idx}", "-S", "-16")
+    return _tmux("capture-pane", "-p", "-J", "-t", f"={session}:{idx}", "-S", "-16")
 
 
 def capture(session: str, idx: int) -> str:
@@ -90,23 +93,30 @@ def capture_all(session: str, indices: Iterable[int]) -> dict[int, str]:
     not a second one. Callers that need thinking and usage both read
     this dict rather than hitting tmux again.
     """
+    return capture_all_alive(session, indices)[1]
+
+
+def capture_all_alive(session: str, indices: Iterable[int]) -> tuple[bool, dict[int, str]]:
+    """``(alive, idx → pane text)``: :func:`capture_all` plus whether the team's tmux session is
+    there at all (the check it already makes), so the snapshot can say a team is up without asking
+    tmux twice."""
     if not session_alive(session):
-        return {}
+        return False, {}
     idxs = [i for i in indices if isinstance(i, int) and i >= 0]
     if not idxs:
-        return {}
+        return True, {}
 
     def one(i: int) -> tuple[int, str]:
         return i, capture(session, i)
 
     if len(idxs) == 1:
         i, t = one(idxs[0])
-        return {i: t}
+        return True, {i: t}
     out: dict[int, str] = {}
     with ThreadPoolExecutor(max_workers=min(8, len(idxs))) as pool:
         for i, t in pool.map(one, idxs):
             out[i] = t
-    return out
+    return True, out
 
 
 def scan(session: str, indices: Iterable[int]) -> dict[int, bool]:

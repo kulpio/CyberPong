@@ -341,7 +341,7 @@ enum SessionContinuityUI {
         a.window.initialFirstResponder = field
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Writing the recap…")
+        PongLoadingOverlay.show(on: NSApp.appKeyWindow ?? NSApp.mainWindow, message: "Writing the recap…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = SessionArchive.saveFromLive(session: session, title: title.isEmpty ? nil : title)
             DispatchQueue.main.async {
@@ -368,7 +368,7 @@ enum SessionContinuityUI {
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
-        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Writing the recap and restarting…")
+        PongLoadingOverlay.show(on: NSApp.appKeyWindow ?? NSApp.mainWindow, message: "Writing the recap and restarting…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = SessionContinuity.newSessionWithRecap(session: session)
             DispatchQueue.main.async {
@@ -479,7 +479,7 @@ enum SessionContinuityUI {
         if mr == .alertThirdButtonReturn { return }
         let respawn = mr == .alertFirstButtonReturn
 
-        PongLoadingOverlay.show(on: NSApp.keyWindow ?? NSApp.mainWindow, message: "Applying continuity…")
+        PongLoadingOverlay.show(on: NSApp.appKeyWindow ?? NSApp.mainWindow, message: "Applying continuity…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = SessionContinuity.injectArchive(
                 session: session, archiveId: archiveId, respawn: respawn
